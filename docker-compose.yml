@@ -1,0 +1,43 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: contract_management
+      MYSQL_USER: contract
+      MYSQL_PASSWORD: contract
+      MYSQL_ROOT_PASSWORD: local-root-only
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    ports: ["3306:3306"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql-init/000_databases.sql:/docker-entrypoint-initdb.d/000_databases.sql:ro
+      - ./migrations/000001_contract_workflow.sql:/docker-entrypoint-initdb.d/010_contract_workflow.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ucontract", "-pcontract"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  temporal:
+    image: temporalio/auto-setup:1.31.2
+    depends_on:
+      mysql: { condition: service_healthy }
+    environment:
+      DB: mysql8
+      DB_PORT: 3306
+      MYSQL_SEEDS: mysql
+      MYSQL_USER: contract
+      MYSQL_PWD: contract
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports: ["7233:7233"]
+
+  temporal-ui:
+    image: temporalio/ui:2.52.1
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["8233:8080"]
+
+volumes:
+  mysql-data:
