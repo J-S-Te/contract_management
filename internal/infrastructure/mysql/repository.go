@@ -32,6 +32,28 @@ func (r *Repository) GetContract(ctx context.Context, tenantID, id string) (cont
 	return contractFromRecord(record), nil
 }
 
+func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, status string, limit int) ([]contract.Contract, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID)
+	if ownerUserID != "" {
+		query = query.Where("owner_user_id = ?", ownerUserID)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	var records []contractRecord
+	if err := query.Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]contract.Contract, 0, len(records))
+	for _, record := range records {
+		result = append(result, contractFromRecord(record))
+	}
+	return result, nil
+}
+
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
 	var record approvalInstanceRecord
 	err := r.db.WithContext(ctx).

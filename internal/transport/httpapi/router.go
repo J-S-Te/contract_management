@@ -44,6 +44,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 		r.Use(h.authenticate)
 		r.Use(h.auditWrites)
 		r.Post("/contracts", h.createContract)
+		r.Get("/contracts", h.listContracts)
 		r.Get("/contracts/{contractID}", h.getContract)
 		r.Post("/contracts/{contractID}/submit-approval", h.submitApproval)
 		r.Post("/contracts/{contractID}/status-changes", h.changeStatus)
@@ -194,6 +195,18 @@ func (h *Handler) getContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, r, http.StatusOK, c)
+}
+
+func (h *Handler) listContracts(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	ownerUserID := r.URL.Query().Get("owner_user_id")
+	status := r.URL.Query().Get("status")
+	contracts, err := h.service.ListContracts(r.Context(), principal(r), ownerUserID, status, limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeData(w, r, http.StatusOK, contracts)
 }
 
 func (h *Handler) submitApproval(w http.ResponseWriter, r *http.Request) {

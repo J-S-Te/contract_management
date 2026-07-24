@@ -76,9 +76,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, incoming *http.Request
 	if envelope.Code != "OK" || envelope.Data.Tenant.ID == "" || envelope.Data.User.ID == "" {
 		return application.Principal{}, ErrUnauthenticated
 	}
-	permissions := make(map[string]bool, len(envelope.Data.PermissionCodes))
+	permissions := make(map[string]bool, len(envelope.Data.PermissionCodes)*2)
 	for _, permission := range envelope.Data.PermissionCodes {
 		permissions[permission] = true
+		// Mirror platform-prefixed codes without the prefix and convert the
+		// remaining ":" separators to "." so internal permission checks like
+		// Has("contract.create") can match the platform-issued
+		// "platform:contract:create" code. This lets basic-platform roles
+		// (e.g. platform-super-admin) transparently cover contract_management
+		// permission gates without requiring a duplicate IAM grant.
+		if strings.HasPrefix(permission, "platform:") {
+			permissions[strings.ReplaceAll(strings.TrimPrefix(permission, "platform:"), ":", ".")] = true
+		}
 	}
 	return application.Principal{TenantID: envelope.Data.Tenant.ID, UserID: envelope.Data.User.ID, Permissions: permissions}, nil
 }

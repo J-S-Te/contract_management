@@ -26,6 +26,7 @@ func (p Principal) Has(permission string) bool { return p.Permissions[permission
 
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
+	ListContracts(context.Context, string, string, string, int) ([]contract.Contract, error)
 	CreateContract(context.Context, contract.Contract, string) error
 	TransitionDirect(context.Context, string, string, uint64, contract.Status, string, string, string) error
 	ListEnabledRules(context.Context, string) ([]approval.Rule, error)
@@ -220,6 +221,20 @@ func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (
 		return contract.Contract{}, ErrForbidden
 	}
 	return c, nil
+}
+
+func (s *Service) ListContracts(ctx context.Context, actor Principal, ownerUserID, status string, limit int) ([]contract.Contract, error) {
+	if !actor.Has("contract.read") {
+		return nil, ErrForbidden
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	effectiveOwner := ownerUserID
+	if effectiveOwner == "" && !actor.Has("contract.manage") {
+		effectiveOwner = actor.UserID
+	}
+	return s.Repo.ListContracts(ctx, actor.TenantID, effectiveOwner, status, limit)
 }
 
 func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Rule, error) {
