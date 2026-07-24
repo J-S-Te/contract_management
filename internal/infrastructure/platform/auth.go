@@ -16,15 +16,17 @@ import (
 var ErrUnauthenticated = errors.New("unauthenticated")
 
 type Authenticator struct {
-	BaseURL string
-	Client  *http.Client
+	BaseURL           string
+	SessionCookieName string
+	Client            *http.Client
 }
 
-func NewAuthenticator(baseURL string) *Authenticator {
-	return &Authenticator{BaseURL: strings.TrimRight(baseURL, "/"), Client: &http.Client{Timeout: 5 * time.Second}}
+func NewAuthenticator(baseURL, sessionCookieName string) *Authenticator {
+	return &Authenticator{BaseURL: strings.TrimRight(baseURL, "/"), SessionCookieName: sessionCookieName, Client: &http.Client{Timeout: 5 * time.Second}}
 }
 
 type principalEnvelope struct {
+	Code string `json:"code"`
 	Data struct {
 		Tenant          reference `json:"tenant"`
 		User            reference `json:"user"`
@@ -41,9 +43,14 @@ func (a *Authenticator) Authenticate(ctx context.Context, incoming *http.Request
 	if err != nil {
 		return application.Principal{}, err
 	}
-	for _, cookie := range incoming.Cookies() {
-		req.AddCookie(cookie)
+	if a.SessionCookieName == "" {
+		a.SessionCookieName = "bp_session"
 	}
+	cookie, err := incoming.Cookie(a.SessionCookieName)
+	if err != nil {
+		return application.Principal{}, ErrUnauthenticated
+	}
+	req.AddCookie(cookie)
 	if requestID := incoming.Header.Get("X-Request-ID"); requestID != "" {
 		req.Header.Set("X-Request-ID", requestID)
 	}
@@ -66,7 +73,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, incoming *http.Request
 	if err := decoder.Decode(&envelope); err != nil {
 		return application.Principal{}, err
 	}
-	if envelope.Data.Tenant.ID == "" || envelope.Data.User.ID == "" {
+	if envelope.Code != "OK" || envelope.Data.Tenant.ID == "" || envelope.Data.User.ID == "" {
 		return application.Principal{}, ErrUnauthenticated
 	}
 	permissions := make(map[string]bool, len(envelope.Data.PermissionCodes))

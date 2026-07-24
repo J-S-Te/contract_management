@@ -41,7 +41,8 @@ func main() {
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
 	service := &application.Service{Repo: repository, Temporal: temporalClient, Approvers: cfg.Approvers, TaskQueue: cfg.TemporalTaskQueue, NodeTimeout: cfg.NodeTimeout, ReminderInterval: cfg.ReminderInterval}
-	server := &http.Server{Addr: cfg.HTTPAddress, Handler: httpapi.NewRouter(service, platform.NewAuthenticator(cfg.PlatformBaseURL)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	identity := platform.NewAuthenticator(cfg.PlatformBaseURL, cfg.PlatformSessionCookieName)
+	server := &http.Server{Addr: cfg.HTTPAddress, Handler: httpapi.NewRouter(service, identity, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

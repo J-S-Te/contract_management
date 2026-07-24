@@ -11,7 +11,8 @@
 - 提交时固化规则版本、节点和合同 SHA-256；运行中规则变更不影响既有流程，审批完成前合同内容发生变化会阻断生效。
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
-- 基础平台认证适配器通过 `/api/v1/auth/me` 校验浏览器 Cookie，不接受客户端伪造的用户或租户 ID。
+- 基础平台认证适配器通过 `/api/v1/auth/me` 校验配置的浏览器会话 Cookie（默认 `bp_session`），不接受客户端伪造的用户或租户 ID。
+- 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
 
 ## 目录
 
@@ -80,6 +81,8 @@ go run ./cmd/api
 MySQL 初始化会执行 `migrations/000001_contract_workflow.sql`。Temporal UI 位于 `http://localhost:8233`。API 默认 `:8081`，基础平台默认 `http://localhost:8080`；部署时由网关把合同路径转发至本服务。
 
 审批人按角色在 `APPROVER_ROLE_ASSIGNMENTS_JSON` 中配置，值必须使用平台用户 ULID。生产环境建议由配置中心下发；不要在镜像或仓库中保存真实人员 ID、Temporal API Key 或数据库密码。
+
+平台会话 Cookie 名称由 `AUTH_SESSION_COOKIE_NAME` 配置，默认 `bp_session`。审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。通知 outbox 不会直接调用平台通知控制面，因为当前机器 Token 的已发布权限边界仅包含审计写入。
 
 Temporal Cloud 可设置 `TEMPORAL_TLS=true`、`TEMPORAL_API_KEY`、命名空间和地址。API Key 会通过 SDK Credentials 注入，不写入 Workflow history。
 

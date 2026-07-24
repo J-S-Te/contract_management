@@ -26,10 +26,15 @@ type Identity interface {
 type Handler struct {
 	service  *application.Service
 	identity Identity
+	audit    platform.AuditReporter
 }
 
-func NewRouter(service *application.Service, identity Identity) http.Handler {
-	h := &Handler{service: service, identity: identity}
+func NewRouter(service *application.Service, identity Identity, audits ...platform.AuditReporter) http.Handler {
+	var audit platform.AuditReporter
+	if len(audits) > 0 {
+		audit = audits[0]
+	}
+	h := &Handler{service: service, identity: identity, audit: audit}
 	r := chi.NewRouter()
 	r.Use(requestID, recoverer)
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -37,6 +42,7 @@ func NewRouter(service *application.Service, identity Identity) http.Handler {
 	})
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(h.authenticate)
+		r.Use(h.auditWrites)
 		r.Post("/contracts", h.createContract)
 		r.Get("/contracts/{contractID}", h.getContract)
 		r.Post("/contracts/{contractID}/submit-approval", h.submitApproval)
@@ -52,6 +58,59 @@ func NewRouter(service *application.Service, identity Identity) http.Handler {
 		}
 	})
 	return r
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *statusRecorder) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (h *Handler) auditWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.audit == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		p := principal(r)
+		result := "SUCCESS"
+		if recorder.status >= 400 {
+			result = "FAILURE"
+		}
+		resourceType, resourceID := auditResource(r)
+		_ = h.audit.Report(r.Context(), platform.AuditEvent{ActorID: p.UserID, Action: auditAction(r), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), CorrelationID: requestIDFrom(r.Context()), Result: result, ReasonCode: strconv.Itoa(recorder.status)})
+	})
+}
+
+func auditAction(r *http.Request) string {
+	return "CONTRACT_MANAGEMENT:" + r.Method + ":" + strings.ReplaceAll(strings.Trim(r.URL.Path, "/"), "/", ".")
+}
+func auditResource(r *http.Request) (string, string) {
+	if id := chi.URLParam(r, "contractID"); id != "" {
+		return "CONTRACT", id
+	}
+	if id := chi.URLParam(r, "approvalID"); id != "" {
+		return "APPROVAL", id
+	}
+	if id := chi.URLParam(r, "ruleID"); id != "" {
+		return "APPROVAL_RULE", id
+	}
+	if strings.Contains(r.URL.Path, "approval-rules") {
+		return "APPROVAL_RULE", ""
+	}
+	return "CONTRACT", ""
 }
 
 func (h *Handler) listRules(w http.ResponseWriter, r *http.Request) {

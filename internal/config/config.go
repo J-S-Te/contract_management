@@ -11,23 +11,29 @@ import (
 )
 
 type Config struct {
-	HTTPAddress       string
-	MySQLDSN          string
-	PlatformBaseURL   string
-	TemporalAddress   string
-	TemporalNamespace string
-	TemporalTaskQueue string
-	TemporalAPIKey    string
-	TemporalTLS       bool
-	NodeTimeout       time.Duration
-	ReminderInterval  time.Duration
-	ArchiveCron       string
-	Approvers         application.StaticApprovers
+	HTTPAddress               string
+	MySQLDSN                  string
+	PlatformBaseURL           string
+	PlatformSessionCookieName string
+	PlatformAuditClientID     string
+	PlatformAuditClientSecret string
+	PlatformApplicationCode   string
+	PlatformEnvironmentCode   string
+	TemporalAddress           string
+	TemporalNamespace         string
+	TemporalTaskQueue         string
+	TemporalAPIKey            string
+	TemporalTLS               bool
+	NodeTimeout               time.Duration
+	ReminderInterval          time.Duration
+	ArchiveCron               string
+	Approvers                 application.StaticApprovers
 }
 
 func Load() (Config, error) {
 	c := Config{
-		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
+		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"), PlatformSessionCookieName: env("AUTH_SESSION_COOKIE_NAME", "bp_session"),
+		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
 		TemporalAddress: env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
 		NodeTimeout: duration("APPROVAL_NODE_TIMEOUT", 72*time.Hour), ReminderInterval: duration("APPROVAL_REMINDER_INTERVAL", 24*time.Hour), TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"),
 		ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
