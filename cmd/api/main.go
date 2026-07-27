@@ -42,13 +42,19 @@ func main() {
 	repository := store.NewRepository(db)
 	service := &application.Service{Repo: repository, Temporal: temporalClient, Approvers: cfg.Approvers, TaskQueue: cfg.TemporalTaskQueue, NodeTimeout: cfg.NodeTimeout, ReminderInterval: cfg.ReminderInterval}
 	identity := platform.NewAuthenticator(cfg.PlatformBaseURL, cfg.PlatformSessionCookieName)
-	server := &http.Server{Addr: cfg.HTTPAddress, Handler: httpapi.NewRouter(service, identity, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{
+		Addr:              cfg.HTTPAddress,
+		Handler:           httpapi.NewRouter(service, identity, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
+	}
+
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
+
 	logger.Info("contract API started", "address", cfg.HTTPAddress)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)

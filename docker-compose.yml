@@ -19,7 +19,7 @@ services:
       retries: 20
 
   temporal:
-    image: temporalio/auto-setup:1.31.2
+    image: temporalio/auto-setup:1.29.7
     depends_on:
       mysql: { condition: service_healthy }
     environment:

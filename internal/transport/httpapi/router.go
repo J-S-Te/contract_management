@@ -4,19 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/j-s-te/contract-management/internal/workflows"
+	"github.com/oklog/ulid/v2"
 )
 
 type Identity interface {
@@ -29,138 +30,119 @@ type Handler struct {
 	audit    platform.AuditReporter
 }
 
-func NewRouter(service *application.Service, identity Identity, audits ...platform.AuditReporter) http.Handler {
+func NewRouter(service *application.Service, identity Identity, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
 		audit = audits[0]
 	}
 	h := &Handler{service: service, identity: identity, audit: audit}
-	r := chi.NewRouter()
-	r.Use(requestID, recoverer)
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up"}})
+	r := gin.New()
+	r.Use(requestID(), recoverer())
+	r.GET("/healthz", func(c *gin.Context) {
+		writeJSON(c, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up"}})
 	})
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(h.authenticate)
-		r.Use(h.auditWrites)
-		r.Post("/contracts", h.createContract)
-		r.Get("/contracts", h.listContracts)
-		r.Get("/contracts/{contractID}", h.getContract)
-		r.Post("/contracts/{contractID}/submit-approval", h.submitApproval)
-		r.Post("/contracts/{contractID}/status-changes", h.changeStatus)
-		r.Get("/approvals/tasks", h.listTasks)
-		r.Get("/approvals/{approvalID}", h.getApproval)
-		r.Get("/approval-rules", h.listRules)
-		r.Post("/approval-rules", h.createRule)
-		r.Put("/approval-rules/{ruleID}", h.updateRule)
-		r.Delete("/approval-rules/{ruleID}", h.deleteRule)
-		for _, action := range []string{"approve", "reject", "sign", "transfer", "return", "withdraw", "urge", "comments"} {
-			r.Post("/approvals/{approvalID}/"+action, h.command(action))
-		}
-	})
+	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
+	api.POST("/contracts", h.createContract)
+	api.GET("/contracts", h.listContracts)
+	api.GET("/contracts/:contractID", h.getContract)
+	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)
+	api.POST("/contracts/:contractID/status-changes", h.changeStatus)
+	api.GET("/approvals/tasks", h.listTasks)
+	api.GET("/approvals/:approvalID", h.getApproval)
+	api.GET("/approval-rules", h.listRules)
+	api.POST("/approval-rules", h.createRule)
+	api.PUT("/approval-rules/:ruleID", h.updateRule)
+	api.DELETE("/approval-rules/:ruleID", h.deleteRule)
+	for _, action := range []string{"approve", "reject", "sign", "transfer", "return", "withdraw", "urge", "comments"} {
+		api.POST("/approvals/:approvalID/"+action, h.command(action))
+	}
 	return r
 }
 
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusRecorder) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-func (w *statusRecorder) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(body)
-}
-
-func (h *Handler) auditWrites(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.audit == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
-			next.ServeHTTP(w, r)
+func (h *Handler) auditWrites() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.audit == nil || c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions {
+			c.Next()
 			return
 		}
-		recorder := &statusRecorder{ResponseWriter: w}
-		next.ServeHTTP(recorder, r)
-		p := principal(r)
+		c.Next()
+		p := principal(c)
 		result := "SUCCESS"
-		if recorder.status >= 400 {
+		if c.Writer.Status() >= 400 {
 			result = "FAILURE"
 		}
-		resourceType, resourceID := auditResource(r)
-		_ = h.audit.Report(r.Context(), platform.AuditEvent{ActorID: p.UserID, Action: auditAction(r), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), CorrelationID: requestIDFrom(r.Context()), Result: result, ReasonCode: strconv.Itoa(recorder.status)})
-	})
+		resourceType, resourceID := auditResource(c)
+		requestID := requestIDFrom(c.Request.Context())
+		_ = h.audit.Report(c.Request.Context(), platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: result, ReasonCode: strconv.Itoa(c.Writer.Status())})
+	}
 }
 
 func auditAction(r *http.Request) string {
 	return "CONTRACT_MANAGEMENT:" + r.Method + ":" + strings.ReplaceAll(strings.Trim(r.URL.Path, "/"), "/", ".")
 }
-func auditResource(r *http.Request) (string, string) {
-	if id := chi.URLParam(r, "contractID"); id != "" {
+func auditResource(c *gin.Context) (string, string) {
+	if id := c.Param("contractID"); id != "" {
 		return "CONTRACT", id
 	}
-	if id := chi.URLParam(r, "approvalID"); id != "" {
+	if id := c.Param("approvalID"); id != "" {
 		return "APPROVAL", id
 	}
-	if id := chi.URLParam(r, "ruleID"); id != "" {
+	if id := c.Param("ruleID"); id != "" {
 		return "APPROVAL_RULE", id
 	}
-	if strings.Contains(r.URL.Path, "approval-rules") {
+	if strings.Contains(c.Request.URL.Path, "approval-rules") {
 		return "APPROVAL_RULE", ""
 	}
 	return "CONTRACT", ""
 }
 
-func (h *Handler) listRules(w http.ResponseWriter, r *http.Request) {
-	rules, err := h.service.ListRules(r.Context(), principal(r))
+func (h *Handler) listRules(c *gin.Context) {
+	rules, err := h.service.ListRules(c.Request.Context(), principal(c))
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, rules)
+	writeData(c, http.StatusOK, rules)
 }
 
-func (h *Handler) createRule(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createRule(c *gin.Context) {
 	var rule approval.Rule
-	if !decode(w, r, &rule) {
+	if !decode(c, &rule) {
 		return
 	}
-	created, err := h.service.CreateRule(r.Context(), principal(r), rule)
+	created, err := h.service.CreateRule(c.Request.Context(), principal(c), rule)
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusCreated, created)
+	writeData(c, http.StatusCreated, created)
 }
 
-func (h *Handler) updateRule(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) updateRule(c *gin.Context) {
 	var rule approval.Rule
-	if !decode(w, r, &rule) {
+	if !decode(c, &rule) {
 		return
 	}
-	rule.ID = chi.URLParam(r, "ruleID")
-	updated, err := h.service.UpdateRule(r.Context(), principal(r), rule)
+	rule.ID = c.Param("ruleID")
+	updated, err := h.service.UpdateRule(c.Request.Context(), principal(c), rule)
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, updated)
+	writeData(c, http.StatusOK, updated)
 }
 
-func (h *Handler) deleteRule(w http.ResponseWriter, r *http.Request) {
-	version, err := strconv.ParseUint(r.URL.Query().Get("version"), 10, 64)
+func (h *Handler) deleteRule(c *gin.Context) {
+	version, err := strconv.ParseUint(c.Query("version"), 10, 64)
 	if err != nil {
-		writeEnvelopeError(w, r, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "version 参数不合法", nil)
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "version 参数不合法", nil)
 		return
 	}
-	if err := h.service.DeleteRule(r.Context(), principal(r), chi.URLParam(r, "ruleID"), version); err != nil {
-		writeError(w, r, err)
+	if err := h.service.DeleteRule(c.Request.Context(), principal(c), c.Param("ruleID"), version); err != nil {
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, map[string]string{"status": "deleted"})
+	writeData(c, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 type createContractRequest struct {
@@ -175,93 +157,93 @@ type createContractRequest struct {
 	EndDate             *time.Time `json:"end_date"`
 }
 
-func (h *Handler) createContract(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createContract(c *gin.Context) {
 	var body createContractRequest
-	if !decode(w, r, &body) {
+	if !decode(c, &body) {
 		return
 	}
-	c, err := h.service.CreateContract(r.Context(), principal(r), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, EndDate: body.EndDate})
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusCreated, c)
+	writeData(c, http.StatusCreated, created)
 }
 
-func (h *Handler) getContract(w http.ResponseWriter, r *http.Request) {
-	c, err := h.service.GetContract(r.Context(), principal(r), chi.URLParam(r, "contractID"))
+func (h *Handler) getContract(c *gin.Context) {
+	found, err := h.service.GetContract(c.Request.Context(), principal(c), c.Param("contractID"))
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, c)
+	writeData(c, http.StatusOK, found)
 }
 
-func (h *Handler) listContracts(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	ownerUserID := r.URL.Query().Get("owner_user_id")
-	status := r.URL.Query().Get("status")
-	contracts, err := h.service.ListContracts(r.Context(), principal(r), ownerUserID, status, limit)
+func (h *Handler) listContracts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	ownerUserID := c.Query("owner_user_id")
+	status := c.Query("status")
+	contracts, err := h.service.ListContracts(c.Request.Context(), principal(c), ownerUserID, status, limit)
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, contracts)
+	writeData(c, http.StatusOK, contracts)
 }
 
-func (h *Handler) submitApproval(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) submitApproval(c *gin.Context) {
 	var body struct {
 		TermsIdentical bool `json:"terms_identical"`
 	}
-	if !decode(w, r, &body) {
+	if !decode(c, &body) {
 		return
 	}
-	result, err := h.service.SubmitContract(r.Context(), principal(r), chi.URLParam(r, "contractID"), body.TermsIdentical)
+	result, err := h.service.SubmitContract(c.Request.Context(), principal(c), c.Param("contractID"), body.TermsIdentical)
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusAccepted, result)
+	writeData(c, http.StatusAccepted, result)
 }
 
-func (h *Handler) changeStatus(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) changeStatus(c *gin.Context) {
 	var body struct {
 		Version uint64          `json:"version"`
 		Target  contract.Status `json:"target_status"`
 		Reason  string          `json:"reason"`
 	}
-	if !decode(w, r, &body) {
+	if !decode(c, &body) {
 		return
 	}
-	result, err := h.service.ChangeStatus(r.Context(), principal(r), chi.URLParam(r, "contractID"), body.Version, body.Target, strings.TrimSpace(body.Reason))
+	result, err := h.service.ChangeStatus(c.Request.Context(), principal(c), c.Param("contractID"), body.Version, body.Target, strings.TrimSpace(body.Reason))
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
 	if result.ApprovalID == "" {
-		writeData(w, r, http.StatusOK, map[string]string{"status": "changed"})
+		writeData(c, http.StatusOK, map[string]string{"status": "changed"})
 		return
 	}
-	writeData(w, r, http.StatusAccepted, result)
+	writeData(c, http.StatusAccepted, result)
 }
 
-func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	tasks, err := h.service.ListMyTasks(r.Context(), principal(r), limit)
+func (h *Handler) listTasks(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	tasks, err := h.service.ListMyTasks(c.Request.Context(), principal(c), limit)
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, tasks)
+	writeData(c, http.StatusOK, tasks)
 }
 
-func (h *Handler) getApproval(w http.ResponseWriter, r *http.Request) {
-	state, err := h.service.GetApprovalState(r.Context(), principal(r), chi.URLParam(r, "approvalID"))
+func (h *Handler) getApproval(c *gin.Context) {
+	state, err := h.service.GetApprovalState(c.Request.Context(), principal(c), c.Param("approvalID"))
 	if err != nil {
-		writeError(w, r, err)
+		writeError(c, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, state)
+	writeData(c, http.StatusOK, state)
 }
 
 type commandRequest struct {
@@ -271,39 +253,40 @@ type commandRequest struct {
 	TargetNodeID  string                   `json:"target_node_id"`
 }
 
-func (h *Handler) command(pathAction string) http.HandlerFunc {
+func (h *Handler) command(pathAction string) gin.HandlerFunc {
 	actions := map[string]workflows.CommandAction{"approve": workflows.ActionApprove, "reject": workflows.ActionReject, "sign": workflows.ActionAddSign, "transfer": workflows.ActionTransfer, "return": workflows.ActionReturn, "withdraw": workflows.ActionWithdraw, "urge": workflows.ActionUrge, "comments": workflows.ActionComment}
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(c *gin.Context) {
 		var body commandRequest
-		if !decode(w, r, &body) {
+		if !decode(c, &body) {
 			return
 		}
 		command := workflows.ApprovalCommand{Action: actions[pathAction], Comment: strings.TrimSpace(body.Comment), TargetUserIDs: body.TargetUserIDs, Countersign: body.Countersign, TargetNodeID: body.TargetNodeID}
-		if err := h.service.Command(r.Context(), principal(r), chi.URLParam(r, "approvalID"), command); err != nil {
-			writeError(w, r, err)
+		if err := h.service.Command(c.Request.Context(), principal(c), c.Param("approvalID"), command); err != nil {
+			writeError(c, err)
 			return
 		}
-		writeData(w, r, http.StatusAccepted, map[string]string{"status": "accepted"})
+		writeData(c, http.StatusAccepted, map[string]string{"status": "accepted"})
 	}
 }
 
-type contextKey string
+const principalKey = "principal"
 
-const principalKey contextKey = "principal"
-
-func (h *Handler) authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, err := h.identity.Authenticate(r.Context(), r)
+func (h *Handler) authenticate() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p, err := h.identity.Authenticate(c.Request.Context(), c.Request)
 		if err != nil {
-			writeError(w, r, err)
+			writeError(c, err)
+			c.Abort()
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
-	})
+		c.Set(principalKey, p)
+		c.Next()
+	}
 }
-func principal(r *http.Request) application.Principal {
-	value, _ := r.Context().Value(principalKey).(application.Principal)
-	return value
+func principal(c *gin.Context) application.Principal {
+	value, _ := c.Get(principalKey)
+	p, _ := value.(application.Principal)
+	return p
 }
 
 type envelope struct {
@@ -314,74 +297,77 @@ type envelope struct {
 	Details   any    `json:"details,omitempty"`
 }
 
-func decode(w http.ResponseWriter, r *http.Request, target any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	decoder := json.NewDecoder(r.Body)
+func decode(c *gin.Context, target any) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		writeEnvelopeError(w, r, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", err.Error())
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", err.Error())
 		return false
 	}
-	if decoder.Decode(&struct{}{}) == nil {
-		writeEnvelopeError(w, r, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求只能包含一个 JSON 对象", nil)
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求只能包含一个 JSON 对象", nil)
 		return false
 	}
 	return true
 }
 
-func writeData(w http.ResponseWriter, r *http.Request, status int, data any) {
-	writeJSON(w, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(r.Context()), Data: data})
+func writeData(c *gin.Context, status int, data any) {
+	writeJSON(c, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(c.Request.Context()), Data: data})
 }
-func writeError(w http.ResponseWriter, r *http.Request, err error) {
+func writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, platform.ErrUnauthenticated):
-		writeEnvelopeError(w, r, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
+		writeEnvelopeError(c, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
 	case errors.Is(err, application.ErrForbidden):
-		writeEnvelopeError(w, r, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
+		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, apperrors.ErrNotFound):
-		writeEnvelopeError(w, r, http.StatusNotFound, "CON_NOT_FOUND", "资源不存在", nil)
+		writeEnvelopeError(c, http.StatusNotFound, "CON_NOT_FOUND", "资源不存在", nil)
 	case errors.Is(err, apperrors.ErrVersionConflict):
-		writeEnvelopeError(w, r, http.StatusConflict, "CON_VERSION_CONFLICT", "数据版本已变化，请刷新后重试", nil)
+		writeEnvelopeError(c, http.StatusConflict, "CON_VERSION_CONFLICT", "数据版本已变化，请刷新后重试", nil)
 	case errors.Is(err, apperrors.ErrStateConflict), errors.Is(err, contract.ErrInvalidTransition):
-		writeEnvelopeError(w, r, http.StatusConflict, "CON_STATE_CONFLICT", "当前状态不允许该操作", nil)
+		writeEnvelopeError(c, http.StatusConflict, "CON_STATE_CONFLICT", "当前状态不允许该操作", nil)
 	case errors.Is(err, application.ErrValidation), errors.Is(err, contract.ErrInvalidStatus):
-		writeEnvelopeError(w, r, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", nil)
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", nil)
 	default:
-		writeEnvelopeError(w, r, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
+		writeEnvelopeError(c, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
 	}
 }
-func writeEnvelopeError(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {
-	writeJSON(w, status, envelope{Code: code, Message: message, RequestID: requestIDFrom(r.Context()), Details: details})
+func writeEnvelopeError(c *gin.Context, status int, code, message string, details any) {
+	writeJSON(c, status, envelope{Code: code, Message: message, RequestID: requestIDFrom(c.Request.Context()), Details: details})
 }
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+func writeJSON(c *gin.Context, status int, value any) {
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.JSON(status, value)
 }
 
 type requestIDKey struct{}
 
-func requestID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
-		if id == "" {
-			id = fmt.Sprintf("con-%d", time.Now().UnixNano())
+func requestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := strings.ToUpper(strings.TrimSpace(c.GetHeader("X-Request-ID")))
+		if _, err := ulid.ParseStrict(id); err != nil {
+			id = ulid.Make().String()
 		}
-		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id)))
-	})
+		c.Header("X-Request-ID", id)
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), requestIDKey{}, id))
+		c.Next()
+	}
 }
 func requestIDFrom(ctx context.Context) string {
 	value, _ := ctx.Value(requestIDKey{}).(string)
 	return value
 }
-func recoverer(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func recoverer() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		defer func() {
 			if recover() != nil {
-				writeEnvelopeError(w, r, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
+				c.Abort()
+				if !c.Writer.Written() {
+					writeEnvelopeError(c, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
+				}
 			}
 		}()
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }

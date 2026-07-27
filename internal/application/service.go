@@ -231,7 +231,7 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, ownerUserI
 		limit = 50
 	}
 	effectiveOwner := ownerUserID
-	if effectiveOwner == "" && !actor.Has("contract.manage") {
+	if !actor.Has("contract.manage") {
 		effectiveOwner = actor.UserID
 	}
 	return s.Repo.ListContracts(ctx, actor.TenantID, effectiveOwner, status, limit)
