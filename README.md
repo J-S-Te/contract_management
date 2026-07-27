@@ -11,9 +11,9 @@
 - 提交时固化规则版本、节点和合同 SHA-256；运行中规则变更不影响既有流程，审批完成前合同内容发生变化会阻断生效。
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
-- 基础平台认证适配器通过 `/api/v1/auth/me` 校验配置的浏览器会话 Cookie（默认 `bp_session`），不接受客户端伪造的用户或租户 ID。
+- 按平台接入规范实现 OIDC Authorization Code + PKCE：独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并建立仅作用于子路径的 `contract_management_session`，不共享平台 `bp_session`。
 - 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
-- 接入基础平台 Compose 后，统一门户通过 `/contract/api/v1` 访问合同 API；合同 API 和数据库不直接暴露公网端口。
+- 合同服务自身提供 `/`、`/auth/login`、`/auth/callback`、`/auth/logout` 和合同台账页面；统一门户通过 `/contract/` 访问，合同 API、数据库和 Temporal 不直接暴露宿主机端口。
 
 ## 目录
 
@@ -25,7 +25,7 @@ internal/domain/approval        审批模型与规则表达式引擎
 internal/workflows              Temporal Workflows / Activities
 internal/application            用例、权限和工作流启动/Signal
 internal/infrastructure/mysql   GORM 模型、事务存储与 outbox
-internal/infrastructure/platform 基础平台会话校验
+internal/infrastructure/platform OIDC、独立会话与平台审计
 internal/transport/httpapi      Gin REST API
 migrations                      MySQL DDL
 ```
@@ -44,7 +44,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 
 ## HTTP API
 
-所有业务接口都需要平台 Cookie；成功/失败响应遵循 `{code,message,request_id,data}`。
+所有业务接口都需要合同系统自己的 OIDC 本地会话；成功/失败响应遵循 `{code,message,request_id,data}`。
 
 | 方法 | 路径 | 权限 | 行为 |
 |---|---|---|---|
@@ -72,20 +72,20 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 要求 Go 1.25.4+、MySQL 8.4+ 和 Temporal Server。复制配置后启动基础依赖：
 
 ```bash
-cp .env.example .env
-docker compose up -d mysql temporal temporal-ui
-set -a; source .env; set +a
+cp .env.example .env.local
+# 填入平台“一键接入”返回的 Client ID、一次性 Secret、Tenant ID 和精确回调地址。
+docker compose --env-file .env.local up -d --build
 go run ./cmd/worker
 go run ./cmd/api
 ```
 
-MySQL 初始化会执行 `migrations/000001_contract_workflow.sql`。Temporal UI 位于 `http://localhost:8233`。API 默认 `:8081`，基础平台默认 `http://localhost:8080`；部署时由网关把合同路径转发至本服务。
+MySQL 初始化会执行 `migrations/000001_contract_workflow.sql`。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关把 `/contract/` 前缀转发至本服务并去除前缀。
 
 审批人按角色在 `APPROVER_ROLE_ASSIGNMENTS_JSON` 中配置，值必须使用平台用户 ULID。生产环境建议由配置中心下发；不要在镜像或仓库中保存真实人员 ID、Temporal API Key 或数据库密码。
 
-平台会话 Cookie 名称由 `AUTH_SESSION_COOKIE_NAME` 配置，默认 `bp_session`。审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。通知 outbox 不会直接调用平台通知控制面，因为当前机器 Token 的已发布权限边界仅包含审计写入。
+OIDC 浏览器 Client 与审计机器 Client 必须分离。浏览器 OIDC 配置来自平台“一键接入”，审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。通知 outbox 不会直接调用平台通知控制面，因为当前机器 Token 的已发布权限边界仅包含审计写入。
 
-基础平台通过迁移注册 `contract_management/dev` 应用环境和合同权限，并由动态网关把 `/contract/` 前缀转发到合同 API。首次启用审计时，应在平台的 OAuth 客户端管理中为该应用创建 `service + client_secret_basic + client_credentials` 客户端，授予 `audit.ingest` scope，再把一次性返回的 Client ID/Secret 注入 `CONTRACT_PLATFORM_AUDIT_CLIENT_ID` 和 `CONTRACT_PLATFORM_AUDIT_CLIENT_SECRET`。
+平台管理员应通过“子系统一键接入”注册 `contract-management/dev`，公开 BaseURL 使用门户地址，UpstreamURL 使用 `http://contract-api:8081`，路径前缀使用 `/contract`。首次启用审计时，应另行创建 `service + client_secret_basic + client_credentials` 客户端并授予 `audit.ingest` scope。
 
 Temporal Cloud 可设置 `TEMPORAL_TLS=true`、`TEMPORAL_API_KEY`、命名空间和地址。API Key 会通过 SDK Credentials 注入，不写入 Workflow history。
 

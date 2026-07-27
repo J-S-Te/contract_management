@@ -24,6 +24,12 @@ type Identity interface {
 	Authenticate(context.Context, *http.Request) (application.Principal, error)
 }
 
+type OIDCFlow interface {
+	Login(http.ResponseWriter, *http.Request)
+	Callback(http.ResponseWriter, *http.Request)
+	Logout(http.ResponseWriter, *http.Request)
+}
+
 type Handler struct {
 	service  *application.Service
 	identity Identity
@@ -38,6 +44,13 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	h := &Handler{service: service, identity: identity, audit: audit}
 	r := gin.New()
 	r.Use(requestID(), recoverer())
+	if oidcFlow, ok := identity.(OIDCFlow); ok {
+		r.GET("/", h.webHome)
+		r.GET("/auth/login", func(c *gin.Context) { oidcFlow.Login(c.Writer, c.Request) })
+		r.GET("/auth/callback", func(c *gin.Context) { oidcFlow.Callback(c.Writer, c.Request) })
+		r.GET("/auth/logout", func(c *gin.Context) { oidcFlow.Logout(c.Writer, c.Request) })
+		r.GET("/logged-out", h.loggedOut)
+	}
 	r.GET("/healthz", func(c *gin.Context) {
 		writeJSON(c, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up"}})
 	})

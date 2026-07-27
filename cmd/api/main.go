@@ -41,7 +41,18 @@ func main() {
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
 	service := &application.Service{Repo: repository, Temporal: temporalClient, Approvers: cfg.Approvers, TaskQueue: cfg.TemporalTaskQueue, NodeTimeout: cfg.NodeTimeout, ReminderInterval: cfg.ReminderInterval}
-	identity := platform.NewAuthenticator(cfg.PlatformBaseURL, cfg.PlatformSessionCookieName)
+	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
+		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
+		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
+		RedirectURI: cfg.OIDCRedirectURI, PostLogoutRedirectURI: cfg.OIDCPostLogoutRedirectURI,
+		Scopes: cfg.OIDCScopes, TenantID: cfg.OIDCTenantID, SessionCookieName: cfg.OIDCSessionCookieName,
+		SessionTTL: cfg.OIDCSessionTTL, SessionSecure: cfg.OIDCSessionSecure,
+		PathPrefix: cfg.AppPathPrefix, DefaultPermissions: cfg.OIDCDefaultPermissions,
+	})
+	if err != nil {
+		logger.Error("OIDC discovery failed", "error", err)
+		os.Exit(1)
+	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
 		Handler:           httpapi.NewRouter(service, identity, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)),
