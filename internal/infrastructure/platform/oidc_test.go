@@ -17,7 +17,7 @@ func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
 		options: OIDCOptions{
 			SessionCookieName: "contract_management_session",
 			SessionTTL:        time.Hour,
-			PathPrefix:        "/contract",
+			PathPrefix:        "/contract_management",
 		},
 		now:          func() time.Time { return now },
 		transactions: make(map[string]loginTransaction),
@@ -45,11 +45,11 @@ func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
 
 func TestOIDCSessionCookieIsScopedToSubsystem(t *testing.T) {
 	authenticator := &OIDCAuthenticator{options: OIDCOptions{
-		SessionCookieName: "contract_management_session", PathPrefix: "/contract",
+		SessionCookieName: "contract_management_session", PathPrefix: "/contract_management",
 		SessionSecure: true,
 	}}
 	cookie := authenticator.sessionCookie("session", time.Now().Add(time.Hour))
-	if cookie.Path != "/contract" || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
+	if cookie.Path != "/contract_management" || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie = %#v", cookie)
 	}
 }
