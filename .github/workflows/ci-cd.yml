@@ -8,10 +8,9 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: contract-management-${{ github.ref }}
+  group: contract-management-${{ github.event_name == 'pull_request' && github.ref || 'test' }}
   cancel-in-progress: false
 
 jobs:
@@ -27,9 +26,12 @@ jobs:
       - run: go vet ./...
 
   image:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     outputs:
       image_ref: ${{ steps.result.outputs.image_ref }}
     steps:
@@ -61,10 +63,10 @@ jobs:
         run: echo "image_ref=${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: image
     runs-on: ubuntu-latest
-    environment: production
+    environment: test
     steps:
       - name: Deploy immutable contract-management image
         shell: bash
