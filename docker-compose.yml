@@ -4,10 +4,11 @@ x-contract-environment: &contract-environment
   env_file:
     - ${CONTRACT_RUNTIME_ENV_FILE:-./.env.local}
   environment:
-    MYSQL_DSN: contract:${CONTRACT_MYSQL_PASSWORD}@tcp(mysql:3306)/contract_management?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
-    PLATFORM_BASE_URL: http://api:8080
-    OIDC_BACKCHANNEL_BASE_URL: http://api:8080
+    MYSQL_DSN: contract:${CONTRACT_MYSQL_PASSWORD}@tcp(contract-mysql:3306)/contract_management?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
+    PLATFORM_BASE_URL: http://platform-api:8080
+    OIDC_BACKCHANNEL_BASE_URL: http://platform-api:8080
     TEMPORAL_ADDRESS: temporal:7233
+    CONTRACT_RUN_WORKER_WITH_API: "true"
     GIN_MODE: release
 
 services:
@@ -29,6 +30,10 @@ services:
       timeout: 5s
       retries: 30
       start_period: 20s
+    networks:
+      default:
+        aliases:
+          - contract-mysql
     restart: unless-stopped
 
   temporal:
@@ -78,6 +83,7 @@ services:
     restart: unless-stopped
 
   worker:
+    profiles: ["split-runtime"]
     <<: *contract-environment
     image: contract-management:local
     command: ["./worker"]

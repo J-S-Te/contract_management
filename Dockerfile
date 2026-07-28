@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 FROM golang:1.26.4-alpine AS builder
 
@@ -20,7 +19,11 @@ WORKDIR /app
 
 COPY --from=builder /out/api ./api
 COPY --from=builder /out/worker ./worker
+COPY docker-entrypoint.sh /usr/local/bin/contract-management-entrypoint
+
+RUN chmod +x /usr/local/bin/contract-management-entrypoint
 
 EXPOSE 8081
 
+ENTRYPOINT ["/usr/local/bin/contract-management-entrypoint"]
 CMD ["./api"]

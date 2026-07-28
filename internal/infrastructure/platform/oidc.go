@@ -273,6 +273,11 @@ func (a *OIDCAuthenticator) sessionCookie(value string, expires time.Time) *http
 	}
 }
 
+// PublicPath returns a browser-facing path under the configured portal prefix.
+func (a *OIDCAuthenticator) PublicPath(path string) string {
+	return a.publicPath(path)
+}
+
 func (a *OIDCAuthenticator) publicPath(path string) string {
 	prefix := strings.TrimRight(a.options.PathPrefix, "/")
 	if path == "/" {

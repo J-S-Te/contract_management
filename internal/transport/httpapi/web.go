@@ -10,7 +10,11 @@ import (
 func (h *Handler) webHome(c *gin.Context) {
 	if _, err := h.identity.Authenticate(c.Request.Context(), c.Request); err != nil {
 		if err == platform.ErrUnauthenticated {
-			c.Redirect(http.StatusFound, "auth/login")
+			loginPath := "/auth/login"
+			if resolver, ok := h.identity.(PublicPathResolver); ok {
+				loginPath = resolver.PublicPath(loginPath)
+			}
+			c.Redirect(http.StatusFound, loginPath)
 			return
 		}
 		c.String(http.StatusServiceUnavailable, "身份服务暂不可用")

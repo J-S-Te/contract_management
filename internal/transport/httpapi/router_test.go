@@ -72,3 +72,35 @@ func TestInvalidJSONDoesNotReachService(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnprocessableEntity, response.Body.String())
 	}
 }
+
+type prefixedOIDCIdentity struct {
+	identityFunc
+	prefix string
+}
+
+func (identity prefixedOIDCIdentity) Login(http.ResponseWriter, *http.Request)    {}
+func (identity prefixedOIDCIdentity) Callback(http.ResponseWriter, *http.Request) {}
+func (identity prefixedOIDCIdentity) Logout(http.ResponseWriter, *http.Request)   {}
+func (identity prefixedOIDCIdentity) PublicPath(path string) string {
+	return strings.TrimRight(identity.prefix, "/") + "/" + strings.TrimLeft(path, "/")
+}
+
+func TestWebHomeRedirectPreservesPortalPrefix(t *testing.T) {
+	identity := prefixedOIDCIdentity{
+		identityFunc: func(context.Context, *http.Request) (application.Principal, error) {
+			return application.Principal{}, platform.ErrUnauthenticated
+		},
+		prefix: "/contract_management",
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+
+	NewRouter(nil, identity).ServeHTTP(response, request)
+
+	if response.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusFound)
+	}
+	if location := response.Header().Get("Location"); location != "/contract_management/auth/login" {
+		t.Fatalf("Location = %q, want %q", location, "/contract_management/auth/login")
+	}
+}
