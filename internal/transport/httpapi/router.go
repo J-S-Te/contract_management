@@ -30,6 +30,10 @@ type OIDCFlow interface {
 	Logout(http.ResponseWriter, *http.Request)
 }
 
+type PublicPathResolver interface {
+	PublicPath(string) string
+}
+
 type Handler struct {
 	service  *application.Service
 	identity Identity

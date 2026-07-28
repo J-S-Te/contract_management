@@ -80,3 +80,10 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
 }
+
+func TestOIDCPublicPathUsesConfiguredPortalPrefix(t *testing.T) {
+	authenticator := &OIDCAuthenticator{options: OIDCOptions{PathPrefix: "/contract_management"}}
+	if got := authenticator.PublicPath("/auth/login"); got != "/contract_management/auth/login" {
+		t.Fatalf("PublicPath() = %q, want %q", got, "/contract_management/auth/login")
+	}
+}
