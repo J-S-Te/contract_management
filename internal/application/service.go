@@ -85,11 +85,11 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	if err != nil {
 		return StartResult{}, err
 	}
+	if c.OwnerUserID != actor.UserID {
+		return StartResult{}, ErrForbidden
+	}
 	if c.Status != contract.StatusDraft {
 		return StartResult{}, apperrors.ErrStateConflict
-	}
-	if c.OwnerUserID != actor.UserID && !actor.Has("contract.manage") {
-		return StartResult{}, ErrForbidden
 	}
 	rules, err := s.Repo.ListEnabledRules(ctx, actor.TenantID)
 	if err != nil {
@@ -128,6 +128,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	c, err := s.Repo.GetContract(ctx, actor.TenantID, contractID)
 	if err != nil {
 		return StartResult{}, err
+	}
+	if c.OwnerUserID != actor.UserID {
+		return StartResult{}, ErrForbidden
 	}
 	if c.Version != version {
 		return StartResult{}, apperrors.ErrVersionConflict
@@ -217,24 +220,20 @@ func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (
 	if err != nil {
 		return c, err
 	}
-	if c.OwnerUserID != actor.UserID && !actor.Has("contract.manage") {
+	if c.OwnerUserID != actor.UserID {
 		return contract.Contract{}, ErrForbidden
 	}
 	return c, nil
 }
 
-func (s *Service) ListContracts(ctx context.Context, actor Principal, ownerUserID, status string, limit int) ([]contract.Contract, error) {
+func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, status string, limit int) ([]contract.Contract, error) {
 	if !actor.Has("contract.read") {
 		return nil, ErrForbidden
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	effectiveOwner := ownerUserID
-	if !actor.Has("contract.manage") {
-		effectiveOwner = actor.UserID
-	}
-	return s.Repo.ListContracts(ctx, actor.TenantID, effectiveOwner, status, limit)
+	return s.Repo.ListContracts(ctx, actor.TenantID, actor.UserID, status, limit)
 }
 
 func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Rule, error) {

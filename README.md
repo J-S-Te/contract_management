@@ -27,8 +27,13 @@ internal/application            用例、权限和工作流启动/Signal
 internal/infrastructure/mysql   GORM 模型、事务存储与 outbox
 internal/infrastructure/platform OIDC、独立会话与平台审计
 internal/transport/httpapi      Gin REST API
+authz/permission-manifest.yaml  版本化权限、角色、数据范围和平台兼容性清单
 migrations                      MySQL DDL
 ```
+
+权限清单以 `authz/permission-manifest.yaml` 为合同后端权限语义的版本化来源。基础平台同步权限目录、管理角色分配或签发授权 Claims 时，应校验清单版本和 `compatibility.platform_catalog_must_include`；前端菜单权限不能替代本清单标记的后端执行点。
+
+合同数据范围固定为负责人本人：任何角色都不能查询、读取、提交或变更非本人负责的合同，系统不定义管理全部合同的数据权限。审批人通过审批任务处理流程，不因此获得合同台账的全量访问权。
 
 Temporal Workflow 只做确定性编排，时间使用 `workflow.Now/NewTimer`；数据库、通知和审计事实都由可重试 Activity 完成。持久化统一使用 GORM，悲观锁使用 `clause.Locking`，幂等写入使用 `clause.OnConflict`；生产表结构仍以显式 SQL 迁移为准，不在服务启动时执行 `AutoMigrate`。
 
@@ -49,7 +54,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | 方法 | 路径 | 权限 | 行为 |
 |---|---|---|---|
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
-| GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；普通用户只能读取自己的合同 |
+| GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |
 | POST | `/api/v1/contracts/{id}/status-changes` | `contract.edit` | 直接流转或启动关键状态审批 |
 | GET | `/api/v1/approvals/tasks` | `approval.process` | 当前用户待办 |

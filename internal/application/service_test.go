@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/j-s-te/contract-management/internal/domain/approval"
@@ -10,10 +11,11 @@ import (
 
 type recordingRepository struct {
 	ownerUserID string
+	contract    contract.Contract
 }
 
 func (r *recordingRepository) GetContract(context.Context, string, string) (contract.Contract, error) {
-	return contract.Contract{}, nil
+	return r.contract, nil
 }
 
 func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _ string, _ int) ([]contract.Contract, error) {
@@ -74,7 +76,7 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	}
 }
 
-func TestListContractsAllowsManagerOwnerFilter(t *testing.T) {
+func TestListContractsIgnoresRequestedOwnerEvenWithLegacyManagerPermission(t *testing.T) {
 	repository := &recordingRepository{}
 	service := &Service{Repo: repository}
 	actor := Principal{
@@ -89,7 +91,41 @@ func TestListContractsAllowsManagerOwnerFilter(t *testing.T) {
 	if _, err := service.ListContracts(context.Background(), actor, "user-2", "", 50); err != nil {
 		t.Fatalf("ListContracts() error = %v", err)
 	}
-	if repository.ownerUserID != "user-2" {
-		t.Fatalf("owner filter = %q, want requested owner", repository.ownerUserID)
+	if repository.ownerUserID != actor.UserID {
+		t.Fatalf("owner filter = %q, want authenticated user %q", repository.ownerUserID, actor.UserID)
+	}
+}
+
+func TestGetContractRejectsNonOwnerEvenWithLegacyManagerPermission(t *testing.T) {
+	repository := &recordingRepository{contract: contract.Contract{OwnerUserID: "user-2"}}
+	service := &Service{Repo: repository}
+	actor := Principal{
+		TenantID: "tenant-1",
+		UserID:   "manager-1",
+		Permissions: map[string]bool{
+			"contract.read":   true,
+			"contract.manage": true,
+		},
+	}
+
+	if _, err := service.GetContract(context.Background(), actor, "contract-1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("GetContract() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestSubmitContractRejectsNonOwnerEvenWithLegacyManagerPermission(t *testing.T) {
+	repository := &recordingRepository{contract: contract.Contract{OwnerUserID: "user-2", Status: contract.StatusDraft}}
+	service := &Service{Repo: repository}
+	actor := Principal{
+		TenantID: "tenant-1",
+		UserID:   "manager-1",
+		Permissions: map[string]bool{
+			"contract.create": true,
+			"contract.manage": true,
+		},
+	}
+
+	if _, err := service.SubmitContract(context.Background(), actor, "contract-1", true); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("SubmitContract() error = %v, want ErrForbidden", err)
 	}
 }

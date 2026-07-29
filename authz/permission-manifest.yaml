@@ -1,0 +1,190 @@
+api_version: authz.contract-management/v1
+kind: PermissionManifest
+
+metadata:
+  application_code: contract_management
+  name: 合同管理系统
+  version: 2
+  owner: contract_management
+  description: 合同管理后端当前实际执行的权限、角色和数据范围清单
+
+semantics:
+  default_decision: DENY
+  permission_match: EXACT
+  tenant_isolation: REQUIRED
+  superuser_wildcard: UNSUPPORTED
+  notes:
+    - 权限码必须精确匹配；后端当前不把 all 解释为通配权限。
+    - 角色用于聚合权限，最终授权必须同时满足权限、数据范围和业务状态约束。
+    - 前端菜单和按钮仅用于展示，不能替代后端授权。
+
+permissions:
+  - code: contract.read
+    name: 查看合同
+    resource: contract
+    action: read
+    risk_level: LOW
+    enforced_by:
+      - GET /api/v1/contracts
+      - GET /api/v1/contracts/{contract_id}
+    constraints:
+      - 始终限制在当前 tenant_id
+      - 任何角色都仅允许读取 owner_user_id 为当前用户的合同
+
+  - code: contract.create
+    name: 创建和提交合同
+    resource: contract
+    action: create
+    risk_level: MEDIUM
+    enforced_by:
+      - POST /api/v1/contracts
+      - POST /api/v1/contracts/{contract_id}/submit-approval
+    constraints:
+      - 新合同的 tenant_id 和 owner_user_id 由当前会话确定
+      - 任何角色都不能提交非本人合同
+
+  - code: contract.edit
+    name: 变更合同状态
+    resource: contract
+    action: update
+    risk_level: MEDIUM
+    enforced_by:
+      - POST /api/v1/contracts/{contract_id}/status-changes
+    constraints:
+      - 必须通过合同状态机校验
+      - 必须通过乐观锁版本校验
+      - 任何角色都不能变更非本人合同
+
+  - code: approval.view
+    name: 查看审批
+    resource: approval
+    action: read
+    risk_level: LOW
+    enforced_by:
+      - GET /api/v1/approvals/{approval_id}
+      - GET /api/v1/approval-rules
+      - POST /api/v1/approvals/{approval_id}/comments
+    constraints:
+      - 审批申请人无需此权限即可查看自己的审批和发表评论
+
+  - code: approval.process
+    name: 处理审批
+    resource: approval
+    action: process
+    risk_level: HIGH
+    enforced_by:
+      - GET /api/v1/approvals/tasks
+      - POST /api/v1/approvals/{approval_id}/approve
+      - POST /api/v1/approvals/{approval_id}/reject
+      - POST /api/v1/approvals/{approval_id}/sign
+      - POST /api/v1/approvals/{approval_id}/transfer
+      - POST /api/v1/approvals/{approval_id}/return
+    constraints:
+      - 待办列表仅返回 assignee_user_id 为当前用户的活动任务
+      - Workflow 必须再次校验当前处理人和审批状态
+
+  - code: approval.manage
+    name: 管理审批
+    resource: approval
+    action: manage
+    risk_level: HIGH
+    enforced_by:
+      - POST /api/v1/approvals/{approval_id}/urge
+    constraints:
+      - 审批申请人无需此权限即可催办自己的审批
+
+  - code: approval_rule.manage
+    name: 管理审批规则
+    resource: approval_rule
+    action: manage
+    risk_level: HIGH
+    enforced_by:
+      - GET /api/v1/approval-rules
+      - POST /api/v1/approval-rules
+      - PUT /api/v1/approval-rules/{rule_id}
+      - DELETE /api/v1/approval-rules/{rule_id}
+    constraints:
+      - 更新和删除必须通过乐观锁版本校验
+
+roles:
+  - code: admin
+    name: 超级管理员
+    permissions:
+      - contract.read
+      - contract.create
+      - contract.edit
+      - approval.view
+      - approval.process
+      - approval.manage
+      - approval_rule.manage
+
+  - code: sales_director
+    name: 销售总监
+    permissions:
+      - contract.read
+      - approval.view
+      - approval.process
+
+  - code: tech_director
+    name: 技术总监
+    permissions:
+      - contract.read
+      - approval.view
+      - approval.process
+
+  - code: finance_director
+    name: 财务总监
+    permissions:
+      - contract.read
+      - approval.view
+      - approval.process
+
+  - code: sales
+    name: 销售人员
+    permissions:
+      - contract.read
+      - contract.create
+      - contract.edit
+
+  - code: audit_admin
+    name: 审计管理员
+    permissions:
+      - contract.read
+      - approval.view
+
+data_scopes:
+  - code: SELF
+    name: 本人合同
+    applies_when:
+      permission: contract.read
+    predicate: contract.owner_user_id == subject.user_id
+
+subject_claims:
+  required:
+    - sub
+    - tenant_id
+    - permissions
+    - authz_revision
+  optional:
+    - roles
+    - role_config_hash
+
+external_scopes:
+  - code: audit.ingest
+    principal_type: SERVICE
+    purpose: 合同服务向基础平台上报写操作审计
+    assignment: 独立的机器 OAuth Client
+
+compatibility:
+  platform_catalog_must_include:
+    - contract.read
+    - contract.create
+    - contract.edit
+    - approval.view
+    - approval.process
+    - approval.manage
+    - approval_rule.manage
+  known_gaps:
+    - 当前合同 OIDC 回调尚未消费 Token 中的 permissions 和 authz_revision
+    - 基础平台当前 SYS-004 目录缺少 approval.manage、approval_rule.manage
+    - 合同数据范围有意固定为 SELF，不提供部门、组织子树或全租户管理范围
