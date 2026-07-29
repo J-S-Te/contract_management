@@ -27,7 +27,6 @@ type Config struct {
 	OIDCSessionCookieName     string
 	OIDCSessionTTL            time.Duration
 	OIDCSessionSecure         bool
-	OIDCDefaultPermissions    []string
 	AppPublicURL              string
 	AppPathPrefix             string
 	PlatformAuditClientID     string
@@ -53,9 +52,8 @@ func Load() (Config, error) {
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
-		OIDCSessionCookieName:  env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
-		OIDCDefaultPermissions: fields(os.Getenv("OIDC_DEFAULT_PERMISSIONS")),
-		AppPublicURL:           os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
+		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
+		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
 		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
 		TemporalAddress: env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
 		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"),

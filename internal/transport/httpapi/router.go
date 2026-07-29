@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 		writeJSON(c, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up"}})
 	})
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
+	api.GET("/auth/me", h.me)
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/contracts/:contractID", h.getContract)
@@ -74,6 +76,26 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 		api.POST("/approvals/:approvalID/"+action, h.command(action))
 	}
 	return r
+}
+
+func (h *Handler) me(c *gin.Context) {
+	p := principal(c)
+	permissions := make([]string, 0, len(p.Permissions))
+	for permission, granted := range p.Permissions {
+		if granted {
+			permissions = append(permissions, permission)
+		}
+	}
+	sort.Strings(permissions)
+	roles := append([]string(nil), p.Roles...)
+	role := map[string]string{}
+	if len(roles) > 0 {
+		role["code"] = roles[0]
+	}
+	writeData(c, http.StatusOK, map[string]any{
+		"tenant_id": p.TenantID, "user_id": p.UserID, "role": role, "roles": roles,
+		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,
+	})
 }
 
 func (h *Handler) auditWrites() gin.HandlerFunc {

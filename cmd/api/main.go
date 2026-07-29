@@ -47,7 +47,7 @@ func main() {
 		RedirectURI: cfg.OIDCRedirectURI, PostLogoutRedirectURI: cfg.OIDCPostLogoutRedirectURI,
 		Scopes: cfg.OIDCScopes, TenantID: cfg.OIDCTenantID, SessionCookieName: cfg.OIDCSessionCookieName,
 		SessionTTL: cfg.OIDCSessionTTL, SessionSecure: cfg.OIDCSessionSecure,
-		PathPrefix: cfg.AppPathPrefix, DefaultPermissions: cfg.OIDCDefaultPermissions,
+		PathPrefix: cfg.AppPathPrefix,
 	})
 	if err != nil {
 		logger.Error("OIDC discovery failed", "error", err)

@@ -87,3 +87,45 @@ func TestOIDCPublicPathUsesConfiguredPortalPrefix(t *testing.T) {
 		t.Fatalf("PublicPath() = %q, want %q", got, "/contract_management/auth/login")
 	}
 }
+
+func TestPrincipalFromPlatformClaimsUsesPlatformAuthorization(t *testing.T) {
+	principal, err := principalFromPlatformClaims(platformIDTokenClaims{
+		Subject: "user-1", TenantID: "tenant-1", Roles: []string{"sales"},
+		Permissions:    []string{"contract.read", "contract.create"},
+		RoleConfigHash: "hash-1", AuthzRevision: 7,
+	}, "tenant-1")
+	if err != nil {
+		t.Fatalf("principalFromPlatformClaims() error = %v", err)
+	}
+	if principal.UserID != "user-1" || principal.TenantID != "tenant-1" ||
+		!principal.Has("contract.read") || principal.Has("approval.process") ||
+		principal.AuthzRevision != 7 || principal.RoleConfigHash != "hash-1" {
+		t.Fatalf("principal = %#v", principal)
+	}
+}
+
+func TestPrincipalFromPlatformClaimsRejectsTenantMismatch(t *testing.T) {
+	_, err := principalFromPlatformClaims(platformIDTokenClaims{
+		Subject: "user-1", TenantID: "tenant-2", Roles: []string{"sales"},
+		Permissions: []string{"contract.read"}, RoleConfigHash: "hash-1", AuthzRevision: 1,
+	}, "tenant-1")
+	if err == nil {
+		t.Fatal("principalFromPlatformClaims() error = nil, want tenant mismatch")
+	}
+}
+
+func TestPrincipalFromPlatformClaimsExpandsAdminActionsWithoutDataScopePermission(t *testing.T) {
+	principal, err := principalFromPlatformClaims(platformIDTokenClaims{
+		Subject: "admin-1", TenantID: "tenant-1", Roles: []string{"admin"},
+		Permissions: []string{"all"}, RoleConfigHash: "hash-1", AuthzRevision: 2,
+	}, "tenant-1")
+	if err != nil {
+		t.Fatalf("principalFromPlatformClaims() error = %v", err)
+	}
+	if !principal.Has("contract.create") || !principal.Has("approval_rule.manage") {
+		t.Fatalf("admin permissions were not expanded: %#v", principal.Permissions)
+	}
+	if principal.Has("contract.manage") {
+		t.Fatal("admin unexpectedly received retired contract.manage data-scope permission")
+	}
+}

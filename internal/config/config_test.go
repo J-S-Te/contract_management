@@ -19,7 +19,6 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("OIDC_SESSION_COOKIE_NAME", "contract_management_session")
 	t.Setenv("OIDC_SESSION_COOKIE_SECURE", "false")
 	t.Setenv("OIDC_SESSION_TTL", "8h")
-	t.Setenv("OIDC_DEFAULT_PERMISSIONS", "contract.read")
 	t.Setenv("APP_PUBLIC_URL", "http://localhost:8081/contract_management/")
 	t.Setenv("APP_PATH_PREFIX", "/contract_management")
 	t.Setenv("TEMPORAL_ADDRESS", "localhost:7233")

@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 2
+  version: 3
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -163,11 +163,10 @@ subject_claims:
   required:
     - sub
     - tenant_id
-    - permissions
-    - authz_revision
-  optional:
     - roles
+    - permissions
     - role_config_hash
+    - authz_revision
 
 external_scopes:
   - code: audit.ingest
@@ -185,6 +184,5 @@ compatibility:
     - approval.manage
     - approval_rule.manage
   known_gaps:
-    - 当前合同 OIDC 回调尚未消费 Token 中的 permissions 和 authz_revision
     - 基础平台当前 SYS-004 目录缺少 approval.manage、approval_rule.manage
     - 合同数据范围有意固定为 SELF，不提供部门、组织子树或全租户管理范围

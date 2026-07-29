@@ -34,7 +34,6 @@ type OIDCOptions struct {
 	SessionTTL            time.Duration
 	SessionSecure         bool
 	PathPrefix            string
-	DefaultPermissions    []string
 }
 
 type loginTransaction struct {
@@ -47,6 +46,28 @@ type localSession struct {
 	Principal application.Principal
 	IDToken   string
 	ExpiresAt time.Time
+}
+
+type platformIDTokenClaims struct {
+	Subject        string   `json:"sub"`
+	Nonce          string   `json:"nonce"`
+	TenantID       string   `json:"tenant_id"`
+	Roles          []string `json:"roles"`
+	Permissions    []string `json:"permissions"`
+	RoleConfigHash string   `json:"role_config_hash"`
+	AuthzRevision  uint64   `json:"authz_revision"`
+}
+
+// platformAllPermissions is the contract-side expansion of the platform's protected SYS-004
+// admin marker. It grants actions only; contract data remains owner-scoped in the application
+// service for every role.
+var platformAllPermissions = []string{
+	"dashboard",
+	"contract.read", "contract.create", "contract.edit", "contract.delete",
+	"customer.read", "customer.create", "customer.edit", "customer.delete",
+	"contract_type.manage", "contract_template.read", "contract_template.manage",
+	"approval.view", "approval.process", "approval.manage", "approval_rule.manage",
+	"user.manage", "audit.view", "audit.read",
 }
 
 // OIDCAuthenticator owns the contract system's OIDC login transactions and independent local
@@ -180,12 +201,14 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "OIDC ID token verification failed", http.StatusUnauthorized)
 		return
 	}
-	var claims struct {
-		Subject string `json:"sub"`
-		Nonce   string `json:"nonce"`
-	}
-	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" || claims.Nonce != transaction.Nonce {
+	var claims platformIDTokenClaims
+	if err := idToken.Claims(&claims); err != nil || claims.Nonce != transaction.Nonce {
 		http.Error(writer, "OIDC ID token claims are invalid", http.StatusUnauthorized)
+		return
+	}
+	principal, err := principalFromPlatformClaims(claims, a.options.TenantID)
+	if err != nil {
+		http.Error(writer, "OIDC authorization claims are invalid", http.StatusUnauthorized)
 		return
 	}
 
@@ -194,15 +217,9 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "cannot create local session", http.StatusInternalServerError)
 		return
 	}
-	permissions := make(map[string]bool, len(a.options.DefaultPermissions))
-	for _, permission := range a.options.DefaultPermissions {
-		permissions[permission] = true
-	}
 	session := localSession{
-		Principal: application.Principal{
-			TenantID: a.options.TenantID, UserID: claims.Subject, Permissions: permissions,
-		},
-		IDToken: rawIDToken, ExpiresAt: now.Add(a.options.SessionTTL),
+		Principal: principal,
+		IDToken:   rawIDToken, ExpiresAt: now.Add(a.options.SessionTTL),
 	}
 	a.mutex.Lock()
 	a.cleanupLocked(now)
@@ -210,6 +227,46 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 	a.mutex.Unlock()
 	http.SetCookie(writer, a.sessionCookie(sessionID, session.ExpiresAt))
 	http.Redirect(writer, request, a.publicPath("/"), http.StatusFound)
+}
+
+func principalFromPlatformClaims(claims platformIDTokenClaims, expectedTenantID string) (application.Principal, error) {
+	if strings.TrimSpace(claims.Subject) == "" || claims.Subject != strings.TrimSpace(claims.Subject) {
+		return application.Principal{}, errors.New("OIDC subject is missing or malformed")
+	}
+	if claims.TenantID == "" || claims.TenantID != expectedTenantID {
+		return application.Principal{}, errors.New("OIDC tenant does not match the configured tenant")
+	}
+	if len(claims.Roles) == 0 || claims.RoleConfigHash == "" || claims.AuthzRevision == 0 {
+		return application.Principal{}, errors.New("OIDC authorization metadata is incomplete")
+	}
+	roles := make([]string, 0, len(claims.Roles))
+	seenRoles := make(map[string]bool, len(claims.Roles))
+	for _, role := range claims.Roles {
+		if role == "" || role != strings.TrimSpace(role) || seenRoles[role] {
+			return application.Principal{}, errors.New("OIDC roles are malformed")
+		}
+		seenRoles[role] = true
+		roles = append(roles, role)
+	}
+	if len(claims.Permissions) == 0 {
+		return application.Principal{}, errors.New("OIDC permissions are missing")
+	}
+	permissions := make(map[string]bool, len(claims.Permissions)+len(platformAllPermissions))
+	for _, permission := range claims.Permissions {
+		if permission == "" || permission != strings.TrimSpace(permission) {
+			return application.Principal{}, errors.New("OIDC permissions are malformed")
+		}
+		permissions[permission] = true
+	}
+	if permissions["all"] {
+		for _, permission := range platformAllPermissions {
+			permissions[permission] = true
+		}
+	}
+	return application.Principal{
+		TenantID: claims.TenantID, UserID: claims.Subject, Roles: roles, Permissions: permissions,
+		RoleConfigHash: claims.RoleConfigHash, AuthzRevision: claims.AuthzRevision,
+	}, nil
 }
 
 type backchannelTransport struct {

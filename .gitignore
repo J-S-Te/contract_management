@@ -1,5 +1,6 @@
 /bin/
 /.env
+/.github/environments/*.env
 /coverage.out
 *.log
 .DS_Store

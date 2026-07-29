@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,6 +56,42 @@ func TestAuthenticationFailureAbortsGinHandlerChain(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnauthorized, response.Body.String())
+	}
+}
+
+func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
+	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
+		return application.Principal{
+			TenantID: "tenant-1", UserID: "user-1", Roles: []string{"sales"},
+			Permissions:    map[string]bool{"contract.create": true, "contract.read": true},
+			RoleConfigHash: "hash-1", AuthzRevision: 9,
+		}, nil
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	response := httptest.NewRecorder()
+
+	NewRouter(nil, identity).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var body struct {
+		Data struct {
+			TenantID       string            `json:"tenant_id"`
+			UserID         string            `json:"user_id"`
+			Role           map[string]string `json:"role"`
+			Permissions    []string          `json:"permissions"`
+			RoleConfigHash string            `json:"role_config_hash"`
+			AuthzRevision  uint64            `json:"authz_revision"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.TenantID != "tenant-1" || body.Data.UserID != "user-1" ||
+		body.Data.Role["code"] != "sales" || body.Data.AuthzRevision != 9 ||
+		body.Data.RoleConfigHash != "hash-1" || len(body.Data.Permissions) != 2 {
+		t.Fatalf("data = %#v", body.Data)
 	}
 }
 

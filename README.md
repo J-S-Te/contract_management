@@ -11,7 +11,7 @@
 - 提交时固化规则版本、节点和合同 SHA-256；运行中规则变更不影响既有流程，审批完成前合同内容发生变化会阻断生效。
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
-- 按平台接入规范实现 OIDC Authorization Code + PKCE：独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并建立仅作用于子路径的 `contract_management_session`，不共享平台 `bp_session`。
+- 按平台接入规范实现 OIDC Authorization Code + PKCE：独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验平台签发的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`，不共享平台 `bp_session`。
 - 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
 - 合同服务自身提供 `/`、`/auth/login`、`/auth/callback`、`/auth/logout` 和合同台账页面；统一门户通过 `/contract_management/` 访问，合同 API、数据库和 Temporal 不直接暴露宿主机端口。
 
@@ -53,6 +53,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 
 | 方法 | 路径 | 权限 | 行为 |
 |---|---|---|---|
+| GET | `/api/v1/auth/me` | 已登录 | 返回平台授权快照，用于前端菜单和按钮展示 |
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |
@@ -104,6 +105,39 @@ make build
 ```
 
 领域测试覆盖合法/非法状态流转与规则优先级；Temporal 测试覆盖三级通过、撤回和关键状态审批通过。数据库集成测试应在 CI 中对迁移后的 MySQL 执行。
+
+## 自动部署
+
+`main` 分支推送通过测试后，GitHub Actions 会构建 `linux/amd64` 镜像，推送到 GHCR，并使用镜像摘要自动部署到 `115.159.219.156`。部署任务固定使用 GitHub `test` Environment；仓库需要配置：
+
+- Environment Secret `DEPLOY_USER`：服务器上的低权限发布用户。
+- Environment Secret `DEPLOY_SSH_KEY`：该用户的 Ed25519 SSH 私钥。
+- Environment Secret `DEPLOY_KNOWN_HOSTS`：预先核验的 `115.159.219.156` SSH 主机公钥，不能在流水线中临时信任。
+- 可选 Environment Secret `DEPLOY_PORT`：SSH 端口，默认 `22`。
+- 可选 Environment Variable `DEPLOY_PATH`：集成部署目录，默认 `/opt/basic-platform`。
+
+服务器部署目录必须已经由平台生产部署初始化，包含可执行的 `bin/deploy-service.sh`、`compose.yaml`、权限为 `600` 的 `.env` 和 `.release.env`。发布用户必须能够在该目录运行 Docker Compose；如果 GHCR 包为私有包，服务器还必须预先执行 `docker login ghcr.io`。流水线传递 `ghcr.io/...@sha256:...` 不可变镜像引用，远端脚本负责数据库备份、迁移、服务更新、健康检查和失败时恢复上一镜像。
+
+首次配置主机公钥时，应在可信网络中核验服务器指纹后生成 Secret，例如：
+
+```bash
+ssh-keyscan -H -p 22 115.159.219.156
+```
+
+为保持完全自动部署，`test` Environment 不应配置必需人工审批；如测试环境治理要求审批，可添加 Required reviewers，此时构建仍自动执行，但部署会等待批准。
+
+仓库提供了 Environment 配置模板和自动配置脚本。安装并登录 GitHub CLI 后执行：
+
+```bash
+cp .github/environments/test.env.example .github/environments/test.env
+# 编辑 test.env，填入发布用户和本机 SSH 文件绝对路径。
+set -a
+source .github/environments/test.env
+set +a
+./scripts/configure-test-environment.sh
+```
+
+脚本会创建 GitHub `test` Environment，上传四个 Environment Secrets，并设置 `DEPLOY_PATH` Environment Variable。模板只允许保存密钥文件路径，不能保存私钥内容。
 
 ## 生产注意事项
 

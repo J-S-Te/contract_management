@@ -19,7 +19,10 @@ import (
 
 type Principal struct {
 	TenantID, UserID string
+	Roles            []string
 	Permissions      map[string]bool
+	RoleConfigHash   string
+	AuthzRevision    uint64
 }
 
 func (p Principal) Has(permission string) bool { return p.Permissions[permission] }

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: contract-management-${{ github.event_name == 'pull_request' && github.ref || 'test' }}
+  group: contract-management-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -66,29 +66,38 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: image
     runs-on: ubuntu-latest
-    environment: test
+    timeout-minutes: 30
+    environment:
+      name: test
     steps:
       - name: Deploy immutable contract-management image
         shell: bash
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_HOST: 115.159.219.156
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/basic-platform' }}
           IMAGE_REF: ${{ needs.image.outputs.image_ref }}
         run: |
           set -Eeuo pipefail
-          : "${DEPLOY_HOST:?missing DEPLOY_HOST}"
           : "${DEPLOY_USER:?missing DEPLOY_USER}"
           : "${DEPLOY_SSH_KEY:?missing DEPLOY_SSH_KEY}"
           : "${DEPLOY_KNOWN_HOSTS:?missing DEPLOY_KNOWN_HOSTS}"
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/basic-platform}"
           install -m 700 -d "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
           chmod 600 "$HOME/.ssh/id_ed25519"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          printf -v remote_command 'cd %q && ./bin/deploy-service.sh contract %q' "$DEPLOY_PATH" "$IMAGE_REF"
-          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command"
+          printf -v remote_command \
+            'test -x %q/bin/deploy-service.sh && cd %q && ./bin/deploy-service.sh contract %q' \
+            "$DEPLOY_PATH" "$DEPLOY_PATH" "$IMAGE_REF"
+          ssh \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "$remote_command"
