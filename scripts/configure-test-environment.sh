@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 environment_name="test"
-deploy_host="115.159.219.156"
+deploy_host="47.111.20.119"
 
 required_command() {
   command -v "$1" >/dev/null 2>&1 || {

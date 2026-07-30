@@ -108,11 +108,11 @@ make build
 
 ## 自动部署
 
-`main` 分支推送通过测试后，GitHub Actions 会构建 `linux/amd64` 镜像，推送到 GHCR，并使用镜像摘要自动部署到 `115.159.219.156`。部署任务固定使用 GitHub `test` Environment；仓库需要配置：
+`main` 分支推送通过测试后，GitHub Actions 会构建 `linux/amd64` 镜像，推送到 GHCR，并使用镜像摘要自动部署到 `47.111.20.119`。部署任务固定使用 GitHub `test` Environment；仓库需要配置：
 
 - Environment Secret `DEPLOY_USER`：服务器上的低权限发布用户。
 - Environment Secret `DEPLOY_SSH_KEY`：该用户的 Ed25519 SSH 私钥。
-- Environment Secret `DEPLOY_KNOWN_HOSTS`：预先核验的 `115.159.219.156` SSH 主机公钥，不能在流水线中临时信任。
+- Environment Secret `DEPLOY_KNOWN_HOSTS`：预先核验的 `47.111.20.119` SSH 主机公钥，不能在流水线中临时信任。
 - 可选 Environment Secret `DEPLOY_PORT`：SSH 端口，默认 `22`。
 - 可选 Environment Variable `DEPLOY_PATH`：集成部署目录，默认 `/opt/basic-platform`。
 
@@ -121,7 +121,7 @@ make build
 首次配置主机公钥时，应在可信网络中核验服务器指纹后生成 Secret，例如：
 
 ```bash
-ssh-keyscan -H -p 22 115.159.219.156
+ssh-keyscan -H -p 22 47.111.20.119
 ```
 
 为保持完全自动部署，`test` Environment 不应配置必需人工审批；如测试环境治理要求审批，可添加 Required reviewers，此时构建仍自动执行，但部署会等待批准。
