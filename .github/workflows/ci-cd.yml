@@ -73,7 +73,7 @@ jobs:
       - name: Deploy immutable contract-management image
         shell: bash
         env:
-          DEPLOY_HOST: 47.111.20.119
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
