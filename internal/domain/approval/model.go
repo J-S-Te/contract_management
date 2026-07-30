@@ -61,6 +61,11 @@ type Meta struct {
 	RunID           string `json:"run_id"`
 	Kind            Kind   `json:"kind"`
 	Status          Status `json:"status"`
+	FromStatus      string `json:"from_status"`
+	TargetStatus    string `json:"target_status"`
+	Reason          string `json:"reason,omitempty"`
+	RuleID          string `json:"rule_id,omitempty"`
+	RuleVersion     uint64 `json:"rule_version,omitempty"`
 }
 
 type Task struct {
@@ -73,4 +78,24 @@ type Task struct {
 	Status         NodeStatus `json:"status"`
 	NodeIndex      int        `json:"node_index"`
 	CreatedAt      time.Time  `json:"created_at"`
+}
+
+type Summary struct {
+	ApprovalID       string    `json:"approval_id"`
+	ContractID       string    `json:"contract_id"`
+	ApplicantUserID  string    `json:"applicant_user_id"`
+	Kind             Kind      `json:"kind"`
+	Status           Status    `json:"status"`
+	CurrentNodeIndex int       `json:"current_node_index"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type Action struct {
+	ID          string    `json:"id"`
+	NodeID      string    `json:"node_id,omitempty"`
+	Action      string    `json:"action"`
+	ActorUserID string    `json:"actor_user_id"`
+	Comment     string    `json:"comment,omitempty"`
+	OccurredAt  time.Time `json:"occurred_at"`
 }

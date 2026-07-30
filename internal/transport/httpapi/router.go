@@ -66,6 +66,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.GET("/contracts/:contractID", h.getContract)
 	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)
 	api.POST("/contracts/:contractID/status-changes", h.changeStatus)
+	api.GET("/approvals", h.listApprovals)
 	api.GET("/approvals/tasks", h.listTasks)
 	api.GET("/approvals/:approvalID", h.getApproval)
 	api.GET("/approval-rules", h.listRules)
@@ -276,13 +277,23 @@ func (h *Handler) listTasks(c *gin.Context) {
 	writeData(c, http.StatusOK, tasks)
 }
 
-func (h *Handler) getApproval(c *gin.Context) {
-	state, err := h.service.GetApprovalState(c.Request.Context(), principal(c), c.Param("approvalID"))
+func (h *Handler) listApprovals(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	approvals, err := h.service.ListMyApprovals(c.Request.Context(), principal(c), limit)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusOK, state)
+	writeData(c, http.StatusOK, approvals)
+}
+
+func (h *Handler) getApproval(c *gin.Context) {
+	detail, err := h.service.GetApprovalDetail(c.Request.Context(), principal(c), c.Param("approvalID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, detail)
 }
 
 type commandRequest struct {

@@ -57,7 +57,7 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, s
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
 	var record approvalInstanceRecord
 	err := r.db.WithContext(ctx).
-		Select("id", "tenant_id", "contract_id", "kind", "status", "applicant_user_id", "temporal_workflow_id", "temporal_run_id").
+		Select("id", "tenant_id", "contract_id", "kind", "status", "applicant_user_id", "temporal_workflow_id", "temporal_run_id", "from_status", "target_status", "reason", "rule_id", "rule_version").
 		Where("tenant_id = ? AND id = ?", tenantID, id).Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return approval.Meta{}, apperrors.ErrNotFound
@@ -65,7 +65,66 @@ func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (
 	if err != nil {
 		return approval.Meta{}, err
 	}
-	return approval.Meta{ID: record.ID, TenantID: record.TenantID, ContractID: record.ContractID, Kind: approval.Kind(record.Kind), Status: approval.Status(record.Status), ApplicantUserID: record.ApplicantUserID, WorkflowID: record.TemporalWorkflowID, RunID: record.TemporalRunID}, nil
+	return approval.Meta{
+		ID: record.ID, TenantID: record.TenantID, ContractID: record.ContractID,
+		Kind: approval.Kind(record.Kind), Status: approval.Status(record.Status),
+		ApplicantUserID: record.ApplicantUserID, WorkflowID: record.TemporalWorkflowID, RunID: record.TemporalRunID,
+		FromStatus: record.FromStatus, TargetStatus: record.TargetStatus,
+		Reason: valueOrEmpty(record.Reason), RuleID: valueOrEmpty(record.RuleID), RuleVersion: uintValueOrZero(record.RuleVersion),
+	}, nil
+}
+
+func (r *Repository) ListApprovalActions(ctx context.Context, tenantID, approvalID string) ([]approval.Action, error) {
+	var records []approvalActionRecord
+	if err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND approval_id = ?", tenantID, approvalID).
+		Order("occurred_at ASC, id ASC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]approval.Action, 0, len(records))
+	for _, record := range records {
+		result = append(result, approval.Action{
+			ID: record.ID, NodeID: valueOrEmpty(record.NodeID), Action: record.Action,
+			ActorUserID: record.ActorUserID, Comment: valueOrEmpty(record.Comment), OccurredAt: record.OccurredAt,
+		})
+	}
+	return result, nil
+}
+
+func (r *Repository) ListApprovals(ctx context.Context, tenantID, applicantUserID string, limit int) ([]approval.Summary, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var records []approvalInstanceRecord
+	if err := r.db.WithContext(ctx).
+		Select("id", "contract_id", "applicant_user_id", "kind", "status", "current_node_index", "created_at", "updated_at").
+		Where("tenant_id = ? AND applicant_user_id = ?", tenantID, applicantUserID).
+		Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]approval.Summary, 0, len(records))
+	for _, record := range records {
+		result = append(result, approval.Summary{
+			ApprovalID: record.ID, ContractID: record.ContractID, ApplicantUserID: record.ApplicantUserID,
+			Kind: approval.Kind(record.Kind), Status: approval.Status(record.Status),
+			CurrentNodeIndex: record.CurrentNodeIndex, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
+		})
+	}
+	return result, nil
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func uintValueOrZero(value *uint64) uint64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, limit int) ([]approval.Task, error) {

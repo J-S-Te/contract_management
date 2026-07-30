@@ -38,6 +38,8 @@ type Repository interface {
 	UpdateRule(context.Context, approval.Rule, string) error
 	DeleteRule(context.Context, string, string, uint64) error
 	GetApprovalMeta(context.Context, string, string) (approval.Meta, error)
+	ListApprovalActions(context.Context, string, string) ([]approval.Action, error)
+	ListApprovals(context.Context, string, string, int) ([]approval.Summary, error)
 	ListTasks(context.Context, string, string, int) ([]approval.Task, error)
 }
 
@@ -58,6 +60,13 @@ type StartResult struct {
 	ApprovalID string `json:"approval_id"`
 	WorkflowID string `json:"workflow_id"`
 	RunID      string `json:"run_id"`
+}
+
+type ApprovalDetail struct {
+	Meta     approval.Meta           `json:"meta"`
+	State    workflows.ApprovalState `json:"state"`
+	Contract contract.Contract       `json:"contract"`
+	Actions  []approval.Action       `json:"actions"`
 }
 
 func (s *Service) CreateContract(ctx context.Context, actor Principal, c contract.Contract) (contract.Contract, error) {
@@ -190,22 +199,46 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 }
 
 func (s *Service) GetApprovalState(ctx context.Context, actor Principal, approvalID string) (workflows.ApprovalState, error) {
+	_, state, err := s.queryApprovalState(ctx, actor, approvalID)
+	return state, err
+}
+
+func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approvalID string) (ApprovalDetail, error) {
+	meta, state, err := s.queryApprovalState(ctx, actor, approvalID)
+	if err != nil {
+		return ApprovalDetail{}, err
+	}
+	contractSnapshot, err := s.Repo.GetContract(ctx, actor.TenantID, meta.ContractID)
+	if err != nil {
+		return ApprovalDetail{}, err
+	}
+	actions, err := s.Repo.ListApprovalActions(ctx, actor.TenantID, approvalID)
+	if err != nil {
+		return ApprovalDetail{}, err
+	}
+	if actions == nil {
+		actions = []approval.Action{}
+	}
+	return ApprovalDetail{Meta: meta, State: state, Contract: contractSnapshot, Actions: actions}, nil
+}
+
+func (s *Service) queryApprovalState(ctx context.Context, actor Principal, approvalID string) (approval.Meta, workflows.ApprovalState, error) {
 	meta, err := s.Repo.GetApprovalMeta(ctx, actor.TenantID, approvalID)
 	if err != nil {
-		return workflows.ApprovalState{}, err
+		return approval.Meta{}, workflows.ApprovalState{}, err
 	}
 	if !actor.Has("approval.view") && !actor.Has("approval.process") && meta.ApplicantUserID != actor.UserID {
-		return workflows.ApprovalState{}, ErrForbidden
+		return approval.Meta{}, workflows.ApprovalState{}, ErrForbidden
 	}
 	encoded, err := s.Temporal.QueryWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.StateQueryName)
 	if err != nil {
-		return workflows.ApprovalState{}, err
+		return approval.Meta{}, workflows.ApprovalState{}, err
 	}
 	var state workflows.ApprovalState
 	if err := encoded.Get(&state); err != nil {
-		return state, err
+		return approval.Meta{}, workflows.ApprovalState{}, err
 	}
-	return state, nil
+	return meta, state, nil
 }
 
 func (s *Service) ListMyTasks(ctx context.Context, actor Principal, limit int) ([]approval.Task, error) {
@@ -213,6 +246,13 @@ func (s *Service) ListMyTasks(ctx context.Context, actor Principal, limit int) (
 		return nil, ErrForbidden
 	}
 	return s.Repo.ListTasks(ctx, actor.TenantID, actor.UserID, limit)
+}
+
+func (s *Service) ListMyApprovals(ctx context.Context, actor Principal, limit int) ([]approval.Summary, error) {
+	if actor.TenantID == "" || actor.UserID == "" {
+		return nil, ErrForbidden
+	}
+	return s.Repo.ListApprovals(ctx, actor.TenantID, actor.UserID, limit)
 }
 
 func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (contract.Contract, error) {

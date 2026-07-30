@@ -58,8 +58,9 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |
 | POST | `/api/v1/contracts/{id}/status-changes` | `contract.edit` | 直接流转或启动关键状态审批 |
+| GET | `/api/v1/approvals` | 已登录 | 当前用户发起的审批与历史状态 |
 | GET | `/api/v1/approvals/tasks` | `approval.process` | 当前用户待办 |
-| GET | `/api/v1/approvals/{id}` | `approval.view` 或申请人 | 查询 Temporal 当前流程状态 |
+| GET | `/api/v1/approvals/{id}` | `approval.view`、`approval.process` 或申请人 | 聚合查询合同审批内容、规则快照元数据、Temporal 当前流程状态和处理记录 |
 | POST | `/api/v1/approvals/{id}/approve` | `approval.process` | 同意 |
 | POST | `/api/v1/approvals/{id}/reject` | `approval.process` | 拒绝，意见必填 |
 | POST | `/api/v1/approvals/{id}/sign` | `approval.process` | 加签；传 `target_user_ids`、`countersign=all/any` |
