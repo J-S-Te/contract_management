@@ -18,9 +18,15 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const loginTransactionTTL = 10 * time.Minute
+const (
+	loginTransactionTTL               = 10 * time.Minute
+	authorizationRefreshRetryInterval = 5 * time.Second
+)
 
-var ErrUnauthenticated = errors.New("unauthenticated")
+var (
+	ErrUnauthenticated           = errors.New("unauthenticated")
+	errOIDCRefreshTokenIsMissing = errors.New("OIDC refresh token is missing")
+)
 
 type OIDCOptions struct {
 	Issuer                       string
@@ -50,6 +56,7 @@ type localSession struct {
 	IDToken        string
 	Token          *oauth2.Token
 	RefreshedAt    time.Time
+	RefreshRetryAt time.Time
 	TokenExpiresAt time.Time
 	ExpiresAt      time.Time
 }
@@ -79,6 +86,7 @@ type OIDCAuthenticator struct {
 	oauth2Config oauth2.Config
 	httpClient   *http.Client
 	now          func() time.Time
+	refresh      func(context.Context, *localSession, time.Time) error
 	mutex        sync.Mutex
 	transactions map[string]loginTransaction
 	sessions     map[string]*localSession
@@ -136,11 +144,23 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Requ
 		a.deleteSession(cookie.Value, session)
 		return application.Principal{}, ErrUnauthenticated
 	}
-	if now.Sub(session.RefreshedAt) >= a.options.AuthorizationRefreshInterval || !session.TokenExpiresAt.After(now) {
-		if err := a.refreshSession(ctx, session, now); err != nil {
-			a.deleteSession(cookie.Value, session)
-			return application.Principal{}, ErrUnauthenticated
+	tokenExpired := !session.TokenExpiresAt.After(now)
+	refreshDue := now.Sub(session.RefreshedAt) >= a.options.AuthorizationRefreshInterval || tokenExpired
+	refreshAllowed := !session.RefreshRetryAt.After(now) || tokenExpired
+	if refreshDue && refreshAllowed {
+		refresh := a.refresh
+		if refresh == nil {
+			refresh = a.refreshSession
 		}
+		if err := refresh(ctx, session, now); err != nil {
+			if tokenExpired || refreshTokenWasRejected(err) {
+				a.deleteSession(cookie.Value, session)
+				return application.Principal{}, ErrUnauthenticated
+			}
+			session.RefreshRetryAt = now.Add(authorizationRefreshRetryInterval)
+			return session.Principal, nil
+		}
+		session.RefreshRetryAt = time.Time{}
 	}
 	return session.Principal, nil
 }
@@ -252,7 +272,7 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 
 func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSession, now time.Time) error {
 	if session.Token == nil || strings.TrimSpace(session.Token.RefreshToken) == "" {
-		return errors.New("OIDC refresh token is missing")
+		return errOIDCRefreshTokenIsMissing
 	}
 	refreshSeed := &oauth2.Token{RefreshToken: session.Token.RefreshToken, Expiry: now.Add(-time.Second)}
 	oidcContext := oidc.ClientContext(ctx, a.httpClient)
@@ -289,6 +309,14 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	session.Principal, session.IDToken, session.Token, session.RefreshedAt = principal, rawIDToken, token, now
 	session.TokenExpiresAt = idToken.Expiry
 	return nil
+}
+
+func refreshTokenWasRejected(err error) bool {
+	if errors.Is(err, errOIDCRefreshTokenIsMissing) {
+		return true
+	}
+	var retrieveError *oauth2.RetrieveError
+	return errors.As(err, &retrieveError) && retrieveError.ErrorCode == "invalid_grant"
 }
 
 func (a *OIDCAuthenticator) loadUserInfo(ctx context.Context, token *oauth2.Token, expectedSubject string) (string, []application.UserReference, error) {

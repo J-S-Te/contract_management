@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/application"
+	"golang.org/x/oauth2"
 )
 
 func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
@@ -44,6 +46,123 @@ func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
 	if principal.TenantID != "tenant-1" || principal.UserID != "user-1" {
 		t.Fatalf("principal = %#v", principal)
 	}
+}
+
+func TestOIDCSessionKeepsValidTokenAndBacksOffAfterTransientRefreshFailure(t *testing.T) {
+	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
+	session := &localSession{
+		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
+		RefreshedAt:    now.Add(-time.Minute),
+		TokenExpiresAt: now.Add(time.Minute),
+		ExpiresAt:      now.Add(time.Hour),
+	}
+	refreshCalls := 0
+	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
+		refreshCalls++
+		return errors.New("platform temporarily unavailable")
+	})
+
+	request := refreshTestRequest()
+	principal, err := authenticator.Authenticate(context.Background(), request)
+	if err != nil || principal.UserID != "user-1" {
+		t.Fatalf("first Authenticate() principal = %#v, error = %v", principal, err)
+	}
+	if refreshCalls != 1 || session.RefreshRetryAt != now.Add(authorizationRefreshRetryInterval) {
+		t.Fatalf("refresh calls = %d, retry at = %v", refreshCalls, session.RefreshRetryAt)
+	}
+	if _, exists := authenticator.sessions["local-session"]; !exists {
+		t.Fatal("valid session was deleted after transient refresh failure")
+	}
+
+	principal, err = authenticator.Authenticate(context.Background(), request)
+	if err != nil || principal.UserID != "user-1" || refreshCalls != 1 {
+		t.Fatalf("backoff Authenticate() principal = %#v, error = %v, refresh calls = %d", principal, err, refreshCalls)
+	}
+}
+
+func TestOIDCSessionRetriesTransientRefreshFailureAfterBackoff(t *testing.T) {
+	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
+	session := &localSession{
+		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
+		RefreshedAt:    now.Add(-time.Minute),
+		RefreshRetryAt: now,
+		TokenExpiresAt: now.Add(time.Minute),
+		ExpiresAt:      now.Add(time.Hour),
+	}
+	refreshCalls := 0
+	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
+		refreshCalls++
+		return errors.New("temporary network error")
+	})
+
+	if _, err := authenticator.Authenticate(context.Background(), refreshTestRequest()); err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+}
+
+func TestOIDCSessionDeletesExpiredTokenWhenRefreshFails(t *testing.T) {
+	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
+	session := &localSession{
+		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
+		RefreshedAt:    now.Add(-time.Minute),
+		TokenExpiresAt: now,
+		ExpiresAt:      now.Add(time.Hour),
+	}
+	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
+		return errors.New("temporary network error")
+	})
+
+	if _, err := authenticator.Authenticate(context.Background(), refreshTestRequest()); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("Authenticate() error = %v, want ErrUnauthenticated", err)
+	}
+	if _, exists := authenticator.sessions["local-session"]; exists {
+		t.Fatal("expired session still exists after refresh failure")
+	}
+}
+
+func TestOIDCSessionDeletesValidTokenWhenRefreshTokenIsRejected(t *testing.T) {
+	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
+	session := &localSession{
+		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
+		RefreshedAt:    now.Add(-time.Minute),
+		TokenExpiresAt: now.Add(time.Minute),
+		ExpiresAt:      now.Add(time.Hour),
+	}
+	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
+		return &oauth2.RetrieveError{
+			Response:  &http.Response{StatusCode: http.StatusBadRequest},
+			ErrorCode: "invalid_grant",
+		}
+	})
+
+	if _, err := authenticator.Authenticate(context.Background(), refreshTestRequest()); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("Authenticate() error = %v, want ErrUnauthenticated", err)
+	}
+	if _, exists := authenticator.sessions["local-session"]; exists {
+		t.Fatal("session still exists after refresh token rejection")
+	}
+}
+
+func newRefreshTestAuthenticator(now time.Time, session *localSession, refresh func(context.Context, *localSession, time.Time) error) *OIDCAuthenticator {
+	return &OIDCAuthenticator{
+		options: OIDCOptions{
+			SessionCookieName:            "contract_management_session",
+			SessionTTL:                   time.Hour,
+			AuthorizationRefreshInterval: time.Minute,
+		},
+		now:      func() time.Time { return now },
+		refresh:  refresh,
+		sessions: map[string]*localSession{"local-session": session},
+	}
+}
+
+func refreshTestRequest() *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/contracts", nil)
+	request.AddCookie(&http.Cookie{Name: "contract_management_session", Value: "local-session"})
+	return request
 }
 
 func TestOIDCSessionCookieIsScopedToSubsystem(t *testing.T) {
