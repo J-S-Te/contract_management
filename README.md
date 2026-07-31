@@ -12,6 +12,8 @@
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
 - 按平台接入规范实现 OIDC Authorization Code + PKCE：独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验平台签发的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`，不共享平台 `bp_session`。
+- 本地会话通过轮换 Refresh Token 定期取得最新授权快照；角色撤销、权限变更和授权版本更新默认在一分钟内生效。
+- 启用 `PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED` 后，API 启动时使用独立机器 Client 将内嵌权限清单发布到平台；同步失败时拒绝启动，避免运行时权限与平台目录漂移。
 - 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
 - 合同服务自身提供 `/`、`/auth/login`、`/auth/callback`、`/auth/logout` 和合同台账页面；统一门户通过 `/contract_management/` 访问，合同 API、数据库和 Temporal 不直接暴露宿主机端口。
 
@@ -31,7 +33,7 @@ authz/permission-manifest.yaml  版本化权限、角色、数据范围和平台
 migrations                      MySQL DDL
 ```
 
-权限清单以 `authz/permission-manifest.yaml` 为合同后端权限语义的版本化来源。基础平台同步权限目录、管理角色分配或签发授权 Claims 时，应校验清单版本和 `compatibility.platform_catalog_must_include`；前端菜单权限不能替代本清单标记的后端执行点。
+权限清单以 `authz/permission-manifest.yaml` 为合同后端权限语义的版本化来源。合同 API 会把清单转换为平台通用授权目录并通过 `authorization.catalog.sync` 发布；前端菜单权限不能替代本清单标记的后端执行点。权限码仅精确匹配，`all` 等通配权限会被拒绝。
 
 合同数据范围固定为负责人本人：任何角色都不能查询、读取、提交或变更非本人负责的合同，系统不定义管理全部合同的数据权限。审批人通过审批任务处理流程，不因此获得合同台账的全量访问权。
 
@@ -86,9 +88,11 @@ go run ./cmd/worker
 go run ./cmd/api
 ```
 
-MySQL 初始化会执行 `migrations/000001_contract_workflow.sql`。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关仅把 `/contract_management/api/`、`/contract_management/auth/` 等后端路径转发至本服务并去除前缀，其余 `/contract_management/` 页面由统一前端承载。
+MySQL 初始化会按编号执行 `migrations` 中的建表和增量约束脚本。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关仅把 `/contract_management/api/`、`/contract_management/auth/` 等后端路径转发至本服务并去除前缀，其余 `/contract_management/` 页面由统一前端承载。
 
 审批人按角色在 `APPROVER_ROLE_ASSIGNMENTS_JSON` 中配置，值必须使用平台用户 ULID。生产环境建议由配置中心下发；不要在镜像或仓库中保存真实人员 ID、Temporal API Key 或数据库密码。
+
+审批人映射键必须与权限清单一致：`admin`、`sales_director`、`tech_director`、`finance_director`。同一合同版本最多只能存在一个运行中的关键状态变更审批。
 
 OIDC 浏览器 Client 与审计机器 Client 必须分离。浏览器 OIDC 配置来自平台“一键接入”，审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。通知 outbox 不会直接调用平台通知控制面，因为当前机器 Token 的已发布权限边界仅包含审计写入。
 

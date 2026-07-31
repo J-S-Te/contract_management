@@ -27,6 +27,14 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if err := platform.SyncAuthorizationCatalog(ctx, platform.CatalogSyncOptions{
+		Enabled: cfg.PlatformCatalogSync, BaseURL: cfg.PlatformBaseURL,
+		ApplicationID: cfg.PlatformApplicationID, ClientID: cfg.PlatformCatalogClientID,
+		ClientSecret: cfg.PlatformCatalogSecret,
+	}); err != nil {
+		logger.Error("authorization catalog synchronization failed", "error", err)
+		os.Exit(1)
+	}
 	db, err := bootstrap.OpenDatabase(ctx, cfg.MySQLDSN)
 	if err != nil {
 		logger.Error("database failed", "error", err)
@@ -47,7 +55,8 @@ func main() {
 		RedirectURI: cfg.OIDCRedirectURI, PostLogoutRedirectURI: cfg.OIDCPostLogoutRedirectURI,
 		Scopes: cfg.OIDCScopes, TenantID: cfg.OIDCTenantID, SessionCookieName: cfg.OIDCSessionCookieName,
 		SessionTTL: cfg.OIDCSessionTTL, SessionSecure: cfg.OIDCSessionSecure,
-		PathPrefix: cfg.AppPathPrefix,
+		AuthorizationRefreshInterval: cfg.OIDCAuthorizationRefresh,
+		PathPrefix:                   cfg.AppPathPrefix,
 	})
 	if err != nil {
 		logger.Error("OIDC discovery failed", "error", err)

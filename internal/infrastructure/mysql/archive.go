@@ -52,6 +52,15 @@ func (r *Repository) archiveOne(ctx context.Context, candidate contractRecord, a
 		if from != contract.Status(candidate.Status) || current.EndDate == nil || !current.EndDate.Before(date) || !contract.CanTransition(from, contract.StatusArchived) {
 			return nil
 		}
+		var activeStatusChanges int64
+		if err := tx.Model(&approvalInstanceRecord{}).
+			Where("tenant_id = ? AND contract_id = ? AND kind = ? AND status = ?", current.TenantID, current.ID, "status_change", "running").
+			Count(&activeStatusChanges).Error; err != nil {
+			return err
+		}
+		if activeStatusChanges > 0 {
+			return nil
+		}
 		if err := updateStatus(tx, current.TenantID, current.ID, from, contract.StatusArchived, "SYSTEM"); err != nil {
 			return err
 		}
@@ -65,7 +74,7 @@ func (r *Repository) archiveOne(ctx context.Context, candidate contractRecord, a
 		for _, recipient := range uniqueStrings(append([]string{current.OwnerUserID}, additionalRecipients...)) {
 			notifications = append(notifications, notificationOutboxRecord{ID: newID(), TenantID: current.TenantID, RecipientKey: "user:" + recipient, RecipientUserID: stringPtr(recipient), NotificationType: "status_change", Title: "合同已自动归档", Content: "合同结束日期已过，系统已自动归档", ContractID: stringPtr(current.ID), DedupeKey: key, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now})
 		}
-		for _, roleCode := range []string{"sales_director", "administrator"} {
+		for _, roleCode := range []string{"sales_director", "admin"} {
 			notifications = append(notifications, notificationOutboxRecord{ID: newID(), TenantID: current.TenantID, RecipientKey: "role:" + roleCode, RecipientRoleCode: stringPtr(roleCode), NotificationType: "status_change", Title: "合同已自动归档", Content: "合同结束日期已过，系统已自动归档", ContractID: stringPtr(current.ID), DedupeKey: key, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now})
 		}
 		if len(notifications) > 0 {

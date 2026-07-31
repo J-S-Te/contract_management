@@ -26,6 +26,7 @@ type Config struct {
 	OIDCTenantID              string
 	OIDCSessionCookieName     string
 	OIDCSessionTTL            time.Duration
+	OIDCAuthorizationRefresh  time.Duration
 	OIDCSessionSecure         bool
 	AppPublicURL              string
 	AppPathPrefix             string
@@ -33,6 +34,10 @@ type Config struct {
 	PlatformAuditClientSecret string
 	PlatformApplicationCode   string
 	PlatformEnvironmentCode   string
+	PlatformApplicationID     string
+	PlatformCatalogSync       bool
+	PlatformCatalogClientID   string
+	PlatformCatalogSecret     string
 	TemporalAddress           string
 	TemporalNamespace         string
 	TemporalTaskQueue         string
@@ -55,7 +60,10 @@ func Load() (Config, error) {
 		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
 		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
 		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
-		TemporalAddress: env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
+		PlatformApplicationID:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
+		PlatformCatalogClientID: os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
+		PlatformCatalogSecret:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
+		TemporalAddress:         env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
 		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"),
 		ArchiveCron:    env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 	}
@@ -69,6 +77,9 @@ func Load() (Config, error) {
 	if c.OIDCSessionTTL, err = duration("OIDC_SESSION_TTL", 8*time.Hour); err != nil {
 		return c, err
 	}
+	if c.OIDCAuthorizationRefresh, err = duration("OIDC_AUTHORIZATION_REFRESH_INTERVAL", time.Minute); err != nil {
+		return c, err
+	}
 	if c.OIDCSessionSecure, err = strconv.ParseBool(env("OIDC_SESSION_COOKIE_SECURE", "true")); err != nil {
 		return c, fmt.Errorf("OIDC_SESSION_COOKIE_SECURE: %w", err)
 	}
@@ -78,6 +89,9 @@ func Load() (Config, error) {
 	}
 	if c.TemporalTLS, err = strconv.ParseBool(env("TEMPORAL_TLS", "false")); err != nil {
 		return c, fmt.Errorf("TEMPORAL_TLS: %w", err)
+	}
+	if c.PlatformCatalogSync, err = strconv.ParseBool(env("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")); err != nil {
+		return c, fmt.Errorf("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED: %w", err)
 	}
 	if raw := os.Getenv("APPROVER_ROLE_ASSIGNMENTS_JSON"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &c.Approvers); err != nil {
@@ -122,8 +136,9 @@ func (c Config) validate() error {
 	if len(c.OIDCScopes) == 0 || !contains(c.OIDCScopes, "openid") {
 		return fmt.Errorf("OIDC_SCOPES must include openid")
 	}
-	if strings.TrimSpace(c.OIDCSessionCookieName) == "" || c.OIDCSessionTTL <= 0 {
-		return fmt.Errorf("OIDC session cookie name and positive TTL are required")
+	if strings.TrimSpace(c.OIDCSessionCookieName) == "" || c.OIDCSessionTTL <= 0 ||
+		c.OIDCAuthorizationRefresh <= 0 || c.OIDCAuthorizationRefresh >= c.OIDCSessionTTL {
+		return fmt.Errorf("OIDC session cookie name, positive TTL and a shorter positive authorization refresh interval are required")
 	}
 	if c.AppPathPrefix == "/" || !strings.HasPrefix(c.AppPathPrefix, "/") ||
 		(c.AppPathPrefix != "" && strings.HasSuffix(c.AppPathPrefix, "/")) {
@@ -145,6 +160,10 @@ func (c Config) validate() error {
 	}
 	if hasAuditClientID && (strings.TrimSpace(c.PlatformApplicationCode) == "" || strings.TrimSpace(c.PlatformEnvironmentCode) == "") {
 		return fmt.Errorf("platform audit configuration must provide client ID, client secret, application code and environment code together")
+	}
+	if c.PlatformCatalogSync && (strings.TrimSpace(c.PlatformApplicationID) == "" ||
+		strings.TrimSpace(c.PlatformCatalogClientID) == "" || strings.TrimSpace(c.PlatformCatalogSecret) == "") {
+		return fmt.Errorf("platform authorization catalog synchronization requires application ID, client ID and client secret")
 	}
 	return nil
 }

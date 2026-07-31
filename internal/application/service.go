@@ -14,6 +14,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/oklog/ulid/v2"
 	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -125,6 +126,10 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	in := workflows.ContractApprovalInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: c.Version, ApplicantUserID: actor.UserID, ContentHash: c.ContentHash, RuleID: ruleID, RuleVersion: ruleVersion, Nodes: nodes, DefaultNodeTimeout: s.NodeTimeout, ReminderInterval: s.ReminderInterval}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.ContractApprovalWorkflowName, in)
 	if err != nil {
+		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+		if errors.As(err, &alreadyStarted) {
+			return StartResult{}, apperrors.ErrStateConflict
+		}
 		return StartResult{}, err
 	}
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
@@ -154,15 +159,19 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 		key := ulid.Make().String()
 		return StartResult{}, s.Repo.TransitionDirect(ctx, actor.TenantID, contractID, version, target, actor.UserID, reason, key)
 	}
-	admins := s.Approvers.Resolve("administrator")
+	admins := s.Approvers.Resolve("admin")
 	if len(admins) == 0 {
-		return StartResult{}, fmt.Errorf("no approver configured for administrator")
+		return StartResult{}, fmt.Errorf("no approver configured for admin")
 	}
 	approvalID := ulid.Make().String()
-	workflowID := fmt.Sprintf("status-change:%s:%s:v%d:%s", actor.TenantID, contractID, version, target)
+	workflowID := fmt.Sprintf("status-change:%s:%s:v%d", actor.TenantID, contractID, version)
 	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.StatusChangeWorkflowName, in)
 	if err != nil {
+		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+		if errors.As(err, &alreadyStarted) {
+			return StartResult{}, apperrors.ErrStateConflict
+		}
 		return StartResult{}, err
 	}
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
@@ -367,7 +376,7 @@ func (s *Service) resolveNodes(nodes []approval.Node) error {
 func defaultNodes() []approval.Node {
 	return []approval.Node{
 		{ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director", Countersign: approval.CountersignAll},
-		{ID: "technical-director", Name: "技术总监审批", RoleCode: "technical_director", Countersign: approval.CountersignAll},
+		{ID: "tech-director", Name: "技术总监审批", RoleCode: "tech_director", Countersign: approval.CountersignAll},
 		{ID: "finance-director", Name: "财务总监审批", RoleCode: "finance_director", Countersign: approval.CountersignAll},
 	}
 }

@@ -15,16 +15,19 @@ func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
 	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
 	authenticator := &OIDCAuthenticator{
 		options: OIDCOptions{
-			SessionCookieName: "contract_management_session",
-			SessionTTL:        time.Hour,
-			PathPrefix:        "/contract_management",
+			SessionCookieName:            "contract_management_session",
+			SessionTTL:                   time.Hour,
+			AuthorizationRefreshInterval: time.Minute,
+			PathPrefix:                   "/contract_management",
 		},
 		now:          func() time.Time { return now },
 		transactions: make(map[string]loginTransaction),
-		sessions: map[string]localSession{
+		sessions: map[string]*localSession{
 			"local-session": {
-				Principal: application.Principal{TenantID: "tenant-1", UserID: "user-1"},
-				ExpiresAt: now.Add(time.Hour),
+				Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
+				RefreshedAt:    now,
+				TokenExpiresAt: now.Add(time.Hour),
+				ExpiresAt:      now.Add(time.Hour),
 			},
 		},
 	}
@@ -114,18 +117,12 @@ func TestPrincipalFromPlatformClaimsRejectsTenantMismatch(t *testing.T) {
 	}
 }
 
-func TestPrincipalFromPlatformClaimsExpandsAdminActionsWithoutDataScopePermission(t *testing.T) {
-	principal, err := principalFromPlatformClaims(platformIDTokenClaims{
+func TestPrincipalFromPlatformClaimsRejectsWildcardPermission(t *testing.T) {
+	_, err := principalFromPlatformClaims(platformIDTokenClaims{
 		Subject: "admin-1", TenantID: "tenant-1", Roles: []string{"admin"},
 		Permissions: []string{"all"}, RoleConfigHash: "hash-1", AuthzRevision: 2,
 	}, "tenant-1")
-	if err != nil {
-		t.Fatalf("principalFromPlatformClaims() error = %v", err)
-	}
-	if !principal.Has("contract.create") || !principal.Has("approval_rule.manage") {
-		t.Fatalf("admin permissions were not expanded: %#v", principal.Permissions)
-	}
-	if principal.Has("contract.manage") {
-		t.Fatal("admin unexpectedly received retired contract.manage data-scope permission")
+	if err == nil {
+		t.Fatal("principalFromPlatformClaims() error = nil, want wildcard rejection")
 	}
 }

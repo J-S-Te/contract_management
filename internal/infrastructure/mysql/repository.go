@@ -190,6 +190,16 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 			if err := insertLifecycle(tx, in, in.FromStatus, in.TargetStatus, in.ApplicantUserID, "submitted for approval", in.ApprovalID+":submitted"); err != nil {
 				return err
 			}
+		} else if in.Kind == approval.KindStatusChange {
+			var active int64
+			if err := tx.Model(&approvalInstanceRecord{}).
+				Where("tenant_id = ? AND contract_id = ? AND kind = ? AND status = ?", in.TenantID, in.ContractID, approval.KindStatusChange, approval.StatusRunning).
+				Count(&active).Error; err != nil {
+				return err
+			}
+			if active > 0 {
+				return apperrors.ErrStateConflict
+			}
 		}
 		nodesJSON, err := json.Marshal(in.Nodes)
 		if err != nil {
@@ -204,7 +214,13 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 			NodesJSON: nodesJSON, CurrentNodeIndex: 0, TemporalWorkflowID: in.WorkflowID, TemporalRunID: in.RunID,
 			CreatedAt: now, UpdatedAt: now,
 		}
+		if in.Kind == approval.KindStatusChange {
+			instance.ActiveStatusChangeKey = stringPtr(in.TenantID + ":" + in.ContractID)
+		}
 		if err := tx.Create(&instance).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return apperrors.ErrStateConflict
+			}
 			return err
 		}
 		tasks := initialTasks(in.ApprovalID, in.Nodes, now)
@@ -329,7 +345,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		}
 		now := time.Now().UTC()
 		result := tx.Model(&approvalInstanceRecord{}).Where("id = ?", in.ApprovalID).
-			Updates(map[string]any{"status": in.Status, "completion_applied": true, "completed_at": now, "updated_at": now})
+			Updates(map[string]any{"status": in.Status, "active_status_change_key": nil, "completion_applied": true, "completed_at": now, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}

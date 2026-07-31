@@ -28,6 +28,15 @@ func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID 
 		if row.Version != expectedVersion {
 			return apperrors.ErrVersionConflict
 		}
+		var activeStatusChanges int64
+		if err := tx.Model(&approvalInstanceRecord{}).
+			Where("tenant_id = ? AND contract_id = ? AND kind = ? AND status = ?", tenantID, contractID, "status_change", "running").
+			Count(&activeStatusChanges).Error; err != nil {
+			return err
+		}
+		if activeStatusChanges > 0 {
+			return apperrors.ErrStateConflict
+		}
 		if target.RequiresApproval() || target == contract.StatusPending || target == contract.StatusApproved || target == contract.StatusActive {
 			return apperrors.ErrStateConflict
 		}

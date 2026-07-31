@@ -60,27 +60,28 @@ type approvalRuleRecord struct {
 func (approvalRuleRecord) TableName() string { return "con_approval_rule" }
 
 type approvalInstanceRecord struct {
-	ID                 string `gorm:"primaryKey"`
-	TenantID           string
-	ContractID         string
-	Kind               string
-	Status             string
-	ApplicantUserID    string
-	FromStatus         string
-	TargetStatus       string
-	Reason             *string
-	RuleID             *string
-	RuleVersion        *uint64
-	ContentHash        *string
-	NodesJSON          []byte `gorm:"type:json"`
-	RuntimeStateJSON   []byte `gorm:"type:json"`
-	CurrentNodeIndex   int
-	TemporalWorkflowID string
-	TemporalRunID      string
-	CompletionApplied  bool
-	CompletedAt        *time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                    string `gorm:"primaryKey"`
+	TenantID              string
+	ContractID            string
+	Kind                  string
+	Status                string
+	ApplicantUserID       string
+	FromStatus            string
+	TargetStatus          string
+	Reason                *string
+	RuleID                *string
+	RuleVersion           *uint64
+	ContentHash           *string
+	NodesJSON             []byte `gorm:"type:json"`
+	RuntimeStateJSON      []byte `gorm:"type:json"`
+	CurrentNodeIndex      int
+	TemporalWorkflowID    string
+	TemporalRunID         string
+	ActiveStatusChangeKey *string
+	CompletionApplied     bool
+	CompletedAt           *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 func (approvalInstanceRecord) TableName() string { return "con_approval_instance" }

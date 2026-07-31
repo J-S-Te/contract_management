@@ -67,6 +67,8 @@ gh api --method PUT "repos/$repository/environments/$environment_name" >/dev/nul
 
 printf '%s' "$DEPLOY_USER" |
   gh secret set DEPLOY_USER --env "$environment_name" --repo "$repository"
+printf '%s' "$deploy_host" |
+  gh secret set DEPLOY_HOST --env "$environment_name" --repo "$repository"
 printf '%s' "$deploy_port" |
   gh secret set DEPLOY_PORT --env "$environment_name" --repo "$repository"
 gh secret set DEPLOY_SSH_KEY --env "$environment_name" --repo "$repository" \
@@ -77,6 +79,6 @@ gh variable set DEPLOY_PATH --env "$environment_name" --repo "$repository" \
   --body "$deploy_path"
 
 echo "test Environment 已配置"
-echo "部署主机由工作流固定为：$deploy_host"
+echo "部署主机：$deploy_host"
 echo "部署目录：$deploy_path"
 echo "推送 main 后将自动部署；请确认 test Environment 未设置 Required reviewers。"

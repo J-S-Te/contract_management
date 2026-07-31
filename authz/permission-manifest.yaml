@@ -184,5 +184,4 @@ compatibility:
     - approval.manage
     - approval_rule.manage
   known_gaps:
-    - 基础平台当前 SYS-004 目录缺少 approval.manage、approval_rule.manage
     - 合同数据范围有意固定为 SELF，不提供部门、组织子树或全租户管理范围

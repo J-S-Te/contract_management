@@ -11,7 +11,9 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
-	if len(items) != 1 || items[0].version != 1 || items[0].name != "contract_workflow" {
+	if len(items) != 2 ||
+		items[0].version != 1 || items[0].name != "contract_workflow" ||
+		items[1].version != 2 || items[1].name != "single_active_status_change" {
 		t.Fatalf("items = %#v", items)
 	}
 }

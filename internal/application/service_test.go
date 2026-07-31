@@ -109,6 +109,16 @@ func TestListContractsIgnoresRequestedOwnerEvenWithLegacyManagerPermission(t *te
 	}
 }
 
+func TestDefaultApprovalNodesUseManifestRoleCodes(t *testing.T) {
+	nodes := defaultNodes()
+	if len(nodes) != 3 {
+		t.Fatalf("defaultNodes() length = %d", len(nodes))
+	}
+	if nodes[0].RoleCode != "sales_director" || nodes[1].RoleCode != "tech_director" || nodes[2].RoleCode != "finance_director" {
+		t.Fatalf("defaultNodes() role codes = %q, %q, %q", nodes[0].RoleCode, nodes[1].RoleCode, nodes[2].RoleCode)
+	}
+}
+
 func TestGetContractRejectsNonOwnerEvenWithLegacyManagerPermission(t *testing.T) {
 	repository := &recordingRepository{contract: contract.Contract{OwnerUserID: "user-2"}}
 	service := &Service{Repo: repository}

@@ -19,6 +19,7 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("OIDC_SESSION_COOKIE_NAME", "contract_management_session")
 	t.Setenv("OIDC_SESSION_COOKIE_SECURE", "false")
 	t.Setenv("OIDC_SESSION_TTL", "8h")
+	t.Setenv("OIDC_AUTHORIZATION_REFRESH_INTERVAL", "1m")
 	t.Setenv("APP_PUBLIC_URL", "http://localhost:8081/contract_management/")
 	t.Setenv("APP_PATH_PREFIX", "/contract_management")
 	t.Setenv("TEMPORAL_ADDRESS", "localhost:7233")
@@ -31,6 +32,21 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("PLATFORM_AUDIT_CLIENT_SECRET", "")
 	t.Setenv("PLATFORM_APPLICATION_CODE", "")
 	t.Setenv("PLATFORM_ENVIRONMENT_CODE", "")
+	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")
+	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID", "")
+	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID", "")
+	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET", "")
+}
+
+func TestLoadRejectsIncompleteCatalogSynchronizationConfiguration(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "true")
+	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID", "app-1")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "catalog synchronization") {
+		t.Fatalf("Load() error = %v, want incomplete catalog synchronization error", err)
+	}
 }
 
 func TestLoadRejectsInvalidDuration(t *testing.T) {

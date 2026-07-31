@@ -18,7 +18,7 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		input.Timeout = 72 * time.Hour
 	}
 	now := workflow.Now(ctx)
-	node := approval.Node{ID: "administrator", Name: "管理员审批", RoleCode: "administrator", AssigneeIDs: unique(input.AdminUserIDs), Countersign: approval.CountersignAny, Timeout: input.Timeout}
+	node := approval.Node{ID: "admin", Name: "管理员审批", RoleCode: "admin", AssigneeIDs: unique(input.AdminUserIDs), Countersign: approval.CountersignAny, Timeout: input.Timeout}
 	state := ApprovalState{ApprovalID: input.ApprovalID, Kind: approval.KindStatusChange, Status: approval.StatusRunning, ContractID: input.ContractID, ApplicantUserID: input.ApplicantUserID, Nodes: initializeNodes([]approval.Node{node}), StartedAt: now, UpdatedAt: now}
 	state.Nodes[0].Status, state.Nodes[0].StartedAt = approval.NodeActive, now
 	if err := workflow.SetQueryHandler(ctx, StateQueryName, func() (ApprovalState, error) { return state, nil }); err != nil {

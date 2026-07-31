@@ -22,18 +22,19 @@ const loginTransactionTTL = 10 * time.Minute
 var ErrUnauthenticated = errors.New("unauthenticated")
 
 type OIDCOptions struct {
-	Issuer                string
-	BackchannelBaseURL    string
-	ClientID              string
-	ClientSecret          string
-	RedirectURI           string
-	PostLogoutRedirectURI string
-	Scopes                []string
-	TenantID              string
-	SessionCookieName     string
-	SessionTTL            time.Duration
-	SessionSecure         bool
-	PathPrefix            string
+	Issuer                       string
+	BackchannelBaseURL           string
+	ClientID                     string
+	ClientSecret                 string
+	RedirectURI                  string
+	PostLogoutRedirectURI        string
+	Scopes                       []string
+	TenantID                     string
+	SessionCookieName            string
+	SessionTTL                   time.Duration
+	AuthorizationRefreshInterval time.Duration
+	SessionSecure                bool
+	PathPrefix                   string
 }
 
 type loginTransaction struct {
@@ -43,9 +44,13 @@ type loginTransaction struct {
 }
 
 type localSession struct {
-	Principal application.Principal
-	IDToken   string
-	ExpiresAt time.Time
+	mutex          sync.Mutex
+	Principal      application.Principal
+	IDToken        string
+	Token          *oauth2.Token
+	RefreshedAt    time.Time
+	TokenExpiresAt time.Time
+	ExpiresAt      time.Time
 }
 
 type platformIDTokenClaims struct {
@@ -56,18 +61,6 @@ type platformIDTokenClaims struct {
 	Permissions    []string `json:"permissions"`
 	RoleConfigHash string   `json:"role_config_hash"`
 	AuthzRevision  uint64   `json:"authz_revision"`
-}
-
-// platformAllPermissions is the contract-side expansion of the platform's protected SYS-004
-// admin marker. It grants actions only; contract data remains owner-scoped in the application
-// service for every role.
-var platformAllPermissions = []string{
-	"dashboard",
-	"contract.read", "contract.create", "contract.edit", "contract.delete",
-	"customer.read", "customer.create", "customer.edit", "customer.delete",
-	"contract_type.manage", "contract_template.read", "contract_template.manage",
-	"approval.view", "approval.process", "approval.manage", "approval_rule.manage",
-	"user.manage", "audit.view", "audit.read",
 }
 
 // OIDCAuthenticator owns the contract system's OIDC login transactions and independent local
@@ -81,7 +74,7 @@ type OIDCAuthenticator struct {
 	now          func() time.Time
 	mutex        sync.Mutex
 	transactions map[string]loginTransaction
-	sessions     map[string]localSession
+	sessions     map[string]*localSession
 }
 
 func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthenticator, error) {
@@ -112,23 +105,35 @@ func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthen
 			Endpoint: provider.Endpoint(), RedirectURL: options.RedirectURI, Scopes: options.Scopes,
 		},
 		httpClient: httpClient, now: time.Now,
-		transactions: make(map[string]loginTransaction), sessions: make(map[string]localSession),
+		transactions: make(map[string]loginTransaction), sessions: make(map[string]*localSession),
 	}
 	return authenticator, nil
 }
 
-func (a *OIDCAuthenticator) Authenticate(_ context.Context, request *http.Request) (application.Principal, error) {
+func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Request) (application.Principal, error) {
 	cookie, err := request.Cookie(a.options.SessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return application.Principal{}, ErrUnauthenticated
 	}
 	now := a.now().UTC()
 	a.mutex.Lock()
-	defer a.mutex.Unlock()
 	a.cleanupLocked(now)
 	session, exists := a.sessions[cookie.Value]
-	if !exists || !session.ExpiresAt.After(now) {
+	a.mutex.Unlock()
+	if !exists {
 		return application.Principal{}, ErrUnauthenticated
+	}
+	session.mutex.Lock()
+	defer session.mutex.Unlock()
+	if !session.ExpiresAt.After(now) {
+		a.deleteSession(cookie.Value, session)
+		return application.Principal{}, ErrUnauthenticated
+	}
+	if now.Sub(session.RefreshedAt) >= a.options.AuthorizationRefreshInterval || !session.TokenExpiresAt.After(now) {
+		if err := a.refreshSession(ctx, session, now); err != nil {
+			a.deleteSession(cookie.Value, session)
+			return application.Principal{}, ErrUnauthenticated
+		}
 	}
 	return session.Principal, nil
 }
@@ -217,9 +222,13 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "cannot create local session", http.StatusInternalServerError)
 		return
 	}
-	session := localSession{
-		Principal: principal,
-		IDToken:   rawIDToken, ExpiresAt: now.Add(a.options.SessionTTL),
+	if strings.TrimSpace(token.RefreshToken) == "" {
+		http.Error(writer, "OIDC response did not contain a refresh token", http.StatusUnauthorized)
+		return
+	}
+	session := &localSession{
+		Principal: principal, IDToken: rawIDToken, Token: token, RefreshedAt: now,
+		TokenExpiresAt: idToken.Expiry, ExpiresAt: now.Add(a.options.SessionTTL),
 	}
 	a.mutex.Lock()
 	a.cleanupLocked(now)
@@ -227,6 +236,51 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 	a.mutex.Unlock()
 	http.SetCookie(writer, a.sessionCookie(sessionID, session.ExpiresAt))
 	http.Redirect(writer, request, a.publicPath("/"), http.StatusFound)
+}
+
+func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSession, now time.Time) error {
+	if session.Token == nil || strings.TrimSpace(session.Token.RefreshToken) == "" {
+		return errors.New("OIDC refresh token is missing")
+	}
+	refreshSeed := &oauth2.Token{RefreshToken: session.Token.RefreshToken, Expiry: now.Add(-time.Second)}
+	oidcContext := oidc.ClientContext(ctx, a.httpClient)
+	token, err := a.oauth2Config.TokenSource(oidcContext, refreshSeed).Token()
+	if err != nil {
+		return fmt.Errorf("refresh OIDC token: %w", err)
+	}
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok || rawIDToken == "" {
+		return errors.New("refreshed OIDC response did not contain an ID token")
+	}
+	idToken, err := a.verifier.Verify(oidcContext, rawIDToken)
+	if err != nil {
+		return fmt.Errorf("verify refreshed OIDC ID token: %w", err)
+	}
+	var claims platformIDTokenClaims
+	if err := idToken.Claims(&claims); err != nil {
+		return fmt.Errorf("decode refreshed OIDC ID token: %w", err)
+	}
+	principal, err := principalFromPlatformClaims(claims, a.options.TenantID)
+	if err != nil {
+		return err
+	}
+	if principal.UserID != session.Principal.UserID || principal.TenantID != session.Principal.TenantID {
+		return errors.New("refreshed OIDC subject changed")
+	}
+	if !idToken.Expiry.After(now) {
+		return errors.New("refreshed OIDC ID token is expired")
+	}
+	session.Principal, session.IDToken, session.Token, session.RefreshedAt = principal, rawIDToken, token, now
+	session.TokenExpiresAt = idToken.Expiry
+	return nil
+}
+
+func (a *OIDCAuthenticator) deleteSession(id string, expected *localSession) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	if a.sessions[id] == expected {
+		delete(a.sessions, id)
+	}
 }
 
 func principalFromPlatformClaims(claims platformIDTokenClaims, expectedTenantID string) (application.Principal, error) {
@@ -251,17 +305,15 @@ func principalFromPlatformClaims(claims platformIDTokenClaims, expectedTenantID 
 	if len(claims.Permissions) == 0 {
 		return application.Principal{}, errors.New("OIDC permissions are missing")
 	}
-	permissions := make(map[string]bool, len(claims.Permissions)+len(platformAllPermissions))
+	permissions := make(map[string]bool, len(claims.Permissions))
 	for _, permission := range claims.Permissions {
 		if permission == "" || permission != strings.TrimSpace(permission) {
 			return application.Principal{}, errors.New("OIDC permissions are malformed")
 		}
-		permissions[permission] = true
-	}
-	if permissions["all"] {
-		for _, permission := range platformAllPermissions {
-			permissions[permission] = true
+		if permission == "all" {
+			return application.Principal{}, errors.New("OIDC wildcard permissions are unsupported")
 		}
+		permissions[permission] = true
 	}
 	return application.Principal{
 		TenantID: claims.TenantID, UserID: claims.Subject, Roles: roles, Permissions: permissions,
@@ -289,11 +341,14 @@ func (a *OIDCAuthenticator) Logout(writer http.ResponseWriter, request *http.Req
 	var idToken string
 	if cookie, err := request.Cookie(a.options.SessionCookieName); err == nil {
 		a.mutex.Lock()
-		if session, exists := a.sessions[cookie.Value]; exists {
-			idToken = session.IDToken
-			delete(a.sessions, cookie.Value)
-		}
+		session := a.sessions[cookie.Value]
+		delete(a.sessions, cookie.Value)
 		a.mutex.Unlock()
+		if session != nil {
+			session.mutex.Lock()
+			idToken = session.IDToken
+			session.mutex.Unlock()
+		}
 	}
 	expired := a.sessionCookie("", time.Unix(1, 0))
 	expired.MaxAge = -1
