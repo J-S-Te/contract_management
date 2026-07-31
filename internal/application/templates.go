@@ -19,7 +19,7 @@ type TemplateRepository interface {
 }
 
 func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, filename string, content []byte) (contracttemplate.Template, error) {
-	if !actor.Has("contract_template.manage") || !hasRole(actor, "admin") {
+	if !hasRole(actor, "admin") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
 	name, filename = strings.TrimSpace(name), filepath.Base(strings.TrimSpace(filename))
@@ -42,7 +42,7 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 }
 
 func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contracttemplate.Template, error) {
-	if !actor.Has("contract.create") && !actor.Has("contract_template.manage") {
+	if !actor.Has("contract.create") && !hasRole(actor, "admin") {
 		return nil, ErrForbidden
 	}
 	if s.Templates == nil {

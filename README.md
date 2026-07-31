@@ -58,8 +58,8 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 |---|---|---|---|
 | GET | `/api/v1/auth/me` | 已登录 | 返回平台授权快照，用于前端菜单和按钮展示 |
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
-| GET | `/api/v1/contract-templates` | `contract.create` 或 `contract_template.manage` | 查询当前租户可用的 DOCX 模板和动态字段 |
-| POST | `/api/v1/contract-templates` | `admin` 角色 + `contract_template.manage` | 上传并解析 DOCX 模板，最大 10MB |
+| GET | `/api/v1/contract-templates` | `contract.create` 或 `admin` 角色 | 查询当前租户可用的 DOCX 模板和动态字段 |
+| POST | `/api/v1/contract-templates` | `admin` 角色 | 上传并解析 DOCX 模板，最大 10MB |
 | POST | `/api/v1/contract-templates/{id}/preview` | `contract.create` | 根据表单值渲染安全的 HTML 预览 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
 | GET | `/api/v1/contracts/{id}/export` | `contract.read` | 导出创建时固化的 DOCX，仅合同负责人可访问 |

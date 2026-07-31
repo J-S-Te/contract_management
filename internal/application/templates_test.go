@@ -41,17 +41,52 @@ func (r *memoryTemplateRepository) GetTemplate(_ context.Context, tenantID, id s
 	return item, nil
 }
 
-func TestCreateTemplateRequiresAdminRoleAndPermission(t *testing.T) {
+func TestCreateTemplateRequiresAdminRole(t *testing.T) {
 	service := &Service{Templates: &memoryTemplateRepository{}}
 	content := applicationTestDOCX(t, "{{customer_name}}")
 
 	_, err := service.CreateTemplate(context.Background(), Principal{
 		TenantID: "tenant-1", UserID: "sales-1", Roles: []string{"sales"},
-		Permissions: map[string]bool{"contract_template.manage": true},
 	}, "标准合同", "standard.docx", content)
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("CreateTemplate() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestCreateTemplateAllowsAdminWithoutPermissions(t *testing.T) {
+	templates := &memoryTemplateRepository{}
+	service := &Service{Templates: templates}
+
+	created, err := service.CreateTemplate(context.Background(), Principal{
+		TenantID: "tenant-1", UserID: "admin-1", Roles: []string{"admin"},
+		Permissions: map[string]bool{},
+	}, "标准合同", "standard.docx", applicationTestDOCX(t, "{{customer_name}}"))
+
+	if err != nil {
+		t.Fatalf("CreateTemplate() error = %v", err)
+	}
+	if created.Name != "标准合同" || templates.items[created.ID].CreatedBy != "admin-1" {
+		t.Fatalf("created = %#v, stored = %#v", created, templates.items[created.ID])
+	}
+}
+
+func TestListTemplatesAllowsAdminWithoutPermissions(t *testing.T) {
+	templates := &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "标准合同"},
+	}}
+	service := &Service{Templates: templates}
+
+	items, err := service.ListTemplates(context.Background(), Principal{
+		TenantID: "tenant-1", UserID: "admin-1", Roles: []string{"admin"},
+		Permissions: map[string]bool{},
+	})
+
+	if err != nil {
+		t.Fatalf("ListTemplates() error = %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "template-1" {
+		t.Fatalf("items = %#v", items)
 	}
 }
 
