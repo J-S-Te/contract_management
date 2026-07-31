@@ -44,7 +44,7 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, s
 		query = query.Where("status = ?", status)
 	}
 	var records []contractRecord
-	if err := query.Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+	if err := query.Omit("rendered_document", "template_values_json").Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]contract.Contract, 0, len(records))
@@ -57,7 +57,7 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, s
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
 	var record approvalInstanceRecord
 	err := r.db.WithContext(ctx).
-		Select("id", "tenant_id", "contract_id", "kind", "status", "applicant_user_id", "applicant_username", "temporal_workflow_id", "temporal_run_id", "from_status", "target_status", "reason", "rule_id", "rule_version").
+		Select("id", "tenant_id", "contract_id", "kind", "status", "applicant_user_id", "applicant_display_name", "temporal_workflow_id", "temporal_run_id", "from_status", "target_status", "reason", "rule_id", "rule_version").
 		Where("tenant_id = ? AND id = ?", tenantID, id).Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return approval.Meta{}, apperrors.ErrNotFound
@@ -68,7 +68,7 @@ func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (
 	return approval.Meta{
 		ID: record.ID, TenantID: record.TenantID, ContractID: record.ContractID,
 		Kind: approval.Kind(record.Kind), Status: approval.Status(record.Status),
-		ApplicantUserID: record.ApplicantUserID, ApplicantUsername: record.ApplicantUsername, WorkflowID: record.TemporalWorkflowID, RunID: record.TemporalRunID,
+		ApplicantUserID: record.ApplicantUserID, ApplicantDisplayName: record.ApplicantDisplayName, WorkflowID: record.TemporalWorkflowID, RunID: record.TemporalRunID,
 		FromStatus: record.FromStatus, TargetStatus: record.TargetStatus,
 		Reason: valueOrEmpty(record.Reason), RuleID: valueOrEmpty(record.RuleID), RuleVersion: uintValueOrZero(record.RuleVersion),
 	}, nil
@@ -85,7 +85,7 @@ func (r *Repository) ListApprovalActions(ctx context.Context, tenantID, approval
 	for _, record := range records {
 		result = append(result, approval.Action{
 			ID: record.ID, NodeID: valueOrEmpty(record.NodeID), Action: record.Action,
-			ActorUserID: record.ActorUserID, ActorUsername: record.ActorUsername, Comment: valueOrEmpty(record.Comment), OccurredAt: record.OccurredAt,
+			ActorUserID: record.ActorUserID, ActorDisplayName: record.ActorDisplayName, Comment: valueOrEmpty(record.Comment), OccurredAt: record.OccurredAt,
 		})
 	}
 	return result, nil
@@ -97,7 +97,7 @@ func (r *Repository) ListApprovals(ctx context.Context, tenantID, applicantUserI
 	}
 	var records []approvalInstanceRecord
 	if err := r.db.WithContext(ctx).
-		Select("id", "contract_id", "applicant_user_id", "applicant_username", "kind", "status", "current_node_index", "created_at", "updated_at").
+		Select("id", "contract_id", "applicant_user_id", "applicant_display_name", "kind", "status", "current_node_index", "created_at", "updated_at").
 		Where("tenant_id = ? AND applicant_user_id = ?", tenantID, applicantUserID).
 		Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (r *Repository) ListApprovals(ctx context.Context, tenantID, applicantUserI
 	result := make([]approval.Summary, 0, len(records))
 	for _, record := range records {
 		result = append(result, approval.Summary{
-			ApprovalID: record.ID, ContractID: record.ContractID, ApplicantUserID: record.ApplicantUserID, ApplicantUsername: record.ApplicantUsername,
+			ApprovalID: record.ID, ContractID: record.ContractID, ApplicantUserID: record.ApplicantUserID, ApplicantDisplayName: record.ApplicantDisplayName,
 			Kind: approval.Kind(record.Kind), Status: approval.Status(record.Status),
 			CurrentNodeIndex: record.CurrentNodeIndex, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 		})
@@ -208,7 +208,7 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 		now := time.Now().UTC()
 		instance := approvalInstanceRecord{
 			ID: in.ApprovalID, TenantID: in.TenantID, ContractID: in.ContractID,
-			Kind: string(in.Kind), Status: string(approval.StatusRunning), ApplicantUserID: in.ApplicantUserID, ApplicantUsername: in.ApplicantUsername,
+			Kind: string(in.Kind), Status: string(approval.StatusRunning), ApplicantUserID: in.ApplicantUserID, ApplicantDisplayName: in.ApplicantDisplayName,
 			FromStatus: string(in.FromStatus), TargetStatus: string(in.TargetStatus), Reason: stringPtr(in.Reason),
 			RuleID: stringPtr(in.RuleID), RuleVersion: uintPtr(in.RuleVersion), ContentHash: stringPtr(in.ContentHash),
 			NodesJSON: nodesJSON, CurrentNodeIndex: 0, TemporalWorkflowID: in.WorkflowID, TemporalRunID: in.RunID,
@@ -256,7 +256,7 @@ func (r *Repository) RecordCommand(ctx context.Context, in workflows.RecordComma
 		action := approvalActionRecord{
 			ID: newID(), TenantID: in.TenantID, ApprovalID: in.ApprovalID, ContractID: in.ContractID,
 			NodeID: stringPtr(in.NodeID), CommandID: in.Command.CommandID, Action: string(in.Command.Action),
-			ActorUserID: in.Command.ActorUserID, ActorUsername: in.Command.ActorUsername, Comment: stringPtr(in.Command.Comment), PayloadJSON: payloadJSON, OccurredAt: when,
+			ActorUserID: in.Command.ActorUserID, ActorDisplayName: in.Command.ActorDisplayName, Comment: stringPtr(in.Command.Comment), PayloadJSON: payloadJSON, OccurredAt: when,
 		}
 		if err := tx.Create(&action).Error; err != nil {
 			return err
@@ -429,12 +429,18 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 }
 
 func contractFromRecord(record contractRecord) contract.Contract {
-	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerUserID: record.OwnerUserID, OwnerUsername: record.OwnerUsername, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), Version: record.Version, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel
 	}
 	if record.ContentHash != nil {
 		result.ContentHash = *record.ContentHash
+	}
+	if record.TemplateID != nil {
+		result.TemplateID = *record.TemplateID
+	}
+	if len(record.TemplateValuesJSON) > 0 {
+		_ = json.Unmarshal(record.TemplateValuesJSON, &result.TemplateValues)
 	}
 	return result
 }

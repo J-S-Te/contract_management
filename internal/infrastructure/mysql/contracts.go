@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -51,13 +52,18 @@ func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID 
 
 func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, actorUserID string) error {
 	now := time.Now().UTC()
+	templateValues, err := json.Marshal(c.TemplateValues)
+	if err != nil {
+		return err
+	}
 	if c.Status == "" {
 		c.Status = contract.StatusDraft
 	}
 	record := contractRecord{
 		ID: c.ID, TenantID: c.TenantID, ContractNumber: c.Number, Title: c.Title,
 		ContractType: c.Type, ServiceType: c.ServiceType, CustomerCreditLevel: stringPtr(c.CustomerCreditLevel),
-		OwnerUserID: c.OwnerUserID, OwnerUsername: c.OwnerUsername, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
+		OwnerUserID: c.OwnerUserID, OwnerDisplayName: c.OwnerDisplayName, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
+		TemplateID: stringPtr(c.TemplateID), TemplateValuesJSON: templateValues, RenderedDocument: c.Document,
 		Status: string(c.Status), EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,
 		CreatedAt: now, CreatedBy: actorUserID, UpdatedAt: now, UpdatedBy: actorUserID,
 	}

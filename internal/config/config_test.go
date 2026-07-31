@@ -36,6 +36,8 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID", "")
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID", "")
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET", "")
+	t.Setenv("APPROVER_ROLE_ASSIGNMENTS_JSON", "{}")
+	t.Setenv("USER_DISPLAY_NAMES_JSON", "{}")
 }
 
 func TestLoadRejectsIncompleteCatalogSynchronizationConfiguration(t *testing.T) {
@@ -101,5 +103,29 @@ func TestLoadRejectsPlatformURLWithPath(t *testing.T) {
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "PLATFORM_BASE_URL") {
 		t.Fatalf("Load() error = %v, want invalid platform URL error", err)
+	}
+}
+
+func TestLoadRequiresDisplayNameForEveryConfiguredApprover(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("APPROVER_ROLE_ASSIGNMENTS_JSON", `{"sales_director":["user-1"]}`)
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "USER_DISPLAY_NAMES_JSON") {
+		t.Fatalf("Load() error = %v, want missing approver display name error", err)
+	}
+}
+
+func TestLoadAcceptsChineseDisplayNameDirectory(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("APPROVER_ROLE_ASSIGNMENTS_JSON", `{"sales_director":["user-1"]}`)
+	t.Setenv("USER_DISPLAY_NAMES_JSON", `{"user-1":"蔡总","user-2":"章六"}`)
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.UserDisplayNames["user-1"] != "蔡总" || config.UserDisplayNames["user-2"] != "章六" {
+		t.Fatalf("UserDisplayNames = %#v", config.UserDisplayNames)
 	}
 }

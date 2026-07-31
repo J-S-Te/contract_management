@@ -19,14 +19,14 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 	}
 	now := workflow.Now(ctx)
 	node := approval.Node{ID: "admin", Name: "管理员审批", RoleCode: "admin", AssigneeIDs: unique(input.AdminUserIDs), Countersign: approval.CountersignAny, Timeout: input.Timeout}
-	state := ApprovalState{ApprovalID: input.ApprovalID, Kind: approval.KindStatusChange, Status: approval.StatusRunning, ContractID: input.ContractID, ApplicantUserID: input.ApplicantUserID, ApplicantUsername: input.ApplicantUsername, Nodes: initializeNodes([]approval.Node{node}), StartedAt: now, UpdatedAt: now}
+	state := ApprovalState{ApprovalID: input.ApprovalID, Kind: approval.KindStatusChange, Status: approval.StatusRunning, ContractID: input.ContractID, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Nodes: initializeNodes([]approval.Node{node}), StartedAt: now, UpdatedAt: now}
 	state.Nodes[0].Status, state.Nodes[0].StartedAt = approval.NodeActive, now
 	if err := workflow.SetQueryHandler(ctx, StateQueryName, func() (ApprovalState, error) { return state, nil }); err != nil {
 		return state, err
 	}
 
 	info, actx := workflow.GetInfo(ctx), activityContext(ctx)
-	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantUsername: input.ApplicantUsername, Kind: approval.KindStatusChange, FromStatus: input.FromStatus, TargetStatus: input.TargetStatus, Reason: input.Reason, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: []approval.Node{node}}
+	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindStatusChange, FromStatus: input.FromStatus, TargetStatus: input.TargetStatus, Reason: input.Reason, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: []approval.Node{node}}
 	if err := workflow.ExecuteActivity(actx, ActivityStartApproval, start).Get(ctx, nil); err != nil {
 		return state, err
 	}

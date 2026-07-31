@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
+	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/workflows"
@@ -20,7 +23,7 @@ import (
 
 type Principal struct {
 	TenantID, UserID string
-	Username         string
+	DisplayName      string
 	Roles            []string
 	Permissions      map[string]bool
 	RoleConfigHash   string
@@ -51,11 +54,37 @@ type ApproverResolver interface {
 
 type Service struct {
 	Repo             Repository
+	Templates        TemplateRepository
 	Temporal         client.Client
 	Approvers        ApproverResolver
+	UserDisplayNames map[string]string
 	TaskQueue        string
 	NodeTimeout      time.Duration
 	ReminderInterval time.Duration
+}
+
+type UserReference struct {
+	UserID      string `json:"user_id"`
+	DisplayName string `json:"display_name"`
+}
+
+func (s *Service) UserDirectory() []UserReference {
+	users := make([]UserReference, 0, len(s.UserDisplayNames))
+	for userID, displayName := range s.UserDisplayNames {
+		userID = strings.TrimSpace(userID)
+		displayName = strings.TrimSpace(displayName)
+		if userID == "" || displayName == "" {
+			continue
+		}
+		users = append(users, UserReference{UserID: userID, DisplayName: displayName})
+	}
+	sort.Slice(users, func(i, j int) bool {
+		if users[i].DisplayName == users[j].DisplayName {
+			return users[i].UserID < users[j].UserID
+		}
+		return users[i].DisplayName < users[j].DisplayName
+	})
+	return users
 }
 
 type StartResult struct {
@@ -75,14 +104,29 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	if !actor.Has("contract.create") {
 		return c, ErrForbidden
 	}
-	if c.Number == "" || c.Title == "" || c.Type == "" || c.ServiceType == "" || c.AmountMinor < 0 || c.Content == "" {
+	if c.TemplateID != "" {
+		rendered, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues)
+		if err != nil {
+			return c, err
+		}
+		c.Document = rendered
+		c.Content, err = docx.PlainText(rendered)
+		if err != nil {
+			return c, fmt.Errorf("%w: %v", ErrValidation, err)
+		}
+	}
+	if c.Number == "" || c.Title == "" || c.Type == "" || c.ServiceType == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 {
 		return c, ErrValidation
 	}
 	if c.Currency == "" {
 		c.Currency = "CNY"
 	}
-	c.ID, c.TenantID, c.OwnerUserID, c.OwnerUsername, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.Username, contract.StatusDraft
-	hash := sha256.Sum256([]byte(c.Content))
+	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.DisplayName, contract.StatusDraft
+	hashSource := []byte(c.Content)
+	if len(c.Document) > 0 {
+		hashSource = c.Document
+	}
+	hash := sha256.Sum256(hashSource)
 	c.ContentHash = hex.EncodeToString(hash[:])
 	if err := s.Repo.CreateContract(ctx, c, actor.UserID); err != nil {
 		return c, err
@@ -124,7 +168,7 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	}
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("contract-approval:%s:%s:v%d", actor.TenantID, contractID, c.Version)
-	in := workflows.ContractApprovalInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: c.Version, ApplicantUserID: actor.UserID, ApplicantUsername: actor.Username, ContentHash: c.ContentHash, RuleID: ruleID, RuleVersion: ruleVersion, Nodes: nodes, DefaultNodeTimeout: s.NodeTimeout, ReminderInterval: s.ReminderInterval}
+	in := workflows.ContractApprovalInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: c.Version, ApplicantUserID: actor.UserID, ApplicantDisplayName: actor.DisplayName, ContentHash: c.ContentHash, RuleID: ruleID, RuleVersion: ruleVersion, Nodes: nodes, DefaultNodeTimeout: s.NodeTimeout, ReminderInterval: s.ReminderInterval}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.ContractApprovalWorkflowName, in)
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
@@ -166,7 +210,7 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	}
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("status-change:%s:%s:v%d", actor.TenantID, contractID, version)
-	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, ApplicantUsername: actor.Username, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout}
+	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, ApplicantDisplayName: actor.DisplayName, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.StatusChangeWorkflowName, in)
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
@@ -204,7 +248,7 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 			return ErrForbidden
 		}
 	}
-	command.CommandID, command.ActorUserID, command.ActorUsername, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.Username, time.Now().UTC()
+	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
 	return s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command)
 }
 

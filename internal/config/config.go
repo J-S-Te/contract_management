@@ -47,6 +47,7 @@ type Config struct {
 	ReminderInterval          time.Duration
 	ArchiveCron               string
 	Approvers                 application.StaticApprovers
+	UserDisplayNames          map[string]string
 }
 
 func Load() (Config, error) {
@@ -99,6 +100,13 @@ func Load() (Config, error) {
 		}
 	} else {
 		c.Approvers = application.StaticApprovers{}
+	}
+	if raw := os.Getenv("USER_DISPLAY_NAMES_JSON"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.UserDisplayNames); err != nil {
+			return c, fmt.Errorf("USER_DISPLAY_NAMES_JSON: %w", err)
+		}
+	} else {
+		c.UserDisplayNames = map[string]string{}
 	}
 	if err := c.validate(); err != nil {
 		return c, err
@@ -164,6 +172,13 @@ func (c Config) validate() error {
 	if c.PlatformCatalogSync && (strings.TrimSpace(c.PlatformApplicationID) == "" ||
 		strings.TrimSpace(c.PlatformCatalogClientID) == "" || strings.TrimSpace(c.PlatformCatalogSecret) == "") {
 		return fmt.Errorf("platform authorization catalog synchronization requires application ID, client ID and client secret")
+	}
+	for roleCode, userIDs := range c.Approvers {
+		for _, userID := range userIDs {
+			if strings.TrimSpace(c.UserDisplayNames[userID]) == "" {
+				return fmt.Errorf("USER_DISPLAY_NAMES_JSON must provide a Chinese display name for approver %q in role %q", userID, roleCode)
+			}
+		}
 	}
 	return nil
 }

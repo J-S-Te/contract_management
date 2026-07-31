@@ -64,8 +64,8 @@ type platformIDTokenClaims struct {
 }
 
 type platformUserInfoClaims struct {
-	Subject           string `json:"sub"`
-	PreferredUsername string `json:"preferred_username"`
+	Subject string `json:"sub"`
+	Name    string `json:"name"`
 }
 
 // OIDCAuthenticator owns the contract system's OIDC login transactions and independent local
@@ -221,7 +221,7 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "OIDC authorization claims are invalid", http.StatusUnauthorized)
 		return
 	}
-	principal.Username, err = a.loadUsername(oidcContext, token, principal.UserID)
+	principal.DisplayName, err = a.loadDisplayName(oidcContext, token, principal.UserID)
 	if err != nil {
 		http.Error(writer, "OIDC user information is invalid", http.StatusUnauthorized)
 		return
@@ -274,7 +274,7 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	if err != nil {
 		return err
 	}
-	principal.Username, err = a.loadUsername(oidcContext, token, principal.UserID)
+	principal.DisplayName, err = a.loadDisplayName(oidcContext, token, principal.UserID)
 	if err != nil {
 		return err
 	}
@@ -289,7 +289,7 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	return nil
 }
 
-func (a *OIDCAuthenticator) loadUsername(ctx context.Context, token *oauth2.Token, expectedSubject string) (string, error) {
+func (a *OIDCAuthenticator) loadDisplayName(ctx context.Context, token *oauth2.Token, expectedSubject string) (string, error) {
 	if a.provider == nil || token == nil || strings.TrimSpace(token.AccessToken) == "" {
 		return "", errors.New("OIDC UserInfo dependencies are incomplete")
 	}
@@ -301,11 +301,11 @@ func (a *OIDCAuthenticator) loadUsername(ctx context.Context, token *oauth2.Toke
 	if err := info.Claims(&claims); err != nil {
 		return "", fmt.Errorf("decode OIDC UserInfo: %w", err)
 	}
-	username := strings.TrimSpace(claims.PreferredUsername)
-	if info.Subject != expectedSubject || (claims.Subject != "" && claims.Subject != expectedSubject) || username == "" {
-		return "", errors.New("OIDC UserInfo subject or preferred_username is invalid")
+	displayName := strings.TrimSpace(claims.Name)
+	if info.Subject != expectedSubject || (claims.Subject != "" && claims.Subject != expectedSubject) || displayName == "" {
+		return "", errors.New("OIDC UserInfo subject or name is invalid")
 	}
-	return username, nil
+	return displayName, nil
 }
 
 func (a *OIDCAuthenticator) deleteSession(id string, expected *localSession) {

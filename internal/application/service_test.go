@@ -91,11 +91,11 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	}
 }
 
-func TestCreateContractStoresLoginUsernameSnapshot(t *testing.T) {
+func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 	repository := &recordingRepository{}
 	service := &Service{Repo: repository}
 	actor := Principal{
-		TenantID: "tenant-1", UserID: "user-1", Username: "zhangliu",
+		TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六",
 		Permissions: map[string]bool{"contract.create": true},
 	}
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
@@ -104,8 +104,8 @@ func TestCreateContractStoresLoginUsernameSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateContract() error = %v", err)
 	}
-	if created.OwnerUserID != "user-1" || created.OwnerUsername != "zhangliu" ||
-		repository.created.OwnerUsername != "zhangliu" {
+	if created.OwnerUserID != "user-1" || created.OwnerDisplayName != "章六" ||
+		repository.created.OwnerDisplayName != "章六" {
 		t.Fatalf("created contract = %#v, persisted = %#v", created, repository.created)
 	}
 }

@@ -3,24 +3,27 @@ package contract
 import "time"
 
 type Contract struct {
-	ID                  string     `json:"id"`
-	TenantID            string     `json:"tenant_id"`
-	Number              string     `json:"contract_number"`
-	Title               string     `json:"title"`
-	Type                string     `json:"contract_type"`
-	ServiceType         string     `json:"service_type"`
-	CustomerCreditLevel string     `json:"customer_credit_level,omitempty"`
-	OwnerUserID         string     `json:"owner_user_id"`
-	OwnerUsername       string     `json:"owner_username"`
-	AmountMinor         int64      `json:"amount_minor"`
-	Currency            string     `json:"currency"`
-	Content             string     `json:"content"`
-	Status              Status     `json:"status"`
-	Version             uint64     `json:"version"`
-	EndDate             *time.Time `json:"end_date,omitempty"`
-	ContentHash         string     `json:"content_hash"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	ID                  string            `json:"id"`
+	TenantID            string            `json:"tenant_id"`
+	Number              string            `json:"contract_number"`
+	Title               string            `json:"title"`
+	Type                string            `json:"contract_type"`
+	ServiceType         string            `json:"service_type"`
+	CustomerCreditLevel string            `json:"customer_credit_level,omitempty"`
+	OwnerUserID         string            `json:"owner_user_id"`
+	OwnerDisplayName    string            `json:"owner_display_name"`
+	AmountMinor         int64             `json:"amount_minor"`
+	Currency            string            `json:"currency"`
+	Content             string            `json:"content"`
+	TemplateID          string            `json:"template_id,omitempty"`
+	TemplateValues      map[string]string `json:"template_values,omitempty"`
+	Document            []byte            `json:"-"`
+	Status              Status            `json:"status"`
+	Version             uint64            `json:"version"`
+	EndDate             *time.Time        `json:"end_date,omitempty"`
+	ContentHash         string            `json:"content_hash"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 type LifecycleEvent struct {

@@ -23,13 +23,13 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 	}
 
 	now := workflow.Now(ctx)
-	state := ApprovalState{ApprovalID: input.ApprovalID, Kind: approval.KindContract, Status: approval.StatusRunning, ContractID: input.ContractID, ApplicantUserID: input.ApplicantUserID, ApplicantUsername: input.ApplicantUsername, Nodes: initializeNodes(input.Nodes), StartedAt: now, UpdatedAt: now}
+	state := ApprovalState{ApprovalID: input.ApprovalID, Kind: approval.KindContract, Status: approval.StatusRunning, ContractID: input.ContractID, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Nodes: initializeNodes(input.Nodes), StartedAt: now, UpdatedAt: now}
 	if err := workflow.SetQueryHandler(ctx, StateQueryName, func() (ApprovalState, error) { return state, nil }); err != nil {
 		return state, err
 	}
 
 	info, actx := workflow.GetInfo(ctx), activityContext(ctx)
-	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantUsername: input.ApplicantUsername, Kind: approval.KindContract, FromStatus: contract.StatusDraft, TargetStatus: contract.StatusPending, RuleID: input.RuleID, RuleVersion: input.RuleVersion, ContentHash: input.ContentHash, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: input.Nodes}
+	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindContract, FromStatus: contract.StatusDraft, TargetStatus: contract.StatusPending, RuleID: input.RuleID, RuleVersion: input.RuleVersion, ContentHash: input.ContentHash, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: input.Nodes}
 	if err := workflow.ExecuteActivity(actx, ActivityStartApproval, start).Get(ctx, nil); err != nil {
 		return state, err
 	}

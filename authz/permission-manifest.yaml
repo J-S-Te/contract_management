@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 3
+  version: 4
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -42,6 +42,17 @@ permissions:
     constraints:
       - 新合同的 tenant_id 和 owner_user_id 由当前会话确定
       - 任何角色都不能提交非本人合同
+
+  - code: contract_template.manage
+    name: 管理合同模板
+    resource: contract_template
+    action: manage
+    risk_level: HIGH
+    enforced_by:
+      - POST /api/v1/contract-templates
+    constraints:
+      - 仅同时具有 admin 角色和本权限的超级管理员可上传 DOCX 模板
+      - 模板按 tenant_id 隔离
 
   - code: contract.edit
     name: 变更合同状态
@@ -113,6 +124,7 @@ roles:
       - contract.read
       - contract.create
       - contract.edit
+      - contract_template.manage
       - approval.view
       - approval.process
       - approval.manage
@@ -179,6 +191,7 @@ compatibility:
     - contract.read
     - contract.create
     - contract.edit
+    - contract_template.manage
     - approval.view
     - approval.process
     - approval.manage

@@ -16,6 +16,7 @@
 - 启用 `PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED` 后，API 启动时使用独立机器 Client 将内嵌权限清单发布到平台；同步失败时拒绝启动，避免运行时权限与平台目录漂移。
 - 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
 - 合同服务自身提供 `/`、`/auth/login`、`/auth/callback`、`/auth/logout` 和合同台账页面；统一门户通过 `/contract_management/` 访问，合同 API、数据库和 Temporal 不直接暴露宿主机端口。
+- 超级管理员可上传不超过 10MB 的 DOCX 合同模板；销售人员在新建合同时选择模板、填写动态字段、预览并导出渲染后的 DOCX。渲染结果随合同固化，不受后续模板变化影响。
 
 ## 目录
 
@@ -57,7 +58,11 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 |---|---|---|---|
 | GET | `/api/v1/auth/me` | 已登录 | 返回平台授权快照，用于前端菜单和按钮展示 |
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
+| GET | `/api/v1/contract-templates` | `contract.create` 或 `contract_template.manage` | 查询当前租户可用的 DOCX 模板和动态字段 |
+| POST | `/api/v1/contract-templates` | `admin` 角色 + `contract_template.manage` | 上传并解析 DOCX 模板，最大 10MB |
+| POST | `/api/v1/contract-templates/{id}/preview` | `contract.create` | 根据表单值渲染安全的 HTML 预览 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
+| GET | `/api/v1/contracts/{id}/export` | `contract.read` | 导出创建时固化的 DOCX，仅合同负责人可访问 |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |
 | POST | `/api/v1/contracts/{id}/status-changes` | `contract.edit` | 直接流转或启动关键状态审批 |
 | GET | `/api/v1/approvals` | 已登录 | 当前用户发起的审批与历史状态 |
@@ -75,6 +80,8 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | PUT/DELETE | `/api/v1/approval-rules/{id}` | `approval_rule.manage` | 按 `version` 乐观锁更新或删除规则 |
 
 动作接口返回 `202` 表示 Signal 已由 Temporal 接收。最终状态通过审批详情查询；持久化待办和动作记录由 Activity 最终一致地更新。
+
+DOCX 模板变量写作 `{{field_name:中文字段名}}`，例如 `{{customer_name:客户名称}}`；中文标签可以省略，此时页面会根据变量名生成标签。变量可位于正文、页眉或页脚，并允许被 Word 拆分为多个文本片段。创建合同请求通过 `template_id` 和 `template_values` 提交字段值，服务端会重新渲染，不能用客户端预览内容替代。
 
 ## 本地运行
 

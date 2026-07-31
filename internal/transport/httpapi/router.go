@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
@@ -64,6 +67,10 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/contracts/:contractID", h.getContract)
+	api.GET("/contracts/:contractID/export", h.exportContract)
+	api.GET("/contract-templates", h.listTemplates)
+	api.POST("/contract-templates", h.createTemplate)
+	api.POST("/contract-templates/:templateID/preview", h.previewTemplate)
 	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)
 	api.POST("/contracts/:contractID/status-changes", h.changeStatus)
 	api.GET("/approvals", h.listApprovals)
@@ -93,9 +100,14 @@ func (h *Handler) me(c *gin.Context) {
 	if len(roles) > 0 {
 		role["code"] = roles[0]
 	}
+	userDirectory := []application.UserReference{}
+	if h.service != nil {
+		userDirectory = h.service.UserDirectory()
+	}
 	writeData(c, http.StatusOK, map[string]any{
-		"tenant_id": p.TenantID, "user_id": p.UserID, "username": p.Username, "role": role, "roles": roles,
+		"tenant_id": p.TenantID, "user_id": p.UserID, "display_name": p.DisplayName, "role": role, "roles": roles,
 		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,
+		"user_directory": userDirectory,
 	})
 }
 
@@ -129,6 +141,12 @@ func auditResource(c *gin.Context) (string, string) {
 	}
 	if id := c.Param("ruleID"); id != "" {
 		return "APPROVAL_RULE", id
+	}
+	if id := c.Param("templateID"); id != "" {
+		return "CONTRACT_TEMPLATE", id
+	}
+	if strings.Contains(c.Request.URL.Path, "contract-templates") {
+		return "CONTRACT_TEMPLATE", ""
 	}
 	if strings.Contains(c.Request.URL.Path, "approval-rules") {
 		return "APPROVAL_RULE", ""
@@ -186,15 +204,17 @@ func (h *Handler) deleteRule(c *gin.Context) {
 }
 
 type createContractRequest struct {
-	Number              string     `json:"contract_number"`
-	Title               string     `json:"title"`
-	ContractType        string     `json:"contract_type"`
-	ServiceType         string     `json:"service_type"`
-	CustomerCreditLevel string     `json:"customer_credit_level"`
-	AmountMinor         int64      `json:"amount_minor"`
-	Currency            string     `json:"currency"`
-	Content             string     `json:"content"`
-	EndDate             *time.Time `json:"end_date"`
+	Number              string            `json:"contract_number"`
+	Title               string            `json:"title"`
+	ContractType        string            `json:"contract_type"`
+	ServiceType         string            `json:"service_type"`
+	CustomerCreditLevel string            `json:"customer_credit_level"`
+	AmountMinor         int64             `json:"amount_minor"`
+	Currency            string            `json:"currency"`
+	Content             string            `json:"content"`
+	TemplateID          string            `json:"template_id"`
+	TemplateValues      map[string]string `json:"template_values"`
+	EndDate             *time.Time        `json:"end_date"`
 }
 
 func (h *Handler) createContract(c *gin.Context) {
@@ -202,7 +222,7 @@ func (h *Handler) createContract(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, EndDate: body.EndDate})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -217,6 +237,82 @@ func (h *Handler) getContract(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, found)
+}
+
+func (h *Handler) listTemplates(c *gin.Context) {
+	items, err := h.service.ListTemplates(c.Request.Context(), principal(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, items)
+}
+
+func (h *Handler) createTemplate(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, docx.MaxTemplateSize+(1<<20))
+	if err := c.Request.ParseMultipartForm(docx.MaxTemplateSize); err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "模板上传参数不合法或文件过大", nil)
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择 DOCX 模板文件", nil)
+		return
+	}
+	if fileHeader.Size <= 0 || fileHeader.Size > docx.MaxTemplateSize {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "DOCX 模板不能超过 10MB", nil)
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, docx.MaxTemplateSize+1))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	created, err := h.service.CreateTemplate(c.Request.Context(), principal(c), c.PostForm("name"), fileHeader.Filename, content)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusCreated, created)
+}
+
+func (h *Handler) previewTemplate(c *gin.Context) {
+	var body struct {
+		Values map[string]string `json:"values"`
+	}
+	if !decode(c, &body) {
+		return
+	}
+	preview, err := h.service.PreviewTemplate(c.Request.Context(), principal(c), c.Param("templateID"), body.Values)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]string{"html": preview})
+}
+
+func (h *Handler) exportContract(c *gin.Context) {
+	found, err := h.service.GetContract(c.Request.Context(), principal(c), c.Param("contractID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if len(found.Document) == 0 {
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可导出的模板文档", nil)
+		return
+	}
+	filename := strings.TrimSuffix(filepath.Base(found.Number), filepath.Ext(found.Number))
+	if filename == "" || filename == "." {
+		filename = "contract"
+	}
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename + ".docx"}))
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", found.Document)
 }
 
 func (h *Handler) listContracts(c *gin.Context) {

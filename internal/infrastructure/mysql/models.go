@@ -1,6 +1,10 @@
 package mysql
 
-import "time"
+import (
+	"time"
+
+	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
+)
 
 type contractRecord struct {
 	ID                  string `gorm:"primaryKey"`
@@ -11,10 +15,13 @@ type contractRecord struct {
 	ServiceType         string
 	CustomerCreditLevel *string
 	OwnerUserID         string
-	OwnerUsername       string
+	OwnerDisplayName    string
 	AmountMinor         int64
 	Currency            string
 	Content             string
+	TemplateID          *string
+	TemplateValuesJSON  []byte `gorm:"type:json"`
+	RenderedDocument    []byte `gorm:"type:longblob"`
 	Status              string
 	EndDate             *time.Time
 	ContentHash         *string
@@ -26,6 +33,27 @@ type contractRecord struct {
 }
 
 func (contractRecord) TableName() string { return "con_contract" }
+
+type contractTemplateRecord struct {
+	ID               string `gorm:"primaryKey"`
+	TenantID         string
+	Name             string
+	OriginalFilename string
+	FieldsJSON       []byte `gorm:"type:json"`
+	Document         []byte `gorm:"type:longblob"`
+	CreatedAt        time.Time
+	CreatedBy        string
+}
+
+func (contractTemplateRecord) TableName() string { return "con_contract_template" }
+
+func templateFromRecord(record contractTemplateRecord) contracttemplate.Template {
+	return contracttemplate.Template{
+		ID: record.ID, TenantID: record.TenantID, Name: record.Name,
+		OriginalFilename: record.OriginalFilename, Content: record.Document,
+		CreatedAt: record.CreatedAt, CreatedBy: record.CreatedBy,
+	}
+}
 
 type lifecycleEventRecord struct {
 	ID             string `gorm:"primaryKey"`
@@ -67,7 +95,7 @@ type approvalInstanceRecord struct {
 	Kind                  string
 	Status                string
 	ApplicantUserID       string
-	ApplicantUsername     string
+	ApplicantDisplayName  string
 	FromStatus            string
 	TargetStatus          string
 	Reason                *string
@@ -103,18 +131,18 @@ type approvalTaskRecord struct {
 func (approvalTaskRecord) TableName() string { return "con_approval_task" }
 
 type approvalActionRecord struct {
-	ID            string `gorm:"primaryKey"`
-	TenantID      string
-	ApprovalID    string
-	ContractID    string
-	NodeID        *string
-	CommandID     string
-	Action        string
-	ActorUserID   string
-	ActorUsername string
-	Comment       *string
-	PayloadJSON   []byte `gorm:"type:json"`
-	OccurredAt    time.Time
+	ID               string `gorm:"primaryKey"`
+	TenantID         string
+	ApprovalID       string
+	ContractID       string
+	NodeID           *string
+	CommandID        string
+	Action           string
+	ActorUserID      string
+	ActorDisplayName string
+	Comment          *string
+	PayloadJSON      []byte `gorm:"type:json"`
+	OccurredAt       time.Time
 }
 
 func (approvalActionRecord) TableName() string { return "con_approval_action" }

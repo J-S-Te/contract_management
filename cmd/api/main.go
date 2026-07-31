@@ -48,7 +48,7 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
-	service := &application.Service{Repo: repository, Temporal: temporalClient, Approvers: cfg.Approvers, TaskQueue: cfg.TemporalTaskQueue, NodeTimeout: cfg.NodeTimeout, ReminderInterval: cfg.ReminderInterval}
+	service := &application.Service{Repo: repository, Templates: repository, Temporal: temporalClient, Approvers: cfg.Approvers, UserDisplayNames: cfg.UserDisplayNames, TaskQueue: cfg.TemporalTaskQueue, NodeTimeout: cfg.NodeTimeout, ReminderInterval: cfg.ReminderInterval}
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,

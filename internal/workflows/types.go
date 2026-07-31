@@ -44,44 +44,44 @@ const (
 )
 
 type ContractApprovalInput struct {
-	ApprovalID         string          `json:"approval_id"`
-	TenantID           string          `json:"tenant_id"`
-	ContractID         string          `json:"contract_id"`
-	ContractVersion    uint64          `json:"contract_version"`
-	ApplicantUserID    string          `json:"applicant_user_id"`
-	ApplicantUsername  string          `json:"applicant_username"`
-	ContentHash        string          `json:"content_hash"`
-	RuleID             string          `json:"rule_id,omitempty"`
-	RuleVersion        uint64          `json:"rule_version,omitempty"`
-	Nodes              []approval.Node `json:"nodes"`
-	DefaultNodeTimeout time.Duration   `json:"default_node_timeout"`
-	ReminderInterval   time.Duration   `json:"reminder_interval"`
+	ApprovalID           string          `json:"approval_id"`
+	TenantID             string          `json:"tenant_id"`
+	ContractID           string          `json:"contract_id"`
+	ContractVersion      uint64          `json:"contract_version"`
+	ApplicantUserID      string          `json:"applicant_user_id"`
+	ApplicantDisplayName string          `json:"applicant_display_name"`
+	ContentHash          string          `json:"content_hash"`
+	RuleID               string          `json:"rule_id,omitempty"`
+	RuleVersion          uint64          `json:"rule_version,omitempty"`
+	Nodes                []approval.Node `json:"nodes"`
+	DefaultNodeTimeout   time.Duration   `json:"default_node_timeout"`
+	ReminderInterval     time.Duration   `json:"reminder_interval"`
 }
 
 type StatusChangeInput struct {
-	ApprovalID        string          `json:"approval_id"`
-	TenantID          string          `json:"tenant_id"`
-	ContractID        string          `json:"contract_id"`
-	ContractVersion   uint64          `json:"contract_version"`
-	ApplicantUserID   string          `json:"applicant_user_id"`
-	ApplicantUsername string          `json:"applicant_username"`
-	FromStatus        contract.Status `json:"from_status"`
-	TargetStatus      contract.Status `json:"target_status"`
-	Reason            string          `json:"reason"`
-	AdminUserIDs      []string        `json:"admin_user_ids"`
-	Timeout           time.Duration   `json:"timeout"`
+	ApprovalID           string          `json:"approval_id"`
+	TenantID             string          `json:"tenant_id"`
+	ContractID           string          `json:"contract_id"`
+	ContractVersion      uint64          `json:"contract_version"`
+	ApplicantUserID      string          `json:"applicant_user_id"`
+	ApplicantDisplayName string          `json:"applicant_display_name"`
+	FromStatus           contract.Status `json:"from_status"`
+	TargetStatus         contract.Status `json:"target_status"`
+	Reason               string          `json:"reason"`
+	AdminUserIDs         []string        `json:"admin_user_ids"`
+	Timeout              time.Duration   `json:"timeout"`
 }
 
 type ApprovalCommand struct {
-	CommandID     string                   `json:"command_id"`
-	Action        CommandAction            `json:"action"`
-	ActorUserID   string                   `json:"actor_user_id"`
-	ActorUsername string                   `json:"actor_username"`
-	Comment       string                   `json:"comment,omitempty"`
-	TargetUserIDs []string                 `json:"target_user_ids,omitempty"`
-	Countersign   approval.CountersignMode `json:"countersign,omitempty"`
-	TargetNodeID  string                   `json:"target_node_id,omitempty"`
-	OccurredAt    time.Time                `json:"occurred_at"`
+	CommandID        string                   `json:"command_id"`
+	Action           CommandAction            `json:"action"`
+	ActorUserID      string                   `json:"actor_user_id"`
+	ActorDisplayName string                   `json:"actor_display_name"`
+	Comment          string                   `json:"comment,omitempty"`
+	TargetUserIDs    []string                 `json:"target_user_ids,omitempty"`
+	Countersign      approval.CountersignMode `json:"countersign,omitempty"`
+	TargetNodeID     string                   `json:"target_node_id,omitempty"`
+	OccurredAt       time.Time                `json:"occurred_at"`
 }
 
 type RuntimeNode struct {
@@ -93,29 +93,29 @@ type RuntimeNode struct {
 }
 
 type ApprovalState struct {
-	ApprovalID        string          `json:"approval_id"`
-	Kind              approval.Kind   `json:"kind"`
-	Status            approval.Status `json:"status"`
-	ContractID        string          `json:"contract_id"`
-	ApplicantUserID   string          `json:"applicant_user_id"`
-	ApplicantUsername string          `json:"applicant_username"`
-	CurrentNodeIndex  int             `json:"current_node_index"`
-	Nodes             []RuntimeNode   `json:"nodes"`
-	StartedAt         time.Time       `json:"started_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	CompletedAt       time.Time       `json:"completed_at,omitempty"`
-	FailureReason     string          `json:"failure_reason,omitempty"`
+	ApprovalID           string          `json:"approval_id"`
+	Kind                 approval.Kind   `json:"kind"`
+	Status               approval.Status `json:"status"`
+	ContractID           string          `json:"contract_id"`
+	ApplicantUserID      string          `json:"applicant_user_id"`
+	ApplicantDisplayName string          `json:"applicant_display_name"`
+	CurrentNodeIndex     int             `json:"current_node_index"`
+	Nodes                []RuntimeNode   `json:"nodes"`
+	StartedAt            time.Time       `json:"started_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+	CompletedAt          time.Time       `json:"completed_at,omitempty"`
+	FailureReason        string          `json:"failure_reason,omitempty"`
 }
 
 type StartApprovalActivityInput struct {
-	ApprovalID, TenantID, ContractID, ApplicantUserID, ApplicantUsername string
-	ExpectedVersion                                                      uint64
-	Kind                                                                 approval.Kind
-	FromStatus, TargetStatus                                             contract.Status
-	Reason, RuleID                                                       string
-	RuleVersion                                                          uint64
-	ContentHash, WorkflowID, RunID                                       string
-	Nodes                                                                []approval.Node
+	ApprovalID, TenantID, ContractID, ApplicantUserID, ApplicantDisplayName string
+	ExpectedVersion                                                         uint64
+	Kind                                                                    approval.Kind
+	FromStatus, TargetStatus                                                contract.Status
+	Reason, RuleID                                                          string
+	RuleVersion                                                             uint64
+	ContentHash, WorkflowID, RunID                                          string
+	Nodes                                                                   []approval.Node
 }
 
 type RecordCommandActivityInput struct {

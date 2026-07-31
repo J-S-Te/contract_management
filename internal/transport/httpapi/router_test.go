@@ -62,7 +62,7 @@ func TestAuthenticationFailureAbortsGinHandlerChain(t *testing.T) {
 func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
 		return application.Principal{
-			TenantID: "tenant-1", UserID: "user-1", Username: "zhangliu", Roles: []string{"sales"},
+			TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六", Roles: []string{"sales"},
 			Permissions:    map[string]bool{"contract.create": true, "contract.read": true},
 			RoleConfigHash: "hash-1", AuthzRevision: 9,
 		}, nil
@@ -70,28 +70,32 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, identity).ServeHTTP(response, request)
+	service := &application.Service{UserDisplayNames: map[string]string{"user-2": "蔡总", "user-1": "章六"}}
+	NewRouter(service, identity).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
 	}
 	var body struct {
 		Data struct {
-			TenantID       string            `json:"tenant_id"`
-			UserID         string            `json:"user_id"`
-			Username       string            `json:"username"`
-			Role           map[string]string `json:"role"`
-			Permissions    []string          `json:"permissions"`
-			RoleConfigHash string            `json:"role_config_hash"`
-			AuthzRevision  uint64            `json:"authz_revision"`
+			TenantID       string                      `json:"tenant_id"`
+			UserID         string                      `json:"user_id"`
+			DisplayName    string                      `json:"display_name"`
+			Role           map[string]string           `json:"role"`
+			Permissions    []string                    `json:"permissions"`
+			RoleConfigHash string                      `json:"role_config_hash"`
+			AuthzRevision  uint64                      `json:"authz_revision"`
+			UserDirectory  []application.UserReference `json:"user_directory"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Data.TenantID != "tenant-1" || body.Data.UserID != "user-1" || body.Data.Username != "zhangliu" ||
+	if body.Data.TenantID != "tenant-1" || body.Data.UserID != "user-1" || body.Data.DisplayName != "章六" ||
 		body.Data.Role["code"] != "sales" || body.Data.AuthzRevision != 9 ||
-		body.Data.RoleConfigHash != "hash-1" || len(body.Data.Permissions) != 2 {
+		body.Data.RoleConfigHash != "hash-1" || len(body.Data.Permissions) != 2 ||
+		len(body.Data.UserDirectory) != 2 || body.Data.UserDirectory[0].DisplayName != "章六" ||
+		body.Data.UserDirectory[1].DisplayName != "蔡总" {
 		t.Fatalf("data = %#v", body.Data)
 	}
 }
