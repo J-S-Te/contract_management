@@ -23,12 +23,18 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 		return contracttemplate.Template{}, ErrForbidden
 	}
 	name, filename = strings.TrimSpace(name), filepath.Base(strings.TrimSpace(filename))
-	if s.Templates == nil || name == "" || filename == "." || !strings.EqualFold(filepath.Ext(filename), ".docx") {
-		return contracttemplate.Template{}, ErrValidation
+	if s.Templates == nil {
+		return contracttemplate.Template{}, fmt.Errorf("template repository is not configured")
+	}
+	if name == "" {
+		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能为空", ErrValidation)
+	}
+	if filename == "." || !strings.EqualFold(filepath.Ext(filename), ".docx") {
+		return contracttemplate.Template{}, fmt.Errorf("%w: 仅支持 .docx 模板文件", ErrValidation)
 	}
 	fields, err := docx.Fields(content)
 	if err != nil {
-		return contracttemplate.Template{}, fmt.Errorf("%w: %v", ErrValidation, err)
+		return contracttemplate.Template{}, fmt.Errorf("%w: DOCX 模板解析失败：%v", ErrValidation, err)
 	}
 	item := contracttemplate.Template{
 		ID: ulid.Make().String(), TenantID: actor.TenantID, Name: name,
@@ -85,7 +91,7 @@ func validateTemplateValues(fields []contracttemplate.Field, values map[string]s
 	expected := make(map[string]bool, len(fields))
 	for _, field := range fields {
 		expected[field.Name] = true
-		if _, ok := values[field.Name]; !ok {
+		if _, ok := values[field.Name]; !ok && field.Default == "" {
 			return fmt.Errorf("%w: missing template field %s", ErrValidation, field.Name)
 		}
 	}

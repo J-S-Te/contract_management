@@ -57,6 +57,31 @@ func TestOIDCSessionCookieIsScopedToSubsystem(t *testing.T) {
 	}
 }
 
+func TestOIDCLocalLogoutClearsOnlySubsystemSessionWithoutRedirect(t *testing.T) {
+	authenticator := &OIDCAuthenticator{
+		options: OIDCOptions{SessionCookieName: "contract_management_session", PathPrefix: "/contract_management"},
+		sessions: map[string]*localSession{
+			"old-user-session": {IDToken: "old-id-token"},
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/auth/local-logout", nil)
+	request.AddCookie(&http.Cookie{Name: "contract_management_session", Value: "old-user-session"})
+	response := httptest.NewRecorder()
+
+	authenticator.LogoutLocal(response, request)
+
+	if response.Code != http.StatusNoContent || response.Header().Get("Location") != "" {
+		t.Fatalf("status = %d, location = %q", response.Code, response.Header().Get("Location"))
+	}
+	if _, exists := authenticator.sessions["old-user-session"]; exists {
+		t.Fatal("old subsystem session still exists")
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "contract_management_session" || cookies[0].MaxAge != -1 || cookies[0].Path != "/contract_management" {
+		t.Fatalf("expired cookies = %#v", cookies)
+	}
+}
+
 func TestOIDCBackchannelTransportRewritesOnlyIssuerOrigin(t *testing.T) {
 	publicURL, _ := url.Parse("http://localhost:8081")
 	backchannelURL, _ := url.Parse("http://api:8080")

@@ -404,21 +404,7 @@ func (transport *backchannelTransport) RoundTrip(request *http.Request) (*http.R
 }
 
 func (a *OIDCAuthenticator) Logout(writer http.ResponseWriter, request *http.Request) {
-	var idToken string
-	if cookie, err := request.Cookie(a.options.SessionCookieName); err == nil {
-		a.mutex.Lock()
-		session := a.sessions[cookie.Value]
-		delete(a.sessions, cookie.Value)
-		a.mutex.Unlock()
-		if session != nil {
-			session.mutex.Lock()
-			idToken = session.IDToken
-			session.mutex.Unlock()
-		}
-	}
-	expired := a.sessionCookie("", time.Unix(1, 0))
-	expired.MaxAge = -1
-	http.SetCookie(writer, expired)
+	idToken := a.clearLocalSession(writer, request)
 
 	endpoint, err := url.Parse(strings.TrimRight(a.options.Issuer, "/") + "/oauth2/logout")
 	if err != nil {
@@ -438,6 +424,33 @@ func (a *OIDCAuthenticator) Logout(writer http.ResponseWriter, request *http.Req
 	}
 	endpoint.RawQuery = query.Encode()
 	http.Redirect(writer, request, endpoint.String(), http.StatusFound)
+}
+
+// LogoutLocal clears only the contract subsystem session. It is used when the browser has
+// switched platform accounts and must not revoke the newly authenticated platform session.
+func (a *OIDCAuthenticator) LogoutLocal(writer http.ResponseWriter, request *http.Request) {
+	a.clearLocalSession(writer, request)
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (a *OIDCAuthenticator) clearLocalSession(writer http.ResponseWriter, request *http.Request) string {
+	var idToken string
+	if cookie, err := request.Cookie(a.options.SessionCookieName); err == nil {
+		a.mutex.Lock()
+		session := a.sessions[cookie.Value]
+		delete(a.sessions, cookie.Value)
+		a.mutex.Unlock()
+		if session != nil {
+			session.mutex.Lock()
+			idToken = session.IDToken
+			session.mutex.Unlock()
+		}
+	}
+	expired := a.sessionCookie("", time.Unix(1, 0))
+	expired.MaxAge = -1
+	http.SetCookie(writer, expired)
+	return idToken
 }
 
 func (a *OIDCAuthenticator) sessionCookie(value string, expires time.Time) *http.Cookie {

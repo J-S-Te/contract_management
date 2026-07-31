@@ -43,6 +43,33 @@ func TestRenderRequiresEveryTemplateValue(t *testing.T) {
 	}
 }
 
+func TestChinesePrototypePlaceholdersAndDefaults(t *testing.T) {
+	document := testDocument(t, `<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>甲方：{{客户名称}}，金额：{{合同金额}}（大写：{{金额_大写 合同金额}}），发票：{{发票类型 '专票'}}</w:t></w:r></w:p></w:body></w:document>`)
+
+	fields, err := Fields(document)
+	if err != nil {
+		t.Fatalf("Fields() error = %v", err)
+	}
+	if len(fields) != 3 {
+		t.Fatalf("fields = %#v, want 3 deduplicated input fields", fields)
+	}
+	if fields[0].Name != "发票类型" || fields[0].Default != "专票" || fields[1].Name != "合同金额" || fields[2].Name != "客户名称" {
+		t.Fatalf("fields = %#v", fields)
+	}
+
+	rendered, err := Render(document, map[string]string{"客户名称": "示例公司", "合同金额": "10000"})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	text, err := PlainText(rendered)
+	if err != nil {
+		t.Fatalf("PlainText() error = %v", err)
+	}
+	if text != "甲方：示例公司，金额：10000（大写：10000），发票：专票" {
+		t.Fatalf("text = %q", text)
+	}
+}
+
 func testDocument(t *testing.T, documentXML string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

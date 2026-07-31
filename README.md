@@ -81,7 +81,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 
 动作接口返回 `202` 表示 Signal 已由 Temporal 接收。最终状态通过审批详情查询；持久化待办和动作记录由 Activity 最终一致地更新。
 
-DOCX 模板变量写作 `{{field_name:中文字段名}}`，例如 `{{customer_name:客户名称}}`；中文标签可以省略，此时页面会根据变量名生成标签。变量可位于正文、页眉或页脚，并允许被 Word 拆分为多个文本片段。创建合同请求通过 `template_id` 和 `template_values` 提交字段值，服务端会重新渲染，不能用客户端预览内容替代。
+DOCX 模板变量可直接使用中文字段，例如 `{{客户名称}}`；也兼容 `{{field_name:中文字段名}}`、带默认值的 `{{发票类型 '专票'}}` 和原型模板中的 `{{金额_大写 合同金额}}`。变量可位于正文、页眉或页脚，并允许被 Word 拆分为多个文本片段。创建合同请求通过 `template_id` 和 `template_values` 提交字段值，服务端会重新渲染，不能用客户端预览内容替代。
 
 ## 本地运行
 

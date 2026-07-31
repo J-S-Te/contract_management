@@ -3,8 +3,9 @@ package template
 import "time"
 
 type Field struct {
-	Name  string `json:"name"`
-	Label string `json:"label"`
+	Name    string `json:"name"`
+	Label   string `json:"label"`
+	Default string `json:"default,omitempty"`
 }
 
 type Template struct {

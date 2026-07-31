@@ -34,6 +34,10 @@ type OIDCFlow interface {
 	Logout(http.ResponseWriter, *http.Request)
 }
 
+type LocalSessionLogout interface {
+	LogoutLocal(http.ResponseWriter, *http.Request)
+}
+
 type PublicPathResolver interface {
 	PublicPath(string) string
 }
@@ -58,6 +62,9 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 		r.GET("/auth/callback", func(c *gin.Context) { oidcFlow.Callback(c.Writer, c.Request) })
 		r.GET("/auth/logout", func(c *gin.Context) { oidcFlow.Logout(c.Writer, c.Request) })
 		r.GET("/logged-out", h.loggedOut)
+	}
+	if localLogout, ok := identity.(LocalSessionLogout); ok {
+		r.POST("/auth/local-logout", func(c *gin.Context) { localLogout.LogoutLocal(c.Writer, c.Request) })
 	}
 	r.GET("/healthz", func(c *gin.Context) {
 		writeJSON(c, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up"}})
@@ -273,6 +280,14 @@ func (h *Handler) createTemplate(c *gin.Context) {
 	}
 	created, err := h.service.CreateTemplate(c.Request.Context(), principal(c), c.PostForm("name"), fileHeader.Filename, content)
 	if err != nil {
+		if errors.Is(err, application.ErrValidation) {
+			detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), application.ErrValidation.Error()+":"))
+			if detail == "" {
+				detail = "请求参数不合法"
+			}
+			writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_TEMPLATE_VALIDATION_ERROR", detail, nil)
+			return
+		}
 		writeError(c, err)
 		return
 	}

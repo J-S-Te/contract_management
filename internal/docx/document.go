@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 )
@@ -19,7 +20,8 @@ const MaxTemplateSize = 10 << 20
 var (
 	textNodePattern    = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
 	paragraphPattern   = regexp.MustCompile(`(?s)<w:p\b[^>]*>.*?</w:p>`)
-	placeholderPattern = regexp.MustCompile(`\{\{\s*([A-Za-z][A-Za-z0-9_]*)(?:\s*:\s*([^{}]+?))?\s*\}\}`)
+	placeholderPattern = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
+	defaultPattern     = regexp.MustCompile(`^(.+?)\s+(?:'([^']*)'|"([^"]*)")$`)
 )
 
 type textNode struct {
@@ -36,29 +38,29 @@ func Fields(document []byte) ([]contracttemplate.Field, error) {
 	if err != nil {
 		return nil, err
 	}
-	labels := map[string]string{}
+	fields := map[string]contracttemplate.Field{}
 	for name, body := range files {
 		if !isWordXML(name) {
 			continue
 		}
 		visible, _ := visibleText(string(body))
 		for _, match := range placeholderPattern.FindAllStringSubmatch(visible, -1) {
-			label := strings.TrimSpace(match[2])
-			if label == "" {
-				label = fieldLabel(match[1])
+			spec, ok := parsePlaceholder(match[1])
+			if !ok {
+				continue
 			}
-			if _, exists := labels[match[1]]; !exists {
-				labels[match[1]] = label
+			if _, exists := fields[spec.name]; !exists {
+				fields[spec.name] = contracttemplate.Field{Name: spec.name, Label: spec.label, Default: spec.defaultValue}
 			}
 		}
 	}
-	result := make([]contracttemplate.Field, 0, len(labels))
-	for name, label := range labels {
-		result = append(result, contracttemplate.Field{Name: name, Label: label})
+	result := make([]contracttemplate.Field, 0, len(fields))
+	for _, field := range fields {
+		result = append(result, field)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	if len(result) == 0 {
-		return nil, fmt.Errorf("docx contains no {{field_name}} placeholders")
+		return nil, fmt.Errorf("DOCX 中未找到 {{字段名}} 格式的占位符")
 	}
 	return result, nil
 }
@@ -132,15 +134,22 @@ func replacePlaceholders(xml string, values map[string]string) (string, error) {
 	matches := placeholderPattern.FindAllStringSubmatchIndex(visible, -1)
 	for index := len(matches) - 1; index >= 0; index-- {
 		match := matches[index]
-		name := visible[match[2]:match[3]]
-		value, ok := values[name]
+		rawSpec := visible[match[2]:match[3]]
+		spec, renderable := parsePlaceholder(rawSpec)
+		if !renderable {
+			continue
+		}
+		value, ok := values[spec.name]
+		if !ok && spec.defaultValue != "" {
+			value, ok = spec.defaultValue, true
+		}
 		if !ok {
-			return "", fmt.Errorf("missing value for %q", name)
+			return "", fmt.Errorf("缺少模板字段 %q 的值", spec.name)
 		}
 		startNode, startOffset := locate(nodes, match[0], false)
 		endNode, endOffset := locate(nodes, match[1], true)
 		if startNode < 0 || endNode < 0 {
-			return "", fmt.Errorf("cannot locate placeholder %q", name)
+			return "", fmt.Errorf("无法定位模板字段 %q", spec.name)
 		}
 		if startNode == endNode {
 			nodes[startNode].value = nodes[startNode].value[:startOffset] + value + nodes[startNode].value[endOffset:]
@@ -255,9 +264,46 @@ func isWordXML(name string) bool {
 }
 
 func fieldLabel(name string) string {
+	if strings.IndexFunc(name, func(r rune) bool { return unicode.Is(unicode.Han, r) }) >= 0 {
+		return name
+	}
 	words := strings.Fields(strings.NewReplacer("_", " ", "-", " ").Replace(name))
 	for index := range words {
 		words[index] = strings.ToUpper(words[index][:1]) + words[index][1:]
 	}
 	return strings.Join(words, " ")
+}
+
+type placeholderSpec struct {
+	name         string
+	label        string
+	defaultValue string
+}
+
+func parsePlaceholder(raw string) (placeholderSpec, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "/") || raw == "else" {
+		return placeholderSpec{}, false
+	}
+	if strings.HasPrefix(raw, "金额_大写 ") {
+		raw = strings.TrimSpace(strings.TrimPrefix(raw, "金额_大写 "))
+	}
+	result := placeholderSpec{name: raw}
+	if match := defaultPattern.FindStringSubmatch(raw); match != nil {
+		result.name = strings.TrimSpace(match[1])
+		result.defaultValue = match[2]
+		if result.defaultValue == "" {
+			result.defaultValue = match[3]
+		}
+	}
+	if before, after, found := strings.Cut(result.name, ":"); found {
+		result.name, result.label = strings.TrimSpace(before), strings.TrimSpace(after)
+	}
+	if result.name == "" || len(result.name) > 128 {
+		return placeholderSpec{}, false
+	}
+	if result.label == "" {
+		result.label = fieldLabel(result.name)
+	}
+	return result, true
 }
