@@ -20,6 +20,7 @@ import (
 
 type Principal struct {
 	TenantID, UserID string
+	Username         string
 	Roles            []string
 	Permissions      map[string]bool
 	RoleConfigHash   string
@@ -80,7 +81,7 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	if c.Currency == "" {
 		c.Currency = "CNY"
 	}
-	c.ID, c.TenantID, c.OwnerUserID, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, contract.StatusDraft
+	c.ID, c.TenantID, c.OwnerUserID, c.OwnerUsername, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.Username, contract.StatusDraft
 	hash := sha256.Sum256([]byte(c.Content))
 	c.ContentHash = hex.EncodeToString(hash[:])
 	if err := s.Repo.CreateContract(ctx, c, actor.UserID); err != nil {
@@ -123,7 +124,7 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	}
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("contract-approval:%s:%s:v%d", actor.TenantID, contractID, c.Version)
-	in := workflows.ContractApprovalInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: c.Version, ApplicantUserID: actor.UserID, ContentHash: c.ContentHash, RuleID: ruleID, RuleVersion: ruleVersion, Nodes: nodes, DefaultNodeTimeout: s.NodeTimeout, ReminderInterval: s.ReminderInterval}
+	in := workflows.ContractApprovalInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: c.Version, ApplicantUserID: actor.UserID, ApplicantUsername: actor.Username, ContentHash: c.ContentHash, RuleID: ruleID, RuleVersion: ruleVersion, Nodes: nodes, DefaultNodeTimeout: s.NodeTimeout, ReminderInterval: s.ReminderInterval}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.ContractApprovalWorkflowName, in)
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
@@ -165,7 +166,7 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	}
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("status-change:%s:%s:v%d", actor.TenantID, contractID, version)
-	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout}
+	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, ApplicantUsername: actor.Username, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.StatusChangeWorkflowName, in)
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
@@ -203,7 +204,7 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 			return ErrForbidden
 		}
 	}
-	command.CommandID, command.ActorUserID, command.OccurredAt = ulid.Make().String(), actor.UserID, time.Now().UTC()
+	command.CommandID, command.ActorUserID, command.ActorUsername, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.Username, time.Now().UTC()
 	return s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command)
 }
 

@@ -15,6 +15,7 @@ import (
 type recordingRepository struct {
 	ownerUserID  string
 	contract     contract.Contract
+	created      contract.Contract
 	approvalMeta approval.Meta
 	actions      []approval.Action
 }
@@ -28,7 +29,8 @@ func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _
 	return nil, nil
 }
 
-func (r *recordingRepository) CreateContract(context.Context, contract.Contract, string) error {
+func (r *recordingRepository) CreateContract(_ context.Context, created contract.Contract, _ string) error {
+	r.created = created
 	return nil
 }
 
@@ -86,6 +88,25 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	}
 	if repository.ownerUserID != actor.UserID {
 		t.Fatalf("owner filter = %q, want authenticated user %q", repository.ownerUserID, actor.UserID)
+	}
+}
+
+func TestCreateContractStoresLoginUsernameSnapshot(t *testing.T) {
+	repository := &recordingRepository{}
+	service := &Service{Repo: repository}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "user-1", Username: "zhangliu",
+		Permissions: map[string]bool{"contract.create": true},
+	}
+	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
+		Number: "CON-001", Title: "合同", Type: "service", ServiceType: "consulting", Content: "body",
+	})
+	if err != nil {
+		t.Fatalf("CreateContract() error = %v", err)
+	}
+	if created.OwnerUserID != "user-1" || created.OwnerUsername != "zhangliu" ||
+		repository.created.OwnerUsername != "zhangliu" {
+		t.Fatalf("created contract = %#v, persisted = %#v", created, repository.created)
 	}
 }
 

@@ -94,7 +94,7 @@ func (h *Handler) me(c *gin.Context) {
 		role["code"] = roles[0]
 	}
 	writeData(c, http.StatusOK, map[string]any{
-		"tenant_id": p.TenantID, "user_id": p.UserID, "role": role, "roles": roles,
+		"tenant_id": p.TenantID, "user_id": p.UserID, "username": p.Username, "role": role, "roles": roles,
 		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,
 	})
 }

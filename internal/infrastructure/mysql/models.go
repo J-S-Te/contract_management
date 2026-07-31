@@ -11,6 +11,7 @@ type contractRecord struct {
 	ServiceType         string
 	CustomerCreditLevel *string
 	OwnerUserID         string
+	OwnerUsername       string
 	AmountMinor         int64
 	Currency            string
 	Content             string
@@ -66,6 +67,7 @@ type approvalInstanceRecord struct {
 	Kind                  string
 	Status                string
 	ApplicantUserID       string
+	ApplicantUsername     string
 	FromStatus            string
 	TargetStatus          string
 	Reason                *string
@@ -101,17 +103,18 @@ type approvalTaskRecord struct {
 func (approvalTaskRecord) TableName() string { return "con_approval_task" }
 
 type approvalActionRecord struct {
-	ID          string `gorm:"primaryKey"`
-	TenantID    string
-	ApprovalID  string
-	ContractID  string
-	NodeID      *string
-	CommandID   string
-	Action      string
-	ActorUserID string
-	Comment     *string
-	PayloadJSON []byte `gorm:"type:json"`
-	OccurredAt  time.Time
+	ID            string `gorm:"primaryKey"`
+	TenantID      string
+	ApprovalID    string
+	ContractID    string
+	NodeID        *string
+	CommandID     string
+	Action        string
+	ActorUserID   string
+	ActorUsername string
+	Comment       *string
+	PayloadJSON   []byte `gorm:"type:json"`
+	OccurredAt    time.Time
 }
 
 func (approvalActionRecord) TableName() string { return "con_approval_action" }

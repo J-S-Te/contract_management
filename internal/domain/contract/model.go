@@ -11,6 +11,7 @@ type Contract struct {
 	ServiceType         string     `json:"service_type"`
 	CustomerCreditLevel string     `json:"customer_credit_level,omitempty"`
 	OwnerUserID         string     `json:"owner_user_id"`
+	OwnerUsername       string     `json:"owner_username"`
 	AmountMinor         int64      `json:"amount_minor"`
 	Currency            string     `json:"currency"`
 	Content             string     `json:"content"`

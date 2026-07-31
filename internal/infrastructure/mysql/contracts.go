@@ -57,7 +57,7 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 	record := contractRecord{
 		ID: c.ID, TenantID: c.TenantID, ContractNumber: c.Number, Title: c.Title,
 		ContractType: c.Type, ServiceType: c.ServiceType, CustomerCreditLevel: stringPtr(c.CustomerCreditLevel),
-		OwnerUserID: c.OwnerUserID, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
+		OwnerUserID: c.OwnerUserID, OwnerUsername: c.OwnerUsername, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
 		Status: string(c.Status), EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,
 		CreatedAt: now, CreatedBy: actorUserID, UpdatedAt: now, UpdatedBy: actorUserID,
 	}

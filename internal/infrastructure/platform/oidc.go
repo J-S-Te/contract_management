@@ -63,6 +63,11 @@ type platformIDTokenClaims struct {
 	AuthzRevision  uint64   `json:"authz_revision"`
 }
 
+type platformUserInfoClaims struct {
+	Subject           string `json:"sub"`
+	PreferredUsername string `json:"preferred_username"`
+}
+
 // OIDCAuthenticator owns the contract system's OIDC login transactions and independent local
 // sessions. Browser requests never reuse the platform bp_session cookie.
 type OIDCAuthenticator struct {
@@ -216,6 +221,11 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "OIDC authorization claims are invalid", http.StatusUnauthorized)
 		return
 	}
+	principal.Username, err = a.loadUsername(oidcContext, token, principal.UserID)
+	if err != nil {
+		http.Error(writer, "OIDC user information is invalid", http.StatusUnauthorized)
+		return
+	}
 
 	sessionID, err := randomValue(32)
 	if err != nil {
@@ -264,6 +274,10 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	if err != nil {
 		return err
 	}
+	principal.Username, err = a.loadUsername(oidcContext, token, principal.UserID)
+	if err != nil {
+		return err
+	}
 	if principal.UserID != session.Principal.UserID || principal.TenantID != session.Principal.TenantID {
 		return errors.New("refreshed OIDC subject changed")
 	}
@@ -273,6 +287,25 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	session.Principal, session.IDToken, session.Token, session.RefreshedAt = principal, rawIDToken, token, now
 	session.TokenExpiresAt = idToken.Expiry
 	return nil
+}
+
+func (a *OIDCAuthenticator) loadUsername(ctx context.Context, token *oauth2.Token, expectedSubject string) (string, error) {
+	if a.provider == nil || token == nil || strings.TrimSpace(token.AccessToken) == "" {
+		return "", errors.New("OIDC UserInfo dependencies are incomplete")
+	}
+	info, err := a.provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
+	if err != nil {
+		return "", fmt.Errorf("load OIDC UserInfo: %w", err)
+	}
+	var claims platformUserInfoClaims
+	if err := info.Claims(&claims); err != nil {
+		return "", fmt.Errorf("decode OIDC UserInfo: %w", err)
+	}
+	username := strings.TrimSpace(claims.PreferredUsername)
+	if info.Subject != expectedSubject || (claims.Subject != "" && claims.Subject != expectedSubject) || username == "" {
+		return "", errors.New("OIDC UserInfo subject or preferred_username is invalid")
+	}
+	return username, nil
 }
 
 func (a *OIDCAuthenticator) deleteSession(id string, expected *localSession) {
