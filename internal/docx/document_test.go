@@ -65,8 +65,24 @@ func TestChinesePrototypePlaceholdersAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlainText() error = %v", err)
 	}
-	if text != "甲方：示例公司，金额：10000（大写：10000），发票：专票" {
+	if text != "甲方：示例公司，金额：10000（大写：壹万元整），发票：专票" {
 		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestChineseMoneyUpper(t *testing.T) {
+	tests := map[string]string{
+		"0": "零元整", "10001": "壹万零壹元整", "10010.05": "壹万零壹拾元零伍分",
+		"123456789.12": "壹亿贰仟叁佰肆拾伍万陆仟柒佰捌拾玖元壹角贰分",
+	}
+	for input, expected := range tests {
+		actual, err := chineseMoneyUpper(input)
+		if err != nil {
+			t.Fatalf("chineseMoneyUpper(%q) error = %v", input, err)
+		}
+		if actual != expected {
+			t.Fatalf("chineseMoneyUpper(%q) = %q, want %q", input, actual, expected)
+		}
 	}
 }
 

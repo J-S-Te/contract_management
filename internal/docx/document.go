@@ -146,6 +146,13 @@ func replacePlaceholders(xml string, values map[string]string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("缺少模板字段 %q 的值", spec.name)
 		}
+		if spec.transform == "money_upper" {
+			converted, conversionErr := chineseMoneyUpper(value)
+			if conversionErr != nil {
+				return "", fmt.Errorf("模板字段 %q 无法转换为金额大写：%w", spec.name, conversionErr)
+			}
+			value = converted
+		}
 		startNode, startOffset := locate(nodes, match[0], false)
 		endNode, endOffset := locate(nodes, match[1], true)
 		if startNode < 0 || endNode < 0 {
@@ -278,6 +285,7 @@ type placeholderSpec struct {
 	name         string
 	label        string
 	defaultValue string
+	transform    string
 }
 
 func parsePlaceholder(raw string) (placeholderSpec, bool) {
@@ -287,6 +295,11 @@ func parsePlaceholder(raw string) (placeholderSpec, bool) {
 	}
 	if strings.HasPrefix(raw, "金额_大写 ") {
 		raw = strings.TrimSpace(strings.TrimPrefix(raw, "金额_大写 "))
+		if raw == "" {
+			return placeholderSpec{}, false
+		}
+		result := placeholderSpec{name: raw, label: fieldLabel(raw), transform: "money_upper"}
+		return result, true
 	}
 	result := placeholderSpec{name: raw}
 	if match := defaultPattern.FindStringSubmatch(raw); match != nil {
@@ -306,4 +319,107 @@ func parsePlaceholder(raw string) (placeholderSpec, bool) {
 		result.label = fieldLabel(result.name)
 	}
 	return result, true
+}
+
+func chineseMoneyUpper(raw string) (string, error) {
+	normalized := strings.NewReplacer(",", "", "，", "", "￥", "", "¥", "", "元", "", " ", "").Replace(strings.TrimSpace(raw))
+	parts := strings.Split(normalized, ".")
+	if len(parts) > 2 || len(parts) == 0 || parts[0] == "" || len(parts) == 2 && len(parts[1]) > 2 {
+		return "", fmt.Errorf("金额格式不正确")
+	}
+	for _, part := range parts {
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return "", fmt.Errorf("金额只能包含数字和最多两位小数")
+			}
+		}
+	}
+	integer := strings.TrimLeft(parts[0], "0")
+	if integer == "" {
+		integer = "0"
+	}
+	if len(integer) > 16 {
+		return "", fmt.Errorf("金额数值过大")
+	}
+	result := chineseIntegerUpper(integer) + "元"
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1] + strings.Repeat("0", 2-len(parts[1]))
+	}
+	digits := []string{"零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"}
+	if fraction == "" || fraction == "00" {
+		return result + "整", nil
+	}
+	jiao, fen := fraction[0]-'0', fraction[1]-'0'
+	if jiao > 0 {
+		result += digits[jiao] + "角"
+	}
+	if fen > 0 {
+		if jiao == 0 && integer != "0" {
+			result += "零"
+		}
+		result += digits[fen] + "分"
+	}
+	return result, nil
+}
+
+func chineseIntegerUpper(integer string) string {
+	if integer == "0" {
+		return "零"
+	}
+	digits := []string{"零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"}
+	groupUnits := []string{"", "万", "亿", "兆"}
+	groups := make([]int, 0, (len(integer)+3)/4)
+	for end := len(integer); end > 0; end -= 4 {
+		start := end - 4
+		if start < 0 {
+			start = 0
+		}
+		value := 0
+		for _, digit := range integer[start:end] {
+			value = value*10 + int(digit-'0')
+		}
+		groups = append(groups, value)
+	}
+	var result strings.Builder
+	zeroPending := false
+	for index := len(groups) - 1; index >= 0; index-- {
+		group := groups[index]
+		if group == 0 {
+			if result.Len() > 0 {
+				zeroPending = true
+			}
+			continue
+		}
+		if result.Len() > 0 && (zeroPending || group < 1000) {
+			result.WriteString("零")
+		}
+		result.WriteString(chineseFourDigits(group, digits))
+		result.WriteString(groupUnits[index])
+		zeroPending = false
+	}
+	return result.String()
+}
+
+func chineseFourDigits(value int, digits []string) string {
+	units := []string{"", "拾", "佰", "仟"}
+	divisors := []int{1000, 100, 10, 1}
+	var result strings.Builder
+	zeroPending := false
+	for index, divisor := range divisors {
+		digit := value / divisor % 10
+		if digit == 0 {
+			if result.Len() > 0 && value%divisor != 0 {
+				zeroPending = true
+			}
+			continue
+		}
+		if zeroPending {
+			result.WriteString("零")
+			zeroPending = false
+		}
+		result.WriteString(digits[digit])
+		result.WriteString(units[3-index])
+	}
+	return result.String()
 }
