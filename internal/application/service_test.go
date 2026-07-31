@@ -138,6 +138,42 @@ func TestDefaultApprovalNodesUseManifestRoleCodes(t *testing.T) {
 	if nodes[0].RoleCode != "sales_director" || nodes[1].RoleCode != "tech_director" || nodes[2].RoleCode != "finance_director" {
 		t.Fatalf("defaultNodes() role codes = %q, %q, %q", nodes[0].RoleCode, nodes[1].RoleCode, nodes[2].RoleCode)
 	}
+	for _, node := range nodes {
+		if node.Countersign != approval.CountersignAny {
+			t.Fatalf("default node %q countersign = %q, want %q", node.ID, node.Countersign, approval.CountersignAny)
+		}
+	}
+}
+
+func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) {
+	service := &Service{}
+	actor := Principal{UserDirectory: []UserReference{
+		{UserID: "director-2", Roles: []string{"sales_director"}},
+		{UserID: "director-1", Roles: []string{"sales_director", "tech_director"}},
+		{UserID: "ordinary-user", Roles: []string{"sales"}},
+	}}
+	nodes := []approval.Node{{
+		ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director",
+		Countersign: approval.CountersignAll, AssigneeIDs: []string{"stale-configured-user"},
+	}}
+
+	if err := service.resolveNodes(actor, nodes); err != nil {
+		t.Fatalf("resolveNodes() error = %v", err)
+	}
+	if nodes[0].Countersign != approval.CountersignAny {
+		t.Fatalf("countersign = %q, want %q", nodes[0].Countersign, approval.CountersignAny)
+	}
+	if len(nodes[0].AssigneeIDs) != 2 || nodes[0].AssigneeIDs[0] != "director-2" || nodes[0].AssigneeIDs[1] != "director-1" {
+		t.Fatalf("assignees = %#v", nodes[0].AssigneeIDs)
+	}
+}
+
+func TestResolveNodesRejectsRoleWithoutActivePlatformHolder(t *testing.T) {
+	service := &Service{}
+	nodes := []approval.Node{{ID: "finance", RoleCode: "finance_director"}}
+	if err := service.resolveNodes(Principal{}, nodes); err == nil {
+		t.Fatal("resolveNodes() error = nil")
+	}
 }
 
 func TestGetContractRejectsNonOwnerEvenWithLegacyManagerPermission(t *testing.T) {

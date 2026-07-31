@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -64,8 +65,9 @@ type platformIDTokenClaims struct {
 }
 
 type platformUserInfoClaims struct {
-	Subject string `json:"sub"`
-	Name    string `json:"name"`
+	Subject            string                      `json:"sub"`
+	Name               string                      `json:"name"`
+	PersonnelDirectory []application.UserReference `json:"personnel_directory"`
 }
 
 // OIDCAuthenticator owns the contract system's OIDC login transactions and independent local
@@ -221,7 +223,7 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "OIDC authorization claims are invalid", http.StatusUnauthorized)
 		return
 	}
-	principal.DisplayName, err = a.loadDisplayName(oidcContext, token, principal.UserID)
+	principal.DisplayName, principal.UserDirectory, err = a.loadUserInfo(oidcContext, token, principal.UserID)
 	if err != nil {
 		http.Error(writer, "OIDC user information is invalid", http.StatusUnauthorized)
 		return
@@ -274,7 +276,7 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	if err != nil {
 		return err
 	}
-	principal.DisplayName, err = a.loadDisplayName(oidcContext, token, principal.UserID)
+	principal.DisplayName, principal.UserDirectory, err = a.loadUserInfo(oidcContext, token, principal.UserID)
 	if err != nil {
 		return err
 	}
@@ -289,23 +291,54 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	return nil
 }
 
-func (a *OIDCAuthenticator) loadDisplayName(ctx context.Context, token *oauth2.Token, expectedSubject string) (string, error) {
+func (a *OIDCAuthenticator) loadUserInfo(ctx context.Context, token *oauth2.Token, expectedSubject string) (string, []application.UserReference, error) {
 	if a.provider == nil || token == nil || strings.TrimSpace(token.AccessToken) == "" {
-		return "", errors.New("OIDC UserInfo dependencies are incomplete")
+		return "", nil, errors.New("OIDC UserInfo dependencies are incomplete")
 	}
 	info, err := a.provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
 	if err != nil {
-		return "", fmt.Errorf("load OIDC UserInfo: %w", err)
+		return "", nil, fmt.Errorf("load OIDC UserInfo: %w", err)
 	}
 	var claims platformUserInfoClaims
 	if err := info.Claims(&claims); err != nil {
-		return "", fmt.Errorf("decode OIDC UserInfo: %w", err)
+		return "", nil, fmt.Errorf("decode OIDC UserInfo: %w", err)
 	}
 	displayName := strings.TrimSpace(claims.Name)
 	if info.Subject != expectedSubject || (claims.Subject != "" && claims.Subject != expectedSubject) || displayName == "" {
-		return "", errors.New("OIDC UserInfo subject or name is invalid")
+		return "", nil, errors.New("OIDC UserInfo subject or name is invalid")
 	}
-	return displayName, nil
+	return displayName, normalizePersonnelDirectory(claims.PersonnelDirectory), nil
+}
+
+func normalizePersonnelDirectory(entries []application.UserReference) []application.UserReference {
+	directory := make([]application.UserReference, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		entry.UserID = strings.TrimSpace(entry.UserID)
+		entry.DisplayName = strings.TrimSpace(entry.DisplayName)
+		if entry.UserID == "" || entry.DisplayName == "" || seen[entry.UserID] {
+			continue
+		}
+		entry.Roles = normalizeStrings(entry.Roles)
+		seen[entry.UserID] = true
+		directory = append(directory, entry)
+	}
+	return directory
+}
+
+func normalizeStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (a *OIDCAuthenticator) deleteSession(id string, expected *localSession) {

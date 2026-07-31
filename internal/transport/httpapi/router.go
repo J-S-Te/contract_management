@@ -100,10 +100,7 @@ func (h *Handler) me(c *gin.Context) {
 	if len(roles) > 0 {
 		role["code"] = roles[0]
 	}
-	userDirectory := []application.UserReference{}
-	if h.service != nil {
-		userDirectory = h.service.UserDirectory()
-	}
+	userDirectory := append([]application.UserReference(nil), p.UserDirectory...)
 	writeData(c, http.StatusOK, map[string]any{
 		"tenant_id": p.TenantID, "user_id": p.UserID, "display_name": p.DisplayName, "role": role, "roles": roles,
 		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,

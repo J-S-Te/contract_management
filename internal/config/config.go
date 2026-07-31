@@ -1,15 +1,12 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/j-s-te/contract-management/internal/application"
 )
 
 type Config struct {
@@ -46,8 +43,6 @@ type Config struct {
 	NodeTimeout               time.Duration
 	ReminderInterval          time.Duration
 	ArchiveCron               string
-	Approvers                 application.StaticApprovers
-	UserDisplayNames          map[string]string
 }
 
 func Load() (Config, error) {
@@ -93,20 +88,6 @@ func Load() (Config, error) {
 	}
 	if c.PlatformCatalogSync, err = strconv.ParseBool(env("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED: %w", err)
-	}
-	if raw := os.Getenv("APPROVER_ROLE_ASSIGNMENTS_JSON"); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &c.Approvers); err != nil {
-			return c, fmt.Errorf("APPROVER_ROLE_ASSIGNMENTS_JSON: %w", err)
-		}
-	} else {
-		c.Approvers = application.StaticApprovers{}
-	}
-	if raw := os.Getenv("USER_DISPLAY_NAMES_JSON"); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &c.UserDisplayNames); err != nil {
-			return c, fmt.Errorf("USER_DISPLAY_NAMES_JSON: %w", err)
-		}
-	} else {
-		c.UserDisplayNames = map[string]string{}
 	}
 	if err := c.validate(); err != nil {
 		return c, err
@@ -172,13 +153,6 @@ func (c Config) validate() error {
 	if c.PlatformCatalogSync && (strings.TrimSpace(c.PlatformApplicationID) == "" ||
 		strings.TrimSpace(c.PlatformCatalogClientID) == "" || strings.TrimSpace(c.PlatformCatalogSecret) == "") {
 		return fmt.Errorf("platform authorization catalog synchronization requires application ID, client ID and client secret")
-	}
-	for roleCode, userIDs := range c.Approvers {
-		for _, userID := range userIDs {
-			if strings.TrimSpace(c.UserDisplayNames[userID]) == "" {
-				return fmt.Errorf("USER_DISPLAY_NAMES_JSON must provide a Chinese display name for approver %q in role %q", userID, roleCode)
-			}
-		}
 	}
 	return nil
 }

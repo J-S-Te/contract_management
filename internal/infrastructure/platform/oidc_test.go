@@ -126,3 +126,18 @@ func TestPrincipalFromPlatformClaimsRejectsWildcardPermission(t *testing.T) {
 		t.Fatal("principalFromPlatformClaims() error = nil, want wildcard rejection")
 	}
 }
+
+func TestNormalizePersonnelDirectoryKeepsOnlyUniqueNamedPlatformUsers(t *testing.T) {
+	got := normalizePersonnelDirectory([]application.UserReference{
+		{UserID: " user-1 ", DisplayName: " 章六 ", Roles: []string{" tech_director ", "sales_director", "tech_director", ""}},
+		{UserID: "user-1", DisplayName: "重复姓名"},
+		{UserID: "user-2", DisplayName: ""},
+		{UserID: "user-3", DisplayName: "蔡总", Roles: []string{"finance_director"}},
+	})
+	if len(got) != 2 || got[0].UserID != "user-1" || got[0].DisplayName != "章六" ||
+		len(got[0].Roles) != 2 || got[0].Roles[0] != "sales_director" || got[0].Roles[1] != "tech_director" ||
+		got[1].UserID != "user-3" || got[1].DisplayName != "蔡总" ||
+		len(got[1].Roles) != 1 || got[1].Roles[0] != "finance_director" {
+		t.Fatalf("normalizePersonnelDirectory() = %#v", got)
+	}
+}

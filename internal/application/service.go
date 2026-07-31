@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
@@ -24,6 +22,7 @@ import (
 type Principal struct {
 	TenantID, UserID string
 	DisplayName      string
+	UserDirectory    []UserReference
 	Roles            []string
 	Permissions      map[string]bool
 	RoleConfigHash   string
@@ -48,43 +47,19 @@ type Repository interface {
 	ListTasks(context.Context, string, string, int) ([]approval.Task, error)
 }
 
-type ApproverResolver interface {
-	Resolve(roleCode string) []string
-}
-
 type Service struct {
 	Repo             Repository
 	Templates        TemplateRepository
 	Temporal         client.Client
-	Approvers        ApproverResolver
-	UserDisplayNames map[string]string
 	TaskQueue        string
 	NodeTimeout      time.Duration
 	ReminderInterval time.Duration
 }
 
 type UserReference struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-}
-
-func (s *Service) UserDirectory() []UserReference {
-	users := make([]UserReference, 0, len(s.UserDisplayNames))
-	for userID, displayName := range s.UserDisplayNames {
-		userID = strings.TrimSpace(userID)
-		displayName = strings.TrimSpace(displayName)
-		if userID == "" || displayName == "" {
-			continue
-		}
-		users = append(users, UserReference{UserID: userID, DisplayName: displayName})
-	}
-	sort.Slice(users, func(i, j int) bool {
-		if users[i].DisplayName == users[j].DisplayName {
-			return users[i].UserID < users[j].UserID
-		}
-		return users[i].DisplayName < users[j].DisplayName
-	})
-	return users
+	UserID      string   `json:"user_id"`
+	DisplayName string   `json:"display_name"`
+	Roles       []string `json:"roles"`
 }
 
 type StartResult struct {
@@ -163,7 +138,7 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	if matched != nil {
 		nodes, ruleID, ruleVersion = matched.Nodes, matched.ID, matched.Version
 	}
-	if err := s.resolveNodes(nodes); err != nil {
+	if err := s.resolveNodes(actor, nodes); err != nil {
 		return StartResult{}, err
 	}
 	approvalID := ulid.Make().String()
@@ -204,9 +179,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 		key := ulid.Make().String()
 		return StartResult{}, s.Repo.TransitionDirect(ctx, actor.TenantID, contractID, version, target, actor.UserID, reason, key)
 	}
-	admins := s.Approvers.Resolve("admin")
+	admins := approversForRole(actor.UserDirectory, "admin")
 	if len(admins) == 0 {
-		return StartResult{}, fmt.Errorf("no approver configured for admin")
+		return StartResult{}, fmt.Errorf("no active platform user has role admin")
 	}
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("status-change:%s:%s:v%d", actor.TenantID, contractID, version)
@@ -402,17 +377,19 @@ func validateRule(rule approval.Rule) error {
 	return nil
 }
 
-func (s *Service) resolveNodes(nodes []approval.Node) error {
+func (s *Service) resolveNodes(actor Principal, nodes []approval.Node) error {
 	for i := range nodes {
-		if len(nodes[i].AssigneeIDs) == 0 {
-			nodes[i].AssigneeIDs = s.Approvers.Resolve(nodes[i].RoleCode)
-		}
+		// Assignees are always rebuilt from the platform's current effective roles. Persisted
+		// rule assignee IDs are intentionally ignored so personnel changes do not require
+		// editing approval rules.
+		nodes[i].AssigneeIDs = approversForRole(actor.UserDirectory, nodes[i].RoleCode)
 		nodes[i].AssigneeIDs = unique(nodes[i].AssigneeIDs)
+		nodes[i].Countersign = approval.CountersignAny
 		if nodes[i].ID == "" {
 			nodes[i].ID = fmt.Sprintf("node-%d", i+1)
 		}
 		if len(nodes[i].AssigneeIDs) == 0 {
-			return fmt.Errorf("no approver configured for role %s", nodes[i].RoleCode)
+			return fmt.Errorf("no active platform user has role %s", nodes[i].RoleCode)
 		}
 	}
 	return nil
@@ -420,10 +397,23 @@ func (s *Service) resolveNodes(nodes []approval.Node) error {
 
 func defaultNodes() []approval.Node {
 	return []approval.Node{
-		{ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director", Countersign: approval.CountersignAll},
-		{ID: "tech-director", Name: "技术总监审批", RoleCode: "tech_director", Countersign: approval.CountersignAll},
-		{ID: "finance-director", Name: "财务总监审批", RoleCode: "finance_director", Countersign: approval.CountersignAll},
+		{ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director", Countersign: approval.CountersignAny},
+		{ID: "tech-director", Name: "技术总监审批", RoleCode: "tech_director", Countersign: approval.CountersignAny},
+		{ID: "finance-director", Name: "财务总监审批", RoleCode: "finance_director", Countersign: approval.CountersignAny},
 	}
+}
+
+func approversForRole(directory []UserReference, roleCode string) []string {
+	result := make([]string, 0)
+	for _, user := range directory {
+		for _, role := range user.Roles {
+			if role == roleCode {
+				result = append(result, user.UserID)
+				break
+			}
+		}
+	}
+	return unique(result)
 }
 
 func (s *Service) taskQueue() string {

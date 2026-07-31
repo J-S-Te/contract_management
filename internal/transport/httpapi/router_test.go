@@ -65,13 +65,16 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 			TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六", Roles: []string{"sales"},
 			Permissions:    map[string]bool{"contract.create": true, "contract.read": true},
 			RoleConfigHash: "hash-1", AuthzRevision: 9,
+			UserDirectory: []application.UserReference{
+				{UserID: "user-1", DisplayName: "章六"},
+				{UserID: "user-2", DisplayName: "蔡总"},
+			},
 		}, nil
 	})
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
 	response := httptest.NewRecorder()
 
-	service := &application.Service{UserDisplayNames: map[string]string{"user-2": "蔡总", "user-1": "章六"}}
-	NewRouter(service, identity).ServeHTTP(response, request)
+	NewRouter(nil, identity).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())

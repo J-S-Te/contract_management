@@ -127,3 +127,25 @@ func TestEnhancedApprovalCommands(t *testing.T) {
 	require.Equal(t, 0, state.CurrentNodeIndex)
 	require.Equal(t, approval.NodePending, state.Nodes[0].Status)
 }
+
+func TestAnySignNodeAdvancesAfterOneOfMultipleAssigneesApproves(t *testing.T) {
+	state := ApprovalState{
+		Status: approval.StatusRunning,
+		Nodes: []RuntimeNode{{
+			Node: approval.Node{
+				ID: "sales", AssigneeIDs: []string{"director-1", "director-2"},
+				Countersign: approval.CountersignAny,
+			},
+			Status: approval.NodeActive, ApprovedBy: map[string]bool{},
+		}},
+	}
+
+	changed, terminal, err := applyContractCommand(&state, ApprovalCommand{
+		Action: ActionApprove, ActorUserID: "director-1", OccurredAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, terminal)
+	require.Equal(t, approval.NodeApproved, state.Nodes[0].Status)
+	require.Equal(t, 1, state.CurrentNodeIndex)
+}
