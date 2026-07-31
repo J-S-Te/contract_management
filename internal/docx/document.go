@@ -3,12 +3,14 @@ package docx
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -408,4 +410,241 @@ func chineseFourDigits(value int, digits []string) string {
 		result.WriteString(units[3-index])
 	}
 	return result.String()
+}
+
+var safeHexColor = regexp.MustCompile(`^[0-9A-Fa-f]{6}$`)
+
+type officeNode struct {
+	name     string
+	attrs    map[string]string
+	text     string
+	children []*officeNode
+}
+
+func renderDocumentHTML(documentXML []byte) (string, error) {
+	root, err := parseOfficeXML(documentXML)
+	if err != nil {
+		return "", fmt.Errorf("parse DOCX document XML: %w", err)
+	}
+	body := descendant(root, "body")
+	if body == nil {
+		return "", fmt.Errorf("invalid DOCX: document body is missing")
+	}
+	var result strings.Builder
+	result.WriteString(`<article class="docx-preview docx-page">`)
+	for _, child := range body.children {
+		renderOfficeBlock(&result, child)
+	}
+	result.WriteString(`</article>`)
+	return result.String(), nil
+}
+
+func parseOfficeXML(body []byte) (*officeNode, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(body))
+	root := &officeNode{name: "root", attrs: map[string]string{}}
+	stack := []*officeNode{root}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			node := &officeNode{name: value.Name.Local, attrs: map[string]string{}}
+			for _, attribute := range value.Attr {
+				node.attrs[attribute.Name.Local] = attribute.Value
+			}
+			parent := stack[len(stack)-1]
+			parent.children = append(parent.children, node)
+			stack = append(stack, node)
+		case xml.CharData:
+			stack[len(stack)-1].text += string(value)
+		case xml.EndElement:
+			if len(stack) > 1 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	return root, nil
+}
+
+func renderOfficeBlock(result *strings.Builder, node *officeNode) {
+	switch node.name {
+	case "p":
+		renderParagraph(result, node)
+	case "tbl":
+		renderTable(result, node)
+	case "sdt", "customXml":
+		for _, child := range node.children {
+			renderOfficeBlock(result, child)
+		}
+	}
+}
+
+func renderParagraph(result *strings.Builder, paragraph *officeNode) {
+	properties := child(paragraph, "pPr")
+	styles := make([]string, 0, 3)
+	classes := []string{"docx-paragraph"}
+	if alignment := attr(child(properties, "jc"), "val"); alignment != "" {
+		alignments := map[string]string{"center": "center", "right": "right", "both": "justify", "distribute": "justify", "left": "left"}
+		if safe, exists := alignments[alignment]; exists {
+			styles = append(styles, "text-align:"+safe)
+		}
+	}
+	if style := strings.ToLower(attr(child(properties, "pStyle"), "val")); strings.Contains(style, "title") || strings.Contains(style, "heading") {
+		classes = append(classes, "docx-heading")
+	}
+	if child(properties, "numPr") != nil {
+		classes = append(classes, "docx-list-item")
+	}
+	result.WriteString(`<p class="` + strings.Join(classes, " ") + `"`)
+	if len(styles) > 0 {
+		result.WriteString(` style="` + strings.Join(styles, ";") + `"`)
+	}
+	result.WriteString(`>`)
+	if child(properties, "numPr") != nil {
+		result.WriteString(`<span class="docx-list-marker">•</span>`)
+	}
+	before := result.Len()
+	for _, item := range paragraph.children {
+		if item.name != "pPr" {
+			renderInline(result, item)
+		}
+	}
+	if result.Len() == before {
+		result.WriteString(`&nbsp;`)
+	}
+	result.WriteString(`</p>`)
+}
+
+func renderInline(result *strings.Builder, node *officeNode) {
+	switch node.name {
+	case "r":
+		renderRun(result, node)
+	case "t", "delText", "instrText":
+		result.WriteString(html.EscapeString(node.text))
+	case "tab":
+		result.WriteString(`<span class="docx-tab">&#9;</span>`)
+	case "br", "cr":
+		result.WriteString(`<br>`)
+	case "hyperlink", "smartTag", "sdt", "sdtContent", "ins", "fldSimple":
+		for _, child := range node.children {
+			renderInline(result, child)
+		}
+	}
+}
+
+func renderRun(result *strings.Builder, run *officeNode) {
+	properties := child(run, "rPr")
+	styles := make([]string, 0, 6)
+	if enabled(child(properties, "b")) {
+		styles = append(styles, "font-weight:700")
+	}
+	if enabled(child(properties, "i")) {
+		styles = append(styles, "font-style:italic")
+	}
+	if enabled(child(properties, "u")) {
+		styles = append(styles, "text-decoration:underline")
+	}
+	if size, err := strconv.Atoi(attr(child(properties, "sz"), "val")); err == nil && size >= 12 && size <= 144 {
+		styles = append(styles, fmt.Sprintf("font-size:%.1fpt", float64(size)/2))
+	}
+	if color := attr(child(properties, "color"), "val"); safeHexColor.MatchString(color) {
+		styles = append(styles, "color:#"+color)
+	}
+	vertical := attr(child(properties, "vertAlign"), "val")
+	tag := "span"
+	if vertical == "superscript" {
+		tag = "sup"
+	} else if vertical == "subscript" {
+		tag = "sub"
+	}
+	result.WriteString("<" + tag)
+	if len(styles) > 0 {
+		result.WriteString(` style="` + strings.Join(styles, ";") + `"`)
+	}
+	result.WriteString(">")
+	for _, item := range run.children {
+		if item.name != "rPr" {
+			renderInline(result, item)
+		}
+	}
+	result.WriteString("</" + tag + ">")
+}
+
+func renderTable(result *strings.Builder, table *officeNode) {
+	result.WriteString(`<table class="docx-table"><tbody>`)
+	for _, row := range table.children {
+		if row.name != "tr" {
+			continue
+		}
+		result.WriteString(`<tr>`)
+		for _, cell := range row.children {
+			if cell.name != "tc" {
+				continue
+			}
+			properties := child(cell, "tcPr")
+			result.WriteString(`<td`)
+			if span, err := strconv.Atoi(attr(child(properties, "gridSpan"), "val")); err == nil && span > 1 && span <= 32 {
+				result.WriteString(fmt.Sprintf(` colspan="%d"`, span))
+			}
+			if fill := attr(child(properties, "shd"), "fill"); safeHexColor.MatchString(fill) {
+				result.WriteString(` style="background-color:#` + fill + `"`)
+			}
+			result.WriteString(`>`)
+			for _, block := range cell.children {
+				if block.name != "tcPr" {
+					renderOfficeBlock(result, block)
+				}
+			}
+			result.WriteString(`</td>`)
+		}
+		result.WriteString(`</tr>`)
+	}
+	result.WriteString(`</tbody></table>`)
+}
+
+func child(node *officeNode, name string) *officeNode {
+	if node == nil {
+		return nil
+	}
+	for _, item := range node.children {
+		if item.name == name {
+			return item
+		}
+	}
+	return nil
+}
+
+func descendant(node *officeNode, name string) *officeNode {
+	if node == nil {
+		return nil
+	}
+	if node.name == name {
+		return node
+	}
+	for _, item := range node.children {
+		if found := descendant(item, name); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func attr(node *officeNode, name string) string {
+	if node == nil {
+		return ""
+	}
+	return node.attrs[name]
+}
+
+func enabled(node *officeNode) bool {
+	if node == nil {
+		return false
+	}
+	value := strings.ToLower(attr(node, "val"))
+	return value != "0" && value != "false" && value != "off" && value != "none"
 }
