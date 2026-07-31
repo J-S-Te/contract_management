@@ -84,6 +84,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.GET("/approvals", h.listApprovals)
 	api.GET("/approvals/tasks", h.listTasks)
 	api.GET("/approvals/:approvalID", h.getApproval)
+	api.GET("/approvals/:approvalID/contract-preview", h.previewApprovalContract)
 	api.GET("/approval-rules", h.listRules)
 	api.POST("/approval-rules", h.createRule)
 	api.PUT("/approval-rules/:ruleID", h.updateRule)
@@ -421,6 +422,24 @@ func (h *Handler) getApproval(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, detail)
+}
+
+func (h *Handler) previewApprovalContract(c *gin.Context) {
+	detail, err := h.service.GetApprovalDetail(c.Request.Context(), principal(c), c.Param("approvalID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if len(detail.Contract.Document) == 0 {
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该审批合同没有可预览的模板文档", nil)
+		return
+	}
+	preview, err := docx.PreviewHTML(detail.Contract.Document)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]string{"html": preview})
 }
 
 type commandRequest struct {
