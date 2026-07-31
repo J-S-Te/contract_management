@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 5
+  version: 6
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -28,6 +28,8 @@ permissions:
     enforced_by:
       - GET /api/v1/contracts
       - GET /api/v1/contracts/{contract_id}
+      - GET /api/v1/contracts/{contract_id}/preview
+      - GET /api/v1/contracts/{contract_id}/export
     constraints:
       - 始终限制在当前 tenant_id
       - 任何角色都仅允许读取 owner_user_id 为当前用户的合同

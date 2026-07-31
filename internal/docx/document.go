@@ -92,21 +92,7 @@ func PreviewHTML(document []byte) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("invalid docx: word/document.xml is missing")
 	}
-	paragraphs := paragraphPattern.FindAll(body, -1)
-	var result strings.Builder
-	result.WriteString(`<article class="docx-preview">`)
-	for _, paragraph := range paragraphs {
-		text, _ := visibleText(string(paragraph))
-		if strings.TrimSpace(text) == "" {
-			result.WriteString("<p>&nbsp;</p>")
-			continue
-		}
-		result.WriteString("<p>")
-		result.WriteString(html.EscapeString(text))
-		result.WriteString("</p>")
-	}
-	result.WriteString("</article>")
-	return result.String(), nil
+	return renderDocumentHTML(body)
 }
 
 func PlainText(document []byte) (string, error) {

@@ -74,6 +74,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/contracts/:contractID", h.getContract)
+	api.GET("/contracts/:contractID/preview", h.previewContract)
 	api.GET("/contracts/:contractID/export", h.exportContract)
 	api.GET("/contract-templates", h.listTemplates)
 	api.POST("/contract-templates", h.createTemplate)
@@ -325,6 +326,24 @@ func (h *Handler) exportContract(c *gin.Context) {
 	}
 	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename + ".docx"}))
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", found.Document)
+}
+
+func (h *Handler) previewContract(c *gin.Context) {
+	found, err := h.service.GetContract(c.Request.Context(), principal(c), c.Param("contractID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if len(found.Document) == 0 {
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可预览的模板文档", nil)
+		return
+	}
+	preview, err := docx.PreviewHTML(found.Document)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]string{"html": preview})
 }
 
 func (h *Handler) listContracts(c *gin.Context) {

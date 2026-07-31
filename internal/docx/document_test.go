@@ -86,6 +86,23 @@ func TestChineseMoneyUpper(t *testing.T) {
 	}
 }
 
+func TestPreviewHTMLPreservesParagraphAndTableFormatting(t *testing.T) {
+	document := testDocument(t, `<w:document xmlns:w="word"><w:body><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t>合同标题</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>客户名称</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:shd w:fill="EAF2FF"/></w:tcPr><w:p><w:r><w:rPr><w:i/></w:rPr><w:t>示例公司</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>`)
+
+	preview, err := PreviewHTML(document)
+	if err != nil {
+		t.Fatalf("PreviewHTML() error = %v", err)
+	}
+	for _, expected := range []string{
+		`class="docx-preview docx-page"`, `text-align:center`, `font-weight:700`,
+		`font-size:16.0pt`, `<table class="docx-table">`, `background-color:#EAF2FF`, `font-style:italic`,
+	} {
+		if !strings.Contains(preview, expected) {
+			t.Fatalf("preview does not contain %q: %s", expected, preview)
+		}
+	}
+}
+
 func testDocument(t *testing.T, documentXML string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
