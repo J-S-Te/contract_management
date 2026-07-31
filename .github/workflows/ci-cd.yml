@@ -101,7 +101,7 @@ jobs:
           chmod 600 "$HOME/.ssh/id_ed25519"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           printf -v remote_command \
-            'test -x %q/bin/deploy-service.sh && cd %q && ./bin/deploy-service.sh contract %q' \
+            'command -v bash >/dev/null && test -x %q/bin/deploy-service.sh && cd %q && bash ./bin/deploy-service.sh contract %q' \
             "$DEPLOY_PATH" "$DEPLOY_PATH" "$IMAGE_REF"
           ssh \
             -o BatchMode=yes \
