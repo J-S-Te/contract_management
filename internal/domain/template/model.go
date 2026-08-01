@@ -6,6 +6,7 @@ type Field struct {
 	Name    string `json:"name"`
 	Label   string `json:"label"`
 	Default string `json:"default,omitempty"`
+	Locked  bool   `json:"locked,omitempty"`
 }
 
 type Template struct {

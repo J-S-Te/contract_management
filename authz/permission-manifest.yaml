@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 6
+  version: 7
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -17,7 +17,7 @@ semantics:
     - 权限码必须精确匹配；后端当前不把 all 解释为通配权限。
     - 角色用于聚合权限，最终授权必须同时满足权限、数据范围和业务状态约束。
     - 前端菜单和按钮仅用于展示，不能替代后端授权。
-    - 合同模板上传是角色门禁：POST /api/v1/contract-templates 仅校验 admin 角色，不要求额外权限码。
+    - 合同模板管理是角色门禁：POST、PUT、DELETE /api/v1/contract-templates 仅校验 admin 角色，不要求额外权限码。
 
 permissions:
   - code: contract.read

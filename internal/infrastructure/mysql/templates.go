@@ -58,3 +58,28 @@ func (r *Repository) GetTemplate(ctx context.Context, tenantID, id string) (cont
 	}
 	return item, nil
 }
+
+func (r *Repository) UpdateTemplate(ctx context.Context, item contracttemplate.Template) error {
+	fields, err := json.Marshal(item.Fields)
+	if err != nil {
+		return err
+	}
+	result := r.db.WithContext(ctx).Model(&contractTemplateRecord{}).
+		Where("tenant_id = ? AND id = ?", item.TenantID, item.ID).
+		Updates(map[string]any{"name": item.Name, "fields_json": fields})
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
+
+func (r *Repository) DeleteTemplate(ctx context.Context, tenantID, id string) error {
+	result := r.db.WithContext(ctx).Where("tenant_id = ? AND id = ?", tenantID, id).Delete(&contractTemplateRecord{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return apperrors.ErrNotFound
+	}
+	return nil
+}

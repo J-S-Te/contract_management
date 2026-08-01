@@ -80,10 +80,11 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		return c, ErrForbidden
 	}
 	if c.TemplateID != "" {
-		rendered, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues)
+		rendered, normalizedValues, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues)
 		if err != nil {
 			return c, err
 		}
+		c.TemplateValues = normalizedValues
 		c.Document = rendered
 		c.Content, err = docx.PlainText(rendered)
 		if err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
+	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/oklog/ulid/v2"
@@ -78,6 +79,8 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.GET("/contracts/:contractID/export", h.exportContract)
 	api.GET("/contract-templates", h.listTemplates)
 	api.POST("/contract-templates", h.createTemplate)
+	api.PUT("/contract-templates/:templateID", h.updateTemplate)
+	api.DELETE("/contract-templates/:templateID", h.deleteTemplate)
 	api.POST("/contract-templates/:templateID/preview", h.previewTemplate)
 	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)
 	api.POST("/contracts/:contractID/status-changes", h.changeStatus)
@@ -294,6 +297,30 @@ func (h *Handler) createTemplate(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusCreated, created)
+}
+
+func (h *Handler) updateTemplate(c *gin.Context) {
+	var body struct {
+		Name   string                   `json:"name"`
+		Fields []contracttemplate.Field `json:"fields"`
+	}
+	if !decode(c, &body) {
+		return
+	}
+	updated, err := h.service.UpdateTemplate(c.Request.Context(), principal(c), c.Param("templateID"), body.Name, body.Fields)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, updated)
+}
+
+func (h *Handler) deleteTemplate(c *gin.Context) {
+	if err := h.service.DeleteTemplate(c.Request.Context(), principal(c), c.Param("templateID")); err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h *Handler) previewTemplate(c *gin.Context) {

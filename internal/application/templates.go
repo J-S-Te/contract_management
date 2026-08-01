@@ -16,6 +16,8 @@ type TemplateRepository interface {
 	CreateTemplate(context.Context, contracttemplate.Template) error
 	ListTemplates(context.Context, string) ([]contracttemplate.Template, error)
 	GetTemplate(context.Context, string, string) (contracttemplate.Template, error)
+	UpdateTemplate(context.Context, contracttemplate.Template) error
+	DeleteTemplate(context.Context, string, string) error
 }
 
 func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, filename string, content []byte) (contracttemplate.Template, error) {
@@ -57,8 +59,67 @@ func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contrac
 	return s.Templates.ListTemplates(ctx, actor.TenantID)
 }
 
+func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name string, fields []contracttemplate.Field) (contracttemplate.Template, error) {
+	if !hasRole(actor, "admin") {
+		return contracttemplate.Template{}, ErrForbidden
+	}
+	if s.Templates == nil {
+		return contracttemplate.Template{}, fmt.Errorf("template repository is not configured")
+	}
+	item, err := s.Templates.GetTemplate(ctx, actor.TenantID, strings.TrimSpace(id))
+	if err != nil {
+		return contracttemplate.Template{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能为空", ErrValidation)
+	}
+	if len(fields) != len(item.Fields) {
+		return contracttemplate.Template{}, fmt.Errorf("%w: 模板字段不能增加或删除", ErrValidation)
+	}
+	configured := make(map[string]contracttemplate.Field, len(fields))
+	for _, field := range fields {
+		field.Name = strings.TrimSpace(field.Name)
+		field.Label = strings.TrimSpace(field.Label)
+		field.Default = strings.TrimSpace(field.Default)
+		if field.Name == "" || field.Label == "" {
+			return contracttemplate.Template{}, fmt.Errorf("%w: 字段名称和显示名称不能为空", ErrValidation)
+		}
+		if _, exists := configured[field.Name]; exists {
+			return contracttemplate.Template{}, fmt.Errorf("%w: 模板字段重复：%s", ErrValidation, field.Name)
+		}
+		if field.Locked && field.Default == "" {
+			return contracttemplate.Template{}, fmt.Errorf("%w: 管理员配置字段“%s”必须填写固定值", ErrValidation, field.Label)
+		}
+		configured[field.Name] = field
+	}
+	updatedFields := make([]contracttemplate.Field, 0, len(item.Fields))
+	for _, existing := range item.Fields {
+		field, exists := configured[existing.Name]
+		if !exists {
+			return contracttemplate.Template{}, fmt.Errorf("%w: 模板字段不存在：%s", ErrValidation, existing.Name)
+		}
+		updatedFields = append(updatedFields, field)
+	}
+	item.Name, item.Fields = name, updatedFields
+	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
+		return contracttemplate.Template{}, err
+	}
+	return item, nil
+}
+
+func (s *Service) DeleteTemplate(ctx context.Context, actor Principal, id string) error {
+	if !hasRole(actor, "admin") {
+		return ErrForbidden
+	}
+	if s.Templates == nil {
+		return fmt.Errorf("template repository is not configured")
+	}
+	return s.Templates.DeleteTemplate(ctx, actor.TenantID, strings.TrimSpace(id))
+}
+
 func (s *Service) PreviewTemplate(ctx context.Context, actor Principal, id string, values map[string]string) (string, error) {
-	rendered, err := s.renderTemplate(ctx, actor, id, values)
+	rendered, _, err := s.renderTemplate(ctx, actor, id, values)
 	if err != nil {
 		return "", err
 	}
@@ -69,38 +130,52 @@ func (s *Service) PreviewTemplate(ctx context.Context, actor Principal, id strin
 	return preview, nil
 }
 
-func (s *Service) renderTemplate(ctx context.Context, actor Principal, id string, values map[string]string) ([]byte, error) {
+func (s *Service) renderTemplate(ctx context.Context, actor Principal, id string, values map[string]string) ([]byte, map[string]string, error) {
 	if !actor.Has("contract.create") || s.Templates == nil || strings.TrimSpace(id) == "" {
-		return nil, ErrForbidden
+		return nil, nil, ErrForbidden
 	}
 	item, err := s.Templates.GetTemplate(ctx, actor.TenantID, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := validateTemplateValues(item.Fields, values); err != nil {
-		return nil, err
-	}
-	rendered, err := docx.Render(item.Content, values)
+	normalized, err := normalizeTemplateValues(item.Fields, values, hasRole(actor, "admin"))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrValidation, err)
+		return nil, nil, err
 	}
-	return rendered, nil
+	rendered, err := docx.Render(item.Content, normalized)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	return rendered, normalized, nil
 }
 
-func validateTemplateValues(fields []contracttemplate.Field, values map[string]string) error {
+func normalizeTemplateValues(fields []contracttemplate.Field, values map[string]string, admin bool) (map[string]string, error) {
 	expected := make(map[string]bool, len(fields))
+	normalized := make(map[string]string, len(fields))
 	for _, field := range fields {
 		expected[field.Name] = true
-		if _, ok := values[field.Name]; !ok && field.Default == "" {
-			return fmt.Errorf("%w: missing template field %s", ErrValidation, field.Name)
+		value, supplied := values[field.Name]
+		if field.Locked && !admin {
+			if supplied && value != field.Default {
+				return nil, fmt.Errorf("%w: 字段“%s”由管理员配置，不能修改", ErrValidation, field.Label)
+			}
+			normalized[field.Name] = field.Default
+			continue
 		}
+		if !supplied {
+			value = field.Default
+		}
+		if strings.TrimSpace(value) == "" && field.Default == "" {
+			return nil, fmt.Errorf("%w: missing template field %s", ErrValidation, field.Name)
+		}
+		normalized[field.Name] = value
 	}
 	for name := range values {
 		if !expected[name] {
-			return fmt.Errorf("%w: unknown template field %s", ErrValidation, name)
+			return nil, fmt.Errorf("%w: unknown template field %s", ErrValidation, name)
 		}
 	}
-	return nil
+	return normalized, nil
 }
 
 func hasRole(actor Principal, expected string) bool {

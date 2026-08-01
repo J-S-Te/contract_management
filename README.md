@@ -60,6 +60,8 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
 | GET | `/api/v1/contract-templates` | `contract.create` 或 `admin` 角色 | 查询当前租户可用的 DOCX 模板和动态字段 |
 | POST | `/api/v1/contract-templates` | `admin` 角色 | 上传并解析 DOCX 模板，最大 10MB |
+| PUT | `/api/v1/contract-templates/{id}` | `admin` 角色 | 编辑模板名称、字段标签、默认值和管理员锁定状态 |
+| DELETE | `/api/v1/contract-templates/{id}` | `admin` 角色 | 删除模板；已生成合同保存的是冻结文档，不受影响 |
 | POST | `/api/v1/contract-templates/{id}/preview` | `contract.create` | 根据表单值渲染安全的 HTML 预览 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
 | GET | `/api/v1/contracts/{id}/preview` | `contract.read` | 按 DOCX 段落、字体和表格结构预览已固化的合同文档 |

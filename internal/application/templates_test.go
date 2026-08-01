@@ -41,6 +41,20 @@ func (r *memoryTemplateRepository) GetTemplate(_ context.Context, tenantID, id s
 	return item, nil
 }
 
+func (r *memoryTemplateRepository) UpdateTemplate(_ context.Context, item contracttemplate.Template) error {
+	r.items[item.ID] = item
+	return nil
+}
+
+func (r *memoryTemplateRepository) DeleteTemplate(_ context.Context, tenantID, id string) error {
+	item, exists := r.items[id]
+	if !exists || item.TenantID != tenantID {
+		return errors.New("not found")
+	}
+	delete(r.items, id)
+	return nil
+}
+
 func TestCreateTemplateRequiresAdminRole(t *testing.T) {
 	service := &Service{Templates: &memoryTemplateRepository{}}
 	content := applicationTestDOCX(t, "{{customer_name}}")
@@ -87,6 +101,32 @@ func TestListTemplatesAllowsAdminWithoutPermissions(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != "template-1" {
 		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestUpdateTemplateConfiguresLockedField(t *testing.T) {
+	templates := &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "旧名称", Fields: []contracttemplate.Field{{Name: "party_a", Label: "甲方"}}},
+	}}
+	service := &Service{Templates: templates}
+	updated, err := service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"admin"}}, "template-1", "标准合同", []contracttemplate.Field{{Name: "party_a", Label: "甲方名称", Default: "示例科技", Locked: true}})
+	if err != nil {
+		t.Fatalf("UpdateTemplate() error = %v", err)
+	}
+	if updated.Name != "标准合同" || !updated.Fields[0].Locked || updated.Fields[0].Default != "示例科技" {
+		t.Fatalf("updated = %#v", updated)
+	}
+}
+
+func TestLockedTemplateFieldCannotBeOverriddenByNonAdmin(t *testing.T) {
+	fields := []contracttemplate.Field{{Name: "party_a", Label: "甲方", Default: "管理员公司", Locked: true}}
+	values, err := normalizeTemplateValues(fields, map[string]string{"party_a": "其他公司"}, false)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("normalizeTemplateValues() error = %v, want ErrValidation", err)
+	}
+	values, err = normalizeTemplateValues(fields, nil, false)
+	if err != nil || values["party_a"] != "管理员公司" {
+		t.Fatalf("values = %#v, error = %v", values, err)
 	}
 }
 
