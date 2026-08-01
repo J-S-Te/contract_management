@@ -20,6 +20,7 @@ type Contract struct {
 	Document            []byte            `json:"-"`
 	Status              Status            `json:"status"`
 	Version             uint64            `json:"version"`
+	StartDate           *time.Time        `json:"start_date,omitempty"`
 	EndDate             *time.Time        `json:"end_date,omitempty"`
 	ContentHash         string            `json:"content_hash"`
 	CreatedAt           time.Time         `json:"created_at"`
@@ -27,10 +28,24 @@ type Contract struct {
 }
 
 type DashboardContract struct {
-	Contract
-	InApproval      bool `json:"in_approval"`
-	ActiveUnexpired bool `json:"active_unexpired"`
-	Expired         bool `json:"expired"`
+	ID                  string     `json:"id"`
+	Number              string     `json:"contract_number"`
+	Title               string     `json:"title"`
+	Type                string     `json:"contract_type"`
+	ServiceType         string     `json:"service_type"`
+	CustomerCreditLevel string     `json:"customer_credit_level,omitempty"`
+	OwnerDisplayName    string     `json:"owner_display_name"`
+	AmountMinor         int64      `json:"amount_minor"`
+	Currency            string     `json:"currency"`
+	Content             string     `json:"content"`
+	Status              Status     `json:"status"`
+	StartDate           *time.Time `json:"start_date,omitempty"`
+	EndDate             *time.Time `json:"end_date,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	InApproval          bool       `json:"in_approval"`
+	ActiveUnexpired     bool       `json:"active_unexpired"`
+	Expired             bool       `json:"expired"`
 }
 
 type Dashboard struct {

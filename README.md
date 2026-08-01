@@ -59,7 +59,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | GET | `/api/v1/auth/me` | 已登录 | 返回平台授权快照，用于前端菜单和按钮展示 |
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
 | GET | `/api/v1/contract-templates` | `contract.create` 或 `admin` 角色 | 查询当前租户可用的 DOCX 模板和动态字段 |
-| GET | `/api/v1/dashboard` | `admin` 角色 + `contract.read` | 当前租户合同总额、总数、审批中、生效未到期和超期统计及最近 200 条明细 |
+| GET | `/api/v1/dashboard` | `contract.read` | admin 查看当前租户、其他用户查看本人合同的总额、总数、审批中、生效未到期和超期统计及最近 200 条业务明细 |
 | POST | `/api/v1/contract-templates` | `admin` 角色 | 上传并解析 DOCX 模板，最大 10MB |
 | PUT | `/api/v1/contract-templates/{id}` | `admin` 角色 | 编辑模板名称、字段标签、默认值和管理员锁定状态 |
 | DELETE | `/api/v1/contract-templates/{id}` | `admin` 角色 | 删除模板；已生成合同保存的是冻结文档，不受影响 |

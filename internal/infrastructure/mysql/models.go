@@ -23,6 +23,7 @@ type contractRecord struct {
 	TemplateValuesJSON  []byte `gorm:"type:json"`
 	RenderedDocument    []byte `gorm:"type:longblob"`
 	Status              string
+	StartDate           *time.Time
 	EndDate             *time.Time
 	ContentHash         *string
 	Version             uint64

@@ -64,7 +64,7 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 		ContractType: c.Type, ServiceType: c.ServiceType, CustomerCreditLevel: stringPtr(c.CustomerCreditLevel),
 		OwnerUserID: c.OwnerUserID, OwnerDisplayName: c.OwnerDisplayName, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
 		TemplateID: stringPtr(c.TemplateID), TemplateValuesJSON: templateValues, RenderedDocument: c.Document,
-		Status: string(c.Status), EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,
+		Status: string(c.Status), StartDate: c.StartDate, EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,
 		CreatedAt: now, CreatedBy: actorUserID, UpdatedAt: now, UpdatedBy: actorUserID,
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

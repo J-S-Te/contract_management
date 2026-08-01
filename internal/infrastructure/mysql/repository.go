@@ -54,7 +54,7 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, s
 	return result, nil
 }
 
-func (r *Repository) ContractDashboard(ctx context.Context, tenantID string, today time.Time, limit int) (contract.Dashboard, error) {
+func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserID string, today time.Time, limit int) (contract.Dashboard, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
@@ -62,33 +62,42 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID string, tod
 		TotalContracts   int64
 		TotalAmountMinor int64
 	}
-	if err := r.db.WithContext(ctx).Model(&contractRecord{}).
+	contracts := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ?", tenantID)
+	approvals := r.db.WithContext(ctx).Model(&approvalInstanceRecord{}).Where("tenant_id = ?", tenantID)
+	if ownerUserID != "" {
+		contracts = contracts.Where("owner_user_id = ?", ownerUserID)
+		approvals = approvals.Where("contract_id IN (?)", r.db.WithContext(ctx).Model(&contractRecord{}).Select("id").Where("tenant_id = ? AND owner_user_id = ?", tenantID, ownerUserID))
+	}
+	if err := contracts.
 		Select("COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").
-		Where("tenant_id = ?", tenantID).Scan(&aggregate).Error; err != nil {
+		Scan(&aggregate).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 
 	var approvalContractIDs []string
-	if err := r.db.WithContext(ctx).Model(&approvalInstanceRecord{}).
-		Distinct("contract_id").Where("tenant_id = ? AND status = ?", tenantID, approval.StatusRunning).
+	if err := approvals.Distinct("contract_id").Where("status = ?", approval.StatusRunning).
 		Pluck("contract_id", &approvalContractIDs).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 
 	activeStatuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
 	var activeCount, expiredCount int64
-	base := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ? AND status IN ?", tenantID, activeStatuses)
+	base := contracts.Where("status IN ?", activeStatuses)
 	if err := base.Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
-	if err := r.db.WithContext(ctx).Model(&contractRecord{}).
-		Where("tenant_id = ? AND status IN ? AND end_date IS NOT NULL AND end_date < ?", tenantID, activeStatuses, today).
+	if err := contracts.
+		Where("status IN ? AND end_date IS NOT NULL AND end_date < ?", activeStatuses, today).
 		Count(&expiredCount).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 
 	var records []contractRecord
-	if err := r.db.WithContext(ctx).Omit("rendered_document", "template_values_json").Where("tenant_id = ?", tenantID).
+	details := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID)
+	if ownerUserID != "" {
+		details = details.Where("owner_user_id = ?", ownerUserID)
+	}
+	if err := details.Select("id", "contract_number", "title", "contract_type", "service_type", "customer_credit_level", "owner_display_name", "amount_minor", "currency", "content", "status", "start_date", "end_date", "created_at", "updated_at").
 		Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
@@ -106,10 +115,11 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID string, tod
 			}
 		}
 		expired := statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
-		items = append(items, contract.DashboardContract{
-			Contract: contractFromRecord(record), InApproval: inApproval[record.ID],
-			ActiveUnexpired: statusIsActive && !expired, Expired: expired,
-		})
+		item := contract.DashboardContract{ID: record.ID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, InApproval: inApproval[record.ID], ActiveUnexpired: statusIsActive && !expired, Expired: expired}
+		if record.CustomerCreditLevel != nil {
+			item.CustomerCreditLevel = *record.CustomerCreditLevel
+		}
+		items = append(items, item)
 	}
 	return contract.Dashboard{
 		TotalAmountMinor: aggregate.TotalAmountMinor, TotalContracts: aggregate.TotalContracts,
@@ -493,7 +503,7 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 }
 
 func contractFromRecord(record contractRecord) contract.Contract {
-	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel
 	}

@@ -14,12 +14,14 @@ import (
 )
 
 type recordingRepository struct {
-	ownerUserID  string
-	contract     contract.Contract
-	created      contract.Contract
-	approvalMeta approval.Meta
-	actions      []approval.Action
-	dashboard    contract.Dashboard
+	ownerUserID          string
+	contract             contract.Contract
+	created              contract.Contract
+	approvalMeta         approval.Meta
+	actions              []approval.Action
+	dashboard            contract.Dashboard
+	dashboardTenantID    string
+	dashboardOwnerUserID string
 }
 
 func (r *recordingRepository) GetContract(context.Context, string, string) (contract.Contract, error) {
@@ -31,7 +33,9 @@ func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _
 	return nil, nil
 }
 
-func (r *recordingRepository) ContractDashboard(context.Context, string, time.Time, int) (contract.Dashboard, error) {
+func (r *recordingRepository) ContractDashboard(_ context.Context, tenantID, ownerUserID string, _ time.Time, _ int) (contract.Dashboard, error) {
+	r.dashboardTenantID = tenantID
+	r.dashboardOwnerUserID = ownerUserID
 	return r.dashboard, nil
 }
 
@@ -113,17 +117,28 @@ func TestAdminListContractsUsesTenantScopeAndCanReadTenantContract(t *testing.T)
 	}
 }
 
-func TestContractDashboardRequiresAdminAndReturnsTenantSummary(t *testing.T) {
+func TestContractDashboardScopesAdminToTenantAndOtherUsersToSelf(t *testing.T) {
 	want := contract.Dashboard{TotalContracts: 8, TotalAmountMinor: 9000, ApprovalContracts: 2, ActiveContracts: 3, ExpiredContracts: 1}
-	service := &Service{Repo: &recordingRepository{dashboard: want}}
+	repository := &recordingRepository{dashboard: want}
+	service := &Service{Repo: repository}
 	admin := Principal{TenantID: "tenant-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
 
 	got, err := service.ContractDashboard(context.Background(), admin)
 	if err != nil || got.TotalContracts != want.TotalContracts || got.ApprovalContracts != want.ApprovalContracts {
 		t.Fatalf("ContractDashboard() = %#v, %v", got, err)
 	}
-	if _, err := service.ContractDashboard(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"sales"}, Permissions: map[string]bool{"contract.read": true}}); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("ContractDashboard() non-admin error = %v, want ErrForbidden", err)
+	if repository.dashboardTenantID != "tenant-1" || repository.dashboardOwnerUserID != "" {
+		t.Fatalf("admin dashboard scope = tenant %q, owner %q", repository.dashboardTenantID, repository.dashboardOwnerUserID)
+	}
+	user := Principal{TenantID: "tenant-2", UserID: "sales-1", Roles: []string{"sales"}, Permissions: map[string]bool{"contract.read": true}}
+	if _, err := service.ContractDashboard(context.Background(), user); err != nil {
+		t.Fatalf("ContractDashboard() user error = %v", err)
+	}
+	if repository.dashboardTenantID != "tenant-2" || repository.dashboardOwnerUserID != "sales-1" {
+		t.Fatalf("user dashboard scope = tenant %q, owner %q", repository.dashboardTenantID, repository.dashboardOwnerUserID)
+	}
+	if _, err := service.ContractDashboard(context.Background(), Principal{TenantID: "tenant-1"}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ContractDashboard() missing permission error = %v, want ErrForbidden", err)
 	}
 }
 
@@ -143,6 +158,20 @@ func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 	if created.OwnerUserID != "user-1" || created.OwnerDisplayName != "章六" ||
 		repository.created.OwnerDisplayName != "章六" {
 		t.Fatalf("created contract = %#v, persisted = %#v", created, repository.created)
+	}
+}
+
+func TestCreateContractRejectsStartDateAfterEndDate(t *testing.T) {
+	start := time.Date(2026, time.February, 2, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, -1)
+	service := &Service{Repo: &recordingRepository{}}
+	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
+	_, err := service.CreateContract(context.Background(), actor, contract.Contract{
+		Number: "CON-001", Title: "合同", Type: "service", ServiceType: "consulting", Content: "body",
+		StartDate: &start, EndDate: &end,
+	})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("CreateContract() error = %v, want ErrValidation", err)
 	}
 }
 

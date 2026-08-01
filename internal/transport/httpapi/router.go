@@ -233,6 +233,7 @@ type createContractRequest struct {
 	Content             string            `json:"content"`
 	TemplateID          string            `json:"template_id"`
 	TemplateValues      map[string]string `json:"template_values"`
+	StartDate           *time.Time        `json:"start_date"`
 	EndDate             *time.Time        `json:"end_date"`
 }
 
@@ -241,7 +242,7 @@ func (h *Handler) createContract(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
 	if err != nil {
 		writeError(c, err)
 		return

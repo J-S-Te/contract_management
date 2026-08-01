@@ -34,7 +34,7 @@ func (p Principal) Has(permission string) bool { return p.Permissions[permission
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, int) ([]contract.Contract, error)
-	ContractDashboard(context.Context, string, time.Time, int) (contract.Dashboard, error)
+	ContractDashboard(context.Context, string, string, time.Time, int) (contract.Dashboard, error)
 	CreateContract(context.Context, contract.Contract, string) error
 	TransitionDirect(context.Context, string, string, uint64, contract.Status, string, string, string) error
 	ListEnabledRules(context.Context, string) ([]approval.Rule, error)
@@ -93,6 +93,9 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		}
 	}
 	if c.Number == "" || c.Title == "" || c.Type == "" || c.ServiceType == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 {
+		return c, ErrValidation
+	}
+	if c.StartDate != nil && c.EndDate != nil && c.StartDate.After(*c.EndDate) {
 		return c, ErrValidation
 	}
 	if c.Currency == "" {
@@ -315,7 +318,7 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, 
 }
 
 func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contract.Dashboard, error) {
-	if !hasRole(actor, "admin") || !actor.Has("contract.read") {
+	if !actor.Has("contract.read") {
 		return contract.Dashboard{}, ErrForbidden
 	}
 	if s.Repo == nil {
@@ -323,7 +326,11 @@ func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contr
 	}
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	return s.Repo.ContractDashboard(ctx, actor.TenantID, today, 200)
+	ownerUserID := actor.UserID
+	if hasRole(actor, "admin") {
+		ownerUserID = ""
+	}
+	return s.Repo.ContractDashboard(ctx, actor.TenantID, ownerUserID, today, 200)
 }
 
 func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Rule, error) {
