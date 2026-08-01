@@ -23,8 +23,6 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql-init/000_databases.sql:/docker-entrypoint-initdb.d/000_databases.sql:ro
-      - ./migrations/000001_contract_workflow.sql:/docker-entrypoint-initdb.d/010_contract_workflow.sql:ro
-      - ./migrations/000002_single_active_status_change.sql:/docker-entrypoint-initdb.d/020_single_active_status_change.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -ucontract -p\"$${MYSQL_PASSWORD}\" --silent"]
       interval: 5s
@@ -36,6 +34,17 @@ services:
         aliases:
           - contract-mysql
     restart: unless-stopped
+
+  migrate:
+    <<: *contract-environment
+    build:
+      context: .
+    image: contract-management:local
+    command: ["./migrate"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
 
   temporal:
     image: temporalio/auto-setup:1.29.7
@@ -64,8 +73,8 @@ services:
       context: .
     image: contract-management:local
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       temporal:
         condition: service_healthy
     expose:
@@ -89,8 +98,8 @@ services:
     image: contract-management:local
     command: ["./worker"]
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       temporal:
         condition: service_healthy
     restart: unless-stopped

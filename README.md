@@ -95,11 +95,9 @@ DOCX 模板变量可直接使用中文字段，例如 `{{客户名称}}`；也�
 cp .env.example .env.local
 # 填入平台“一键接入”返回的 Client ID、一次性 Secret、Tenant ID 和精确回调地址。
 docker compose --env-file .env.local up -d --build
-go run ./cmd/worker
-go run ./cmd/api
 ```
 
-MySQL 初始化会按编号执行 `migrations` 中的建表和增量约束脚本。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关仅把 `/contract_management/api/`、`/contract_management/auth/` 等后端路径转发至本服务并去除前缀，其余 `/contract_management/` 页面由统一前端承载。
+Compose 会先等待 MySQL 健康，再由一次性 `migrate` 服务按编号执行所有待完成迁移；只有迁移成功后 API 才会启动。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关仅把 `/contract_management/api/`、`/contract_management/auth/` 等后端路径转发至本服务并去除前缀，其余 `/contract_management/` 页面由统一前端承载。
 
 审批人根据基础平台中合同应用的有效角色动态解析，直接用户授权、组织授权和岗位继承均会生效。同一角色有多人时采用或签，任一人处理后进入下一节点。不要在镜像或仓库中保存 Temporal API Key 或数据库密码。
 
@@ -132,7 +130,7 @@ make build
 - 可选 Environment Secret `DEPLOY_PORT`：SSH 端口，默认 `22`。
 - 可选 Environment Variable `DEPLOY_PATH`：集成部署目录，默认 `/opt/basic-platform`。
 
-服务器部署目录必须已经由平台生产部署初始化，包含可执行的 `bin/deploy-service.sh`、`compose.yaml`、权限为 `600` 的 `.env` 和 `.release.env`。发布用户必须能够在该目录运行 Docker Compose；如果 GHCR 包为私有包，服务器还必须预先执行 `docker login ghcr.io`。流水线传递 `ghcr.io/...@sha256:...` 不可变镜像引用，远端脚本负责数据库备份、迁移、服务更新、健康检查和失败时恢复上一镜像。
+服务器部署目录必须已经由平台生产部署初始化，包含可执行的 `bin/deploy-service.sh`、`compose.yaml`、权限为 `600` 的 `.env` 和 `.release.env`。发布用户必须能够在该目录运行 Docker Compose；如果 GHCR 包为私有包，服务器还必须预先执行 `docker login ghcr.io`。流水线传递 `ghcr.io/...@sha256:...` 不可变镜像引用，远端脚本会先备份数据库，再执行 Compose 中的 `contract-migrate` 一次性服务；迁移非零退出时发布立即中止，不会替换正在运行的 API。迁移成功后才更新服务、执行健康检查，失败时恢复上一镜像。
 
 首次配置主机公钥时，应在可信网络中核验服务器指纹后生成 Secret，例如：
 

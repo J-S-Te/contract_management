@@ -24,6 +24,10 @@ jobs:
           cache-dependency-path: go.sum
       - run: go test ./...
       - run: go vet ./...
+      - name: Validate migration-gated Compose configuration
+        env:
+          CONTRACT_RUNTIME_ENV_FILE: .env.example
+        run: docker compose --env-file .env.example config --quiet
 
   image:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -80,7 +84,7 @@ jobs:
     environment:
       name: test
     steps:
-      - name: Deploy immutable contract-management image
+      - name: Run remote migrations and deploy immutable contract-management image
         shell: bash
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
