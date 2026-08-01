@@ -62,42 +62,48 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 		TotalContracts   int64
 		TotalAmountMinor int64
 	}
-	contracts := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ?", tenantID)
-	approvals := r.db.WithContext(ctx).Model(&approvalInstanceRecord{}).Where("tenant_id = ?", tenantID)
-	if ownerUserID != "" {
-		contracts = contracts.Where("owner_user_id = ?", ownerUserID)
-		approvals = approvals.Where("contract_id IN (?)", r.db.WithContext(ctx).Model(&contractRecord{}).Select("id").Where("tenant_id = ? AND owner_user_id = ?", tenantID, ownerUserID))
+	contractScope := func() *gorm.DB {
+		query := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ?", tenantID)
+		if ownerUserID != "" {
+			query = query.Where("owner_user_id = ?", ownerUserID)
+		}
+		return query
 	}
-	if err := contracts.
+	approvalScope := func() *gorm.DB {
+		query := r.db.WithContext(ctx).Model(&approvalInstanceRecord{}).Where("tenant_id = ?", tenantID)
+		if ownerUserID != "" {
+			ownedContracts := r.db.WithContext(ctx).Model(&contractRecord{}).
+				Select("id").Where("tenant_id = ? AND owner_user_id = ?", tenantID, ownerUserID)
+			query = query.Where("contract_id IN (?)", ownedContracts)
+		}
+		return query
+	}
+	if err := contractScope().
 		Select("COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").
 		Scan(&aggregate).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 
 	var approvalContractIDs []string
-	if err := approvals.Distinct("contract_id").Where("status = ?", approval.StatusRunning).
+	if err := approvalScope().Distinct("contract_id").Where("status = ?", approval.StatusRunning).
 		Pluck("contract_id", &approvalContractIDs).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 
 	activeStatuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
 	var activeCount, expiredCount int64
-	base := contracts.Where("status IN ?", activeStatuses)
-	if err := base.Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
+	if err := contractScope().Where("status IN ?", activeStatuses).
+		Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
-	if err := contracts.
+	if err := contractScope().
 		Where("status IN ? AND end_date IS NOT NULL AND end_date < ?", activeStatuses, today).
 		Count(&expiredCount).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 
 	var records []contractRecord
-	details := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID)
-	if ownerUserID != "" {
-		details = details.Where("owner_user_id = ?", ownerUserID)
-	}
-	if err := details.Select("id", "contract_number", "title", "contract_type", "service_type", "customer_credit_level", "owner_display_name", "amount_minor", "currency", "content", "status", "start_date", "end_date", "created_at", "updated_at").
+	if err := contractScope().Select("id", "contract_number", "title", "contract_type", "service_type", "customer_credit_level", "owner_display_name", "amount_minor", "currency", "content", "status", "start_date", "end_date", "created_at", "updated_at").
 		Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
