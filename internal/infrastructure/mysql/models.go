@@ -7,30 +7,38 @@ import (
 )
 
 type contractRecord struct {
-	ID                  string `gorm:"primaryKey"`
-	TenantID            string
-	ContractNumber      string
-	Title               string
-	ContractType        string
-	ServiceType         string
-	CustomerCreditLevel *string
-	OwnerUserID         string
-	OwnerDisplayName    string
-	AmountMinor         int64
-	Currency            string
-	Content             string
-	TemplateID          *string
-	TemplateValuesJSON  []byte `gorm:"type:json"`
-	RenderedDocument    []byte `gorm:"type:longblob"`
-	Status              string
-	StartDate           *time.Time
-	EndDate             *time.Time
-	ContentHash         *string
-	Version             uint64
-	CreatedAt           time.Time
-	CreatedBy           string
-	UpdatedAt           time.Time
-	UpdatedBy           string
+	ID                   string `gorm:"primaryKey"`
+	TenantID             string
+	ContractNumber       *string
+	ContractNumberFormat string
+	Title                string
+	ContractType         string
+	ServiceType          string
+	OpportunityID        *string
+	OpportunityName      *string
+	CustomerName         *string
+	CustomerAddress      *string
+	CustomerContact      *string
+	CustomerPhone        *string
+	SystemsJSON          []byte `gorm:"type:json"`
+	CustomerCreditLevel  *string
+	OwnerUserID          string
+	OwnerDisplayName     string
+	AmountMinor          int64
+	Currency             string
+	Content              string
+	TemplateID           *string
+	TemplateValuesJSON   []byte `gorm:"type:json"`
+	RenderedDocument     []byte `gorm:"type:longblob"`
+	Status               string
+	StartDate            *time.Time
+	EndDate              *time.Time
+	ContentHash          *string
+	Version              uint64
+	CreatedAt            time.Time
+	CreatedBy            string
+	UpdatedAt            time.Time
+	UpdatedBy            string
 }
 
 func (contractRecord) TableName() string { return "con_contract" }
@@ -40,6 +48,7 @@ type contractTemplateRecord struct {
 	TenantID         string
 	Name             string
 	OriginalFilename string
+	NumberFormat     string
 	FieldsJSON       []byte `gorm:"type:json"`
 	Document         []byte `gorm:"type:longblob"`
 	CreatedAt        time.Time
@@ -51,7 +60,7 @@ func (contractTemplateRecord) TableName() string { return "con_contract_template
 func templateFromRecord(record contractTemplateRecord) contracttemplate.Template {
 	return contracttemplate.Template{
 		ID: record.ID, TenantID: record.TenantID, Name: record.Name,
-		OriginalFilename: record.OriginalFilename, Content: record.Document,
+		OriginalFilename: record.OriginalFilename, NumberFormat: record.NumberFormat, Content: record.Document,
 		CreatedAt: record.CreatedAt, CreatedBy: record.CreatedBy,
 	}
 }

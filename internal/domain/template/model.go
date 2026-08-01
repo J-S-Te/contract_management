@@ -2,6 +2,8 @@ package template
 
 import "time"
 
+const DefaultNumberFormat = "HT-{YYYYMMDD}-{ID8}"
+
 type Field struct {
 	Name    string `json:"name"`
 	Label   string `json:"label"`
@@ -14,6 +16,7 @@ type Template struct {
 	TenantID         string    `json:"tenant_id"`
 	Name             string    `json:"name"`
 	OriginalFilename string    `json:"original_filename"`
+	NumberFormat     string    `json:"number_format"`
 	Fields           []Field   `json:"fields"`
 	Content          []byte    `json:"-"`
 	CreatedAt        time.Time `json:"created_at"`

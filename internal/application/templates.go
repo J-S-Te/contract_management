@@ -40,7 +40,7 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 	}
 	item := contracttemplate.Template{
 		ID: ulid.Make().String(), TenantID: actor.TenantID, Name: name,
-		OriginalFilename: filename, Fields: fields, Content: append([]byte(nil), content...),
+		OriginalFilename: filename, NumberFormat: contracttemplate.DefaultNumberFormat, Fields: fields, Content: append([]byte(nil), content...),
 		CreatedAt: time.Now().UTC(), CreatedBy: actor.UserID,
 	}
 	if err := s.Templates.CreateTemplate(ctx, item); err != nil {
@@ -59,7 +59,7 @@ func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contrac
 	return s.Templates.ListTemplates(ctx, actor.TenantID)
 }
 
-func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name string, fields []contracttemplate.Field) (contracttemplate.Template, error) {
+func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name, numberFormat string, fields []contracttemplate.Field) (contracttemplate.Template, error) {
 	if !hasRole(actor, "admin") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
@@ -73,6 +73,10 @@ func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name 
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能为空", ErrValidation)
+	}
+	numberFormat, err = normalizeNumberFormat(numberFormat)
+	if err != nil {
+		return contracttemplate.Template{}, err
 	}
 	if len(fields) != len(item.Fields) {
 		return contracttemplate.Template{}, fmt.Errorf("%w: 模板字段不能增加或删除", ErrValidation)
@@ -101,11 +105,26 @@ func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name 
 		}
 		updatedFields = append(updatedFields, field)
 	}
-	item.Name, item.Fields = name, updatedFields
+	item.Name, item.NumberFormat, item.Fields = name, numberFormat, updatedFields
 	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
 		return contracttemplate.Template{}, err
 	}
 	return item, nil
+}
+
+func normalizeNumberFormat(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > 160 {
+		return "", fmt.Errorf("%w: 合同编号格式不能为空且不能超过160个字符", ErrValidation)
+	}
+	if !strings.Contains(value, "{ID8}") {
+		return "", fmt.Errorf("%w: 合同编号格式必须包含唯一标识 {ID8}", ErrValidation)
+	}
+	remaining := strings.NewReplacer("{YYYYMMDD}", "", "{YYYY}", "", "{MM}", "", "{DD}", "", "{ID8}", "").Replace(value)
+	if strings.ContainsAny(remaining, "{}") {
+		return "", fmt.Errorf("%w: 合同编号格式包含不支持的占位符", ErrValidation)
+	}
+	return value, nil
 }
 
 func (s *Service) DeleteTemplate(ctx context.Context, actor Principal, id string) error {

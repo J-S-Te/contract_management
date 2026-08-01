@@ -109,12 +109,23 @@ func TestUpdateTemplateConfiguresLockedField(t *testing.T) {
 		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "旧名称", Fields: []contracttemplate.Field{{Name: "party_a", Label: "甲方"}}},
 	}}
 	service := &Service{Templates: templates}
-	updated, err := service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"admin"}}, "template-1", "标准合同", []contracttemplate.Field{{Name: "party_a", Label: "甲方名称", Default: "示例科技", Locked: true}})
+	updated, err := service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"admin"}}, "template-1", "标准合同", contracttemplate.DefaultNumberFormat, []contracttemplate.Field{{Name: "party_a", Label: "甲方名称", Default: "示例科技", Locked: true}})
 	if err != nil {
 		t.Fatalf("UpdateTemplate() error = %v", err)
 	}
-	if updated.Name != "标准合同" || !updated.Fields[0].Locked || updated.Fields[0].Default != "示例科技" {
+	if updated.Name != "标准合同" || updated.NumberFormat != contracttemplate.DefaultNumberFormat || !updated.Fields[0].Locked || updated.Fields[0].Default != "示例科技" {
 		t.Fatalf("updated = %#v", updated)
+	}
+}
+
+func TestUpdateTemplateRejectsNumberFormatWithoutUniqueID(t *testing.T) {
+	templates := &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "旧名称"},
+	}}
+	service := &Service{Templates: templates}
+	_, err := service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"admin"}}, "template-1", "标准合同", "HT-{YYYY}", nil)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("UpdateTemplate() error = %v, want ErrValidation", err)
 	}
 }
 

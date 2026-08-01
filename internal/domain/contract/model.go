@@ -6,9 +6,17 @@ type Contract struct {
 	ID                  string            `json:"id"`
 	TenantID            string            `json:"tenant_id"`
 	Number              string            `json:"contract_number"`
+	NumberFormat        string            `json:"-"`
 	Title               string            `json:"title"`
 	Type                string            `json:"contract_type"`
 	ServiceType         string            `json:"service_type"`
+	OpportunityID       string            `json:"opportunity_id,omitempty"`
+	OpportunityName     string            `json:"opportunity_name,omitempty"`
+	CustomerName        string            `json:"customer_name,omitempty"`
+	CustomerAddress     string            `json:"customer_address,omitempty"`
+	CustomerContact     string            `json:"customer_contact,omitempty"`
+	CustomerPhone       string            `json:"customer_phone,omitempty"`
+	Systems             []SystemInfo      `json:"systems,omitempty"`
 	CustomerCreditLevel string            `json:"customer_credit_level,omitempty"`
 	OwnerUserID         string            `json:"owner_user_id"`
 	OwnerDisplayName    string            `json:"owner_display_name"`
@@ -25,6 +33,11 @@ type Contract struct {
 	ContentHash         string            `json:"content_hash"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`
+}
+
+type SystemInfo struct {
+	Name  string `json:"name"`
+	Level string `json:"level"`
 }
 
 type DashboardContract struct {

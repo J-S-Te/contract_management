@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
+	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/oklog/ulid/v2"
 	"gorm.io/gorm"
@@ -121,7 +123,7 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 			}
 		}
 		expired := statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
-		item := contract.DashboardContract{ID: record.ID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, InApproval: inApproval[record.ID], ActiveUnexpired: statusIsActive && !expired, Expired: expired}
+		item := contract.DashboardContract{ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, InApproval: inApproval[record.ID], ActiveUnexpired: statusIsActive && !expired, Expired: expired}
 		if record.CustomerCreditLevel != nil {
 			item.CustomerCreditLevel = *record.CustomerCreditLevel
 		}
@@ -370,7 +372,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		}
 
 		var current contractRecord
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash").
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format").
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
@@ -392,6 +394,12 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 				return fmt.Errorf("%w: contract changed during approval", apperrors.ErrStateConflict)
 			}
 			if in.Status == approval.StatusApproved {
+				if current.ContractNumber == nil {
+					number := formatContractNumber(current.ContractNumberFormat, current.ID, time.Now().UTC())
+					if err := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND contract_number IS NULL", in.TenantID, in.ContractID).Update("contract_number", number).Error; err != nil {
+						return err
+					}
+				}
 				if err := updateStatus(tx, in.TenantID, in.ContractID, contract.StatusPending, contract.StatusApproved, actor); err != nil {
 					return err
 				}
@@ -509,7 +517,7 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 }
 
 func contractFromRecord(record contractRecord) contract.Contract {
-	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: record.ContractNumber, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel
 	}
@@ -522,7 +530,27 @@ func contractFromRecord(record contractRecord) contract.Contract {
 	if len(record.TemplateValuesJSON) > 0 {
 		_ = json.Unmarshal(record.TemplateValuesJSON, &result.TemplateValues)
 	}
+	if len(record.SystemsJSON) > 0 {
+		_ = json.Unmarshal(record.SystemsJSON, &result.Systems)
+	}
 	return result
+}
+
+func formatContractNumber(format, id string, now time.Time) string {
+	if format == "" {
+		format = contracttemplate.DefaultNumberFormat
+	}
+	id8 := id
+	if len(id8) > 8 {
+		id8 = id8[len(id8)-8:]
+	}
+	return strings.NewReplacer(
+		"{YYYYMMDD}", now.Format("20060102"),
+		"{YYYY}", now.Format("2006"),
+		"{MM}", now.Format("01"),
+		"{DD}", now.Format("02"),
+		"{ID8}", id8,
+	).Replace(format)
 }
 
 func newID() string { return ulid.Make().String() }

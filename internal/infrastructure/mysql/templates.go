@@ -19,7 +19,7 @@ func (r *Repository) CreateTemplate(ctx context.Context, item contracttemplate.T
 	now := time.Now().UTC()
 	record := contractTemplateRecord{
 		ID: item.ID, TenantID: item.TenantID, Name: item.Name,
-		OriginalFilename: item.OriginalFilename, FieldsJSON: fields,
+		OriginalFilename: item.OriginalFilename, NumberFormat: item.NumberFormat, FieldsJSON: fields,
 		Document: item.Content, CreatedAt: now, CreatedBy: item.CreatedBy,
 	}
 	return r.db.WithContext(ctx).Create(&record).Error
@@ -28,7 +28,7 @@ func (r *Repository) CreateTemplate(ctx context.Context, item contracttemplate.T
 func (r *Repository) ListTemplates(ctx context.Context, tenantID string) ([]contracttemplate.Template, error) {
 	var records []contractTemplateRecord
 	if err := r.db.WithContext(ctx).
-		Select("id", "tenant_id", "name", "original_filename", "fields_json", "created_at", "created_by").
+		Select("id", "tenant_id", "name", "original_filename", "number_format", "fields_json", "created_at", "created_by").
 		Where("tenant_id = ?", tenantID).Order("created_at DESC").Find(&records).Error; err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (r *Repository) UpdateTemplate(ctx context.Context, item contracttemplate.T
 	}
 	result := r.db.WithContext(ctx).Model(&contractTemplateRecord{}).
 		Where("tenant_id = ? AND id = ?", item.TenantID, item.ID).
-		Updates(map[string]any{"name": item.Name, "fields_json": fields})
+		Updates(map[string]any{"name": item.Name, "number_format": item.NumberFormat, "fields_json": fields})
 	if result.Error != nil {
 		return result.Error
 	}

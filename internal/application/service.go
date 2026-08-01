@@ -12,6 +12,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
+	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/oklog/ulid/v2"
 	"go.temporal.io/api/enums/v1"
@@ -91,8 +92,13 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		if err != nil {
 			return c, fmt.Errorf("%w: %v", ErrValidation, err)
 		}
+		item, err := s.Templates.GetTemplate(ctx, actor.TenantID, c.TemplateID)
+		if err != nil {
+			return c, err
+		}
+		c.NumberFormat = item.NumberFormat
 	}
-	if c.Number == "" || c.Title == "" || c.Type == "" || c.ServiceType == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 {
+	if c.Title == "" || c.Type == "" || c.ServiceType == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 || !validSystems(c.Systems) {
 		return c, ErrValidation
 	}
 	if c.StartDate != nil && c.EndDate != nil && c.StartDate.After(*c.EndDate) {
@@ -100,6 +106,9 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	}
 	if c.Currency == "" {
 		c.Currency = "CNY"
+	}
+	if c.NumberFormat == "" {
+		c.NumberFormat = contracttemplate.DefaultNumberFormat
 	}
 	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.DisplayName, contract.StatusDraft
 	hashSource := []byte(c.Content)
@@ -113,6 +122,19 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	}
 	c.Version = 1
 	return c, nil
+}
+
+func validSystems(items []contract.SystemInfo) bool {
+	if len(items) > 15 {
+		return false
+	}
+	levels := map[string]bool{"一级": true, "二级": true, "三级": true, "四级": true}
+	for _, item := range items {
+		if item.Name == "" || !levels[item.Level] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractID string, termsIdentical bool) (StartResult, error) {

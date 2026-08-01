@@ -224,18 +224,25 @@ func (h *Handler) deleteRule(c *gin.Context) {
 }
 
 type createContractRequest struct {
-	Number              string            `json:"contract_number"`
-	Title               string            `json:"title"`
-	ContractType        string            `json:"contract_type"`
-	ServiceType         string            `json:"service_type"`
-	CustomerCreditLevel string            `json:"customer_credit_level"`
-	AmountMinor         int64             `json:"amount_minor"`
-	Currency            string            `json:"currency"`
-	Content             string            `json:"content"`
-	TemplateID          string            `json:"template_id"`
-	TemplateValues      map[string]string `json:"template_values"`
-	StartDate           *time.Time        `json:"start_date"`
-	EndDate             *time.Time        `json:"end_date"`
+	Number              string                `json:"contract_number"`
+	Title               string                `json:"title"`
+	ContractType        string                `json:"contract_type"`
+	ServiceType         string                `json:"service_type"`
+	OpportunityID       string                `json:"opportunity_id"`
+	OpportunityName     string                `json:"opportunity_name"`
+	CustomerName        string                `json:"customer_name"`
+	CustomerAddress     string                `json:"customer_address"`
+	CustomerContact     string                `json:"customer_contact"`
+	CustomerPhone       string                `json:"customer_phone"`
+	Systems             []contract.SystemInfo `json:"systems"`
+	CustomerCreditLevel string                `json:"customer_credit_level"`
+	AmountMinor         int64                 `json:"amount_minor"`
+	Currency            string                `json:"currency"`
+	Content             string                `json:"content"`
+	TemplateID          string                `json:"template_id"`
+	TemplateValues      map[string]string     `json:"template_values"`
+	StartDate           *time.Time            `json:"start_date"`
+	EndDate             *time.Time            `json:"end_date"`
 }
 
 func (h *Handler) createContract(c *gin.Context) {
@@ -243,7 +250,7 @@ func (h *Handler) createContract(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -313,13 +320,14 @@ func (h *Handler) createTemplate(c *gin.Context) {
 
 func (h *Handler) updateTemplate(c *gin.Context) {
 	var body struct {
-		Name   string                   `json:"name"`
-		Fields []contracttemplate.Field `json:"fields"`
+		Name         string                   `json:"name"`
+		NumberFormat string                   `json:"number_format"`
+		Fields       []contracttemplate.Field `json:"fields"`
 	}
 	if !decode(c, &body) {
 		return
 	}
-	updated, err := h.service.UpdateTemplate(c.Request.Context(), principal(c), c.Param("templateID"), body.Name, body.Fields)
+	updated, err := h.service.UpdateTemplate(c.Request.Context(), principal(c), c.Param("templateID"), body.Name, body.NumberFormat, body.Fields)
 	if err != nil {
 		writeError(c, err)
 		return

@@ -161,6 +161,22 @@ func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateContractAllowsNumberToBeAssignedAfterApproval(t *testing.T) {
+	repository := &recordingRepository{}
+	service := &Service{Repo: repository}
+	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
+	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
+		Title: "测评合同", Type: "直签", ServiceType: "等保测评", Content: "body",
+		CustomerName: "示例客户", Systems: []contract.SystemInfo{{Name: "业务系统", Level: "三级"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateContract() error = %v", err)
+	}
+	if created.Number != "" || repository.created.Number != "" || repository.created.CustomerName != "示例客户" || len(repository.created.Systems) != 1 {
+		t.Fatalf("created contract = %#v, persisted = %#v", created, repository.created)
+	}
+}
+
 func TestCreateContractRejectsStartDateAfterEndDate(t *testing.T) {
 	start := time.Date(2026, time.February, 2, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, -1)
