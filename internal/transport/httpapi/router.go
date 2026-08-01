@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"path/filepath"
@@ -564,6 +565,12 @@ func writeError(c *gin.Context, err error) {
 	case errors.Is(err, application.ErrValidation), errors.Is(err, contract.ErrInvalidStatus):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", nil)
 	default:
+		slog.ErrorContext(c.Request.Context(), "contract request failed",
+			"request_id", requestIDFrom(c.Request.Context()),
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"error", err,
+		)
 		writeEnvelopeError(c, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
 	}
 }
@@ -595,7 +602,13 @@ func requestIDFrom(ctx context.Context) string {
 func recoverer() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
-			if recover() != nil {
+			if recovered := recover(); recovered != nil {
+				slog.ErrorContext(c.Request.Context(), "contract request panicked",
+					"request_id", requestIDFrom(c.Request.Context()),
+					"method", c.Request.Method,
+					"path", c.Request.URL.Path,
+					"panic", recovered,
+				)
 				c.Abort()
 				if !c.Writer.Written() {
 					writeEnvelopeError(c, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
