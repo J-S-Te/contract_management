@@ -34,6 +34,7 @@ func (p Principal) Has(permission string) bool { return p.Permissions[permission
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, int) ([]contract.Contract, error)
+	ContractDashboard(context.Context, string, time.Time, int) (contract.Dashboard, error)
 	CreateContract(context.Context, contract.Contract, string) error
 	TransitionDirect(context.Context, string, string, uint64, contract.Status, string, string, string) error
 	ListEnabledRules(context.Context, string) ([]approval.Rule, error)
@@ -293,7 +294,7 @@ func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (
 	if err != nil {
 		return c, err
 	}
-	if c.OwnerUserID != actor.UserID {
+	if c.OwnerUserID != actor.UserID && !hasRole(actor, "admin") {
 		return contract.Contract{}, ErrForbidden
 	}
 	return c, nil
@@ -306,7 +307,23 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, 
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	return s.Repo.ListContracts(ctx, actor.TenantID, actor.UserID, status, limit)
+	ownerUserID := actor.UserID
+	if hasRole(actor, "admin") {
+		ownerUserID = ""
+	}
+	return s.Repo.ListContracts(ctx, actor.TenantID, ownerUserID, status, limit)
+}
+
+func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contract.Dashboard, error) {
+	if !hasRole(actor, "admin") || !actor.Has("contract.read") {
+		return contract.Dashboard{}, ErrForbidden
+	}
+	if s.Repo == nil {
+		return contract.Dashboard{}, fmt.Errorf("contract repository is not configured")
+	}
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return s.Repo.ContractDashboard(ctx, actor.TenantID, today, 200)
 }
 
 func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Rule, error) {

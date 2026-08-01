@@ -26,6 +26,23 @@ type Contract struct {
 	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
+type DashboardContract struct {
+	Contract
+	InApproval      bool `json:"in_approval"`
+	ActiveUnexpired bool `json:"active_unexpired"`
+	Expired         bool `json:"expired"`
+}
+
+type Dashboard struct {
+	TotalAmountMinor      int64               `json:"total_amount_minor"`
+	TotalContracts        int64               `json:"total_contracts"`
+	ApprovalContracts     int64               `json:"approval_contracts"`
+	ActiveContracts       int64               `json:"active_contracts"`
+	ExpiredContracts      int64               `json:"expired_contracts"`
+	Contracts             []DashboardContract `json:"contracts"`
+	ContractDetailLimited bool                `json:"contract_detail_limited"`
+}
+
 type LifecycleEvent struct {
 	ID             string
 	TenantID       string

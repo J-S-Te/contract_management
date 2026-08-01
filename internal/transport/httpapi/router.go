@@ -72,6 +72,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	})
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
+	api.GET("/dashboard", h.dashboard)
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/contracts/:contractID", h.getContract)
@@ -118,6 +119,15 @@ func (h *Handler) me(c *gin.Context) {
 		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,
 		"user_directory": userDirectory,
 	})
+}
+
+func (h *Handler) dashboard(c *gin.Context) {
+	summary, err := h.service.ContractDashboard(c.Request.Context(), principal(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, summary)
 }
 
 func (h *Handler) auditWrites() gin.HandlerFunc {

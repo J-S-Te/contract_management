@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
@@ -18,6 +19,7 @@ type recordingRepository struct {
 	created      contract.Contract
 	approvalMeta approval.Meta
 	actions      []approval.Action
+	dashboard    contract.Dashboard
 }
 
 func (r *recordingRepository) GetContract(context.Context, string, string) (contract.Contract, error) {
@@ -27,6 +29,10 @@ func (r *recordingRepository) GetContract(context.Context, string, string) (cont
 func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _ string, _ int) ([]contract.Contract, error) {
 	r.ownerUserID = ownerUserID
 	return nil, nil
+}
+
+func (r *recordingRepository) ContractDashboard(context.Context, string, time.Time, int) (contract.Dashboard, error) {
+	return r.dashboard, nil
 }
 
 func (r *recordingRepository) CreateContract(_ context.Context, created contract.Contract, _ string) error {
@@ -88,6 +94,36 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	}
 	if repository.ownerUserID != actor.UserID {
 		t.Fatalf("owner filter = %q, want authenticated user %q", repository.ownerUserID, actor.UserID)
+	}
+}
+
+func TestAdminListContractsUsesTenantScopeAndCanReadTenantContract(t *testing.T) {
+	repository := &recordingRepository{contract: contract.Contract{ID: "contract-2", TenantID: "tenant-1", OwnerUserID: "user-2"}}
+	service := &Service{Repo: repository}
+	actor := Principal{TenantID: "tenant-1", UserID: "admin-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
+
+	if _, err := service.ListContracts(context.Background(), actor, "", "", 50); err != nil {
+		t.Fatalf("ListContracts() error = %v", err)
+	}
+	if repository.ownerUserID != "" {
+		t.Fatalf("owner filter = %q, want tenant-wide scope", repository.ownerUserID)
+	}
+	if _, err := service.GetContract(context.Background(), actor, "contract-2"); err != nil {
+		t.Fatalf("GetContract() error = %v", err)
+	}
+}
+
+func TestContractDashboardRequiresAdminAndReturnsTenantSummary(t *testing.T) {
+	want := contract.Dashboard{TotalContracts: 8, TotalAmountMinor: 9000, ApprovalContracts: 2, ActiveContracts: 3, ExpiredContracts: 1}
+	service := &Service{Repo: &recordingRepository{dashboard: want}}
+	admin := Principal{TenantID: "tenant-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
+
+	got, err := service.ContractDashboard(context.Background(), admin)
+	if err != nil || got.TotalContracts != want.TotalContracts || got.ApprovalContracts != want.ApprovalContracts {
+		t.Fatalf("ContractDashboard() = %#v, %v", got, err)
+	}
+	if _, err := service.ContractDashboard(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"sales"}, Permissions: map[string]bool{"contract.read": true}}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ContractDashboard() non-admin error = %v, want ErrForbidden", err)
 	}
 }
 

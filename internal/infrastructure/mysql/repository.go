@@ -54,6 +54,70 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, s
 	return result, nil
 }
 
+func (r *Repository) ContractDashboard(ctx context.Context, tenantID string, today time.Time, limit int) (contract.Dashboard, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	var aggregate struct {
+		TotalContracts   int64
+		TotalAmountMinor int64
+	}
+	if err := r.db.WithContext(ctx).Model(&contractRecord{}).
+		Select("COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").
+		Where("tenant_id = ?", tenantID).Scan(&aggregate).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+
+	var approvalContractIDs []string
+	if err := r.db.WithContext(ctx).Model(&approvalInstanceRecord{}).
+		Distinct("contract_id").Where("tenant_id = ? AND status = ?", tenantID, approval.StatusRunning).
+		Pluck("contract_id", &approvalContractIDs).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+
+	activeStatuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
+	var activeCount, expiredCount int64
+	base := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ? AND status IN ?", tenantID, activeStatuses)
+	if err := base.Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	if err := r.db.WithContext(ctx).Model(&contractRecord{}).
+		Where("tenant_id = ? AND status IN ? AND end_date IS NOT NULL AND end_date < ?", tenantID, activeStatuses, today).
+		Count(&expiredCount).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+
+	var records []contractRecord
+	if err := r.db.WithContext(ctx).Omit("rendered_document", "template_values_json").Where("tenant_id = ?", tenantID).
+		Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	inApproval := make(map[string]bool, len(approvalContractIDs))
+	for _, id := range approvalContractIDs {
+		inApproval[id] = true
+	}
+	items := make([]contract.DashboardContract, 0, len(records))
+	for _, record := range records {
+		statusIsActive := false
+		for _, status := range activeStatuses {
+			if contract.Status(record.Status) == status {
+				statusIsActive = true
+				break
+			}
+		}
+		expired := statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
+		items = append(items, contract.DashboardContract{
+			Contract: contractFromRecord(record), InApproval: inApproval[record.ID],
+			ActiveUnexpired: statusIsActive && !expired, Expired: expired,
+		})
+	}
+	return contract.Dashboard{
+		TotalAmountMinor: aggregate.TotalAmountMinor, TotalContracts: aggregate.TotalContracts,
+		ApprovalContracts: int64(len(approvalContractIDs)), ActiveContracts: activeCount, ExpiredContracts: expiredCount,
+		Contracts: items, ContractDetailLimited: aggregate.TotalContracts > int64(limit),
+	}, nil
+}
+
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
 	var record approvalInstanceRecord
 	err := r.db.WithContext(ctx).

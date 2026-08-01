@@ -18,6 +18,7 @@ semantics:
     - 角色用于聚合权限，最终授权必须同时满足权限、数据范围和业务状态约束。
     - 前端菜单和按钮仅用于展示，不能替代后端授权。
     - 合同模板管理是角色门禁：POST、PUT、DELETE /api/v1/contract-templates 仅校验 admin 角色，不要求额外权限码。
+    - 企业合同仪表盘 GET /api/v1/dashboard 同时要求 admin 角色与 contract.read，并始终限制当前 tenant_id。
 
 permissions:
   - code: contract.read
