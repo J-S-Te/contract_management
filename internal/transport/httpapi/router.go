@@ -22,6 +22,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
+	contractpdf "github.com/j-s-te/contract-management/internal/pdf"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/oklog/ulid/v2"
 )
@@ -76,6 +77,11 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.GET("/dashboard", h.dashboard)
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
+	api.GET("/approved-contracts", h.listApprovedContracts)
+	api.GET("/approved-contracts/:contractID/docx", h.downloadApprovedDOCX)
+	api.GET("/approved-contracts/:contractID/pdf", h.downloadApprovedPDF)
+	api.PUT("/approved-contracts/:contractID/stamped-pdf", h.uploadStampedPDF)
+	api.GET("/approved-contracts/:contractID/stamped-pdf", h.downloadStampedPDF)
 	api.GET("/contracts/:contractID", h.getContract)
 	api.GET("/contracts/:contractID/lifecycle", h.listContractLifecycle)
 	api.GET("/contracts/:contractID/preview", h.previewContract)
@@ -384,6 +390,83 @@ func (h *Handler) exportContract(c *gin.Context) {
 	}
 	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename + ".docx"}))
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", found.Document)
+}
+
+func (h *Handler) listApprovedContracts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	items, err := h.service.ListApprovedContracts(c.Request.Context(), principal(c), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, items)
+}
+
+func (h *Handler) downloadApprovedDOCX(c *gin.Context) {
+	found, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.document.download")
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if len(found.Document) == 0 {
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有 DOCX 文档", nil)
+		return
+	}
+	h.download(c, found.Number, ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", found.Document)
+}
+
+func (h *Handler) downloadApprovedPDF(c *gin.Context) {
+	found, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.document.download")
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
+	defer cancel()
+	document, err := contractpdf.ConvertDOCX(ctx, found.Document)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	h.download(c, found.Number, ".pdf", "application/pdf", document)
+}
+
+func (h *Handler) uploadStampedPDF(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (20<<20)+(1<<20))
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择不超过 20MB 的 PDF 文件", nil)
+		return
+	}
+	defer file.Close()
+	document, err := io.ReadAll(io.LimitReader(file, (20<<20)+1))
+	if err != nil || !contractpdf.Valid(document) || !strings.EqualFold(filepath.Ext(header.Filename), ".pdf") {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "盖章合同必须是有效且不超过 20MB 的 PDF", nil)
+		return
+	}
+	if err := h.service.SaveStampedDocument(c.Request.Context(), principal(c), c.Param("contractID"), filepath.Base(header.Filename), document); err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]any{"original_filename": filepath.Base(header.Filename)})
+}
+
+func (h *Handler) downloadStampedPDF(c *gin.Context) {
+	found, err := h.service.GetStampedDocument(c.Request.Context(), principal(c), c.Param("contractID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	h.download(c, found.OriginalFilename, ".pdf", "application/pdf", found.Document)
+}
+
+func (h *Handler) download(c *gin.Context, name, extension, contentType string, document []byte) {
+	name = strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
+	if name == "" || name == "." {
+		name = "contract"
+	}
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + extension}))
+	c.Data(http.StatusOK, contentType, document)
 }
 
 func (h *Handler) previewContract(c *gin.Context) {

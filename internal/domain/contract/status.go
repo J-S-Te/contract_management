@@ -49,6 +49,19 @@ func (s Status) Valid() bool {
 
 func (s Status) Terminal() bool { return s == StatusArchived }
 
+func (s Status) ApprovalPassed() bool {
+	switch s {
+	case StatusApproved, StatusActive, StatusInProgress, StatusPendingPay, StatusCompleted, StatusTerminated, StatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+func ApprovalPassedStatuses() []Status {
+	return []Status{StatusApproved, StatusActive, StatusInProgress, StatusPendingPay, StatusCompleted, StatusTerminated, StatusArchived}
+}
+
 // RequiresApproval follows APP-002. pending is handled by the dedicated
 // contract approval workflow and is therefore not a state-change approval.
 func (s Status) RequiresApproval() bool {

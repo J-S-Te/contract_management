@@ -2,8 +2,10 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
@@ -12,6 +14,40 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+func (r *Repository) ListApprovedContracts(ctx context.Context, tenantID string, limit int) ([]contract.Contract, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var records []contractRecord
+	if err := r.db.WithContext(ctx).Where("tenant_id = ? AND status IN ?", tenantID, contract.ApprovalPassedStatuses()).
+		Omit("rendered_document", "template_values_json").Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]contract.Contract, 0, len(records))
+	for _, record := range records {
+		result = append(result, contractFromRecord(record))
+	}
+	return result, nil
+}
+
+func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, document contract.StampedDocument) error {
+	digest := fmt.Sprintf("%x", sha256.Sum256(document.Document))
+	record := stampedDocumentRecord{ContractID: document.ContractID, TenantID: tenantID, OriginalFilename: document.OriginalFilename, ContentSHA256: digest, Document: document.Document, UploadedAt: document.UploadedAt, UploadedBy: document.UploadedBy}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.AssignmentColumns([]string{"original_filename", "content_sha256", "document", "uploaded_at", "uploaded_by"})}).Create(&record).Error
+}
+
+func (r *Repository) GetStampedDocument(ctx context.Context, tenantID, contractID string) (contract.StampedDocument, error) {
+	var record stampedDocumentRecord
+	err := r.db.WithContext(ctx).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.StampedDocument{}, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return contract.StampedDocument{}, err
+	}
+	return contract.StampedDocument{ContractID: record.ContractID, OriginalFilename: record.OriginalFilename, Document: record.Document, UploadedAt: record.UploadedAt, UploadedBy: record.UploadedBy}, nil
+}
 
 func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID string, expectedVersion uint64, target contract.Status, actorUserID, reason, idempotencyKey string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

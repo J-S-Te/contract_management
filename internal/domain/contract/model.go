@@ -40,6 +40,14 @@ type SystemInfo struct {
 	Level string `json:"level"`
 }
 
+type StampedDocument struct {
+	ContractID       string    `json:"contract_id"`
+	OriginalFilename string    `json:"original_filename"`
+	Document         []byte    `json:"-"`
+	UploadedAt       time.Time `json:"uploaded_at"`
+	UploadedBy       string    `json:"uploaded_by"`
+}
+
 type DashboardContract struct {
 	ID                  string     `json:"id"`
 	Number              string     `json:"contract_number"`

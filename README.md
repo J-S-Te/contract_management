@@ -68,6 +68,10 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | GET | `/api/v1/contracts/{id}/lifecycle` | `contract.read` | 查询合同创建、审批和状态流转明细；管理员可读取企业范围合同 |
 | GET | `/api/v1/contracts/{id}/preview` | `contract.read` | 按 DOCX 段落、字体和表格结构预览已固化的合同文档 |
 | GET | `/api/v1/contracts/{id}/export` | `contract.read` | 导出创建时固化的 DOCX，仅合同负责人可访问 |
+| GET | `/api/v1/approved-contracts` | `contract.approved.read` | 合同专员查询当前企业已批准及后续状态合同 |
+| GET | `/api/v1/approved-contracts/{id}/docx` | `contract.document.download` | 下载审批时冻结的 DOCX |
+| GET | `/api/v1/approved-contracts/{id}/pdf` | `contract.document.download` | 使用 LibreOffice 转换并下载格式化 PDF |
+| PUT | `/api/v1/approved-contracts/{id}/stamped-pdf` | `contract.stamped_pdf.upload` | 上传不超过 20MB 的盖章合同 PDF |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |
 | POST | `/api/v1/contracts/{id}/status-changes` | `contract.edit` | 直接流转或启动关键状态审批 |
 | GET | `/api/v1/approvals` | 已登录 | 当前用户发起的审批与历史状态 |

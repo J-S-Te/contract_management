@@ -33,6 +33,15 @@ func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _
 	r.ownerUserID = ownerUserID
 	return nil, nil
 }
+func (r *recordingRepository) ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error) {
+	return nil, nil
+}
+func (r *recordingRepository) SaveStampedDocument(context.Context, string, contract.StampedDocument) error {
+	return nil
+}
+func (r *recordingRepository) GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error) {
+	return contract.StampedDocument{}, nil
+}
 
 func (r *recordingRepository) ListContractLifecycle(context.Context, string, string) ([]contract.LifecycleEvent, error) {
 	return r.lifecycle, nil

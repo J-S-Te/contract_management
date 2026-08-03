@@ -23,6 +23,17 @@ func TestLifecycleTransitions(t *testing.T) {
 	}
 }
 
+func TestApprovalPassedExcludesDraftAndPending(t *testing.T) {
+	if StatusDraft.ApprovalPassed() || StatusPending.ApprovalPassed() {
+		t.Fatal("unapproved status was visible to contract specialist")
+	}
+	for _, status := range ApprovalPassedStatuses() {
+		if !status.ApprovalPassed() {
+			t.Fatalf("%s should be approval-passed", status)
+		}
+	}
+}
+
 func TestCriticalTargetsRequireApproval(t *testing.T) {
 	t.Parallel()
 	for _, target := range []Status{StatusInProgress, StatusPendingPay, StatusTerminated, StatusArchived} {

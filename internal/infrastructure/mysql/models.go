@@ -81,6 +81,15 @@ type lifecycleEventRecord struct {
 
 func (lifecycleEventRecord) TableName() string { return "con_contract_lifecycle_event" }
 
+type stampedDocumentRecord struct {
+	ContractID, TenantID, OriginalFilename, ContentSHA256 string
+	Document                                              []byte `gorm:"type:longblob"`
+	UploadedAt                                            time.Time
+	UploadedBy                                            string
+}
+
+func (stampedDocumentRecord) TableName() string { return "con_contract_stamped_document" }
+
 type approvalRuleRecord struct {
 	ID             string `gorm:"primaryKey"`
 	TenantID       string

@@ -35,6 +35,9 @@ func (p Principal) Has(permission string) bool { return p.Permissions[permission
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, int) ([]contract.Contract, error)
+	ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error)
+	SaveStampedDocument(context.Context, string, contract.StampedDocument) error
+	GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error)
 	ListContractLifecycle(context.Context, string, string) ([]contract.LifecycleEvent, error)
 	ContractDashboard(context.Context, string, string, time.Time, int) (contract.Dashboard, error)
 	CreateContract(context.Context, contract.Contract, string) error
@@ -57,6 +60,41 @@ type Service struct {
 	TaskQueue        string
 	NodeTimeout      time.Duration
 	ReminderInterval time.Duration
+}
+
+func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, limit int) ([]contract.Contract, error) {
+	if !actor.Has("contract.approved.read") {
+		return nil, ErrForbidden
+	}
+	return s.Repo.ListApprovedContracts(ctx, actor.TenantID, limit)
+}
+
+func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, permission string) (contract.Contract, error) {
+	if !actor.Has(permission) {
+		return contract.Contract{}, ErrForbidden
+	}
+	found, err := s.Repo.GetContract(ctx, actor.TenantID, id)
+	if err != nil {
+		return found, err
+	}
+	if !found.Status.ApprovalPassed() {
+		return contract.Contract{}, ErrForbidden
+	}
+	return found, nil
+}
+
+func (s *Service) SaveStampedDocument(ctx context.Context, actor Principal, id, filename string, document []byte) error {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.stamped_pdf.upload"); err != nil {
+		return err
+	}
+	return s.Repo.SaveStampedDocument(ctx, actor.TenantID, contract.StampedDocument{ContractID: id, OriginalFilename: filename, Document: document, UploadedAt: time.Now().UTC(), UploadedBy: actor.UserID})
+}
+
+func (s *Service) GetStampedDocument(ctx context.Context, actor Principal, id string) (contract.StampedDocument, error) {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.document.download"); err != nil {
+		return contract.StampedDocument{}, err
+	}
+	return s.Repo.GetStampedDocument(ctx, actor.TenantID, id)
 }
 
 type UserReference struct {
