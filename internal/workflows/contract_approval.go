@@ -108,14 +108,25 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 			if !gotCommand || validateCommonCommand(command) != nil {
 				continue
 			}
+			previousNodeIndex := state.CurrentNodeIndex
 			changed, terminal, err := applyContractCommand(&state, command)
 			if err != nil {
 				continue
 			}
 			state.UpdatedAt = workflow.Now(ctx)
+			advancedToNextNode := changed && !terminal && state.CurrentNodeIndex != previousNodeIndex && state.CurrentNodeIndex < len(state.Nodes)
+			if advancedToNextNode {
+				nextNode := &state.Nodes[state.CurrentNodeIndex]
+				nextNode.Status, nextNode.StartedAt = approval.NodeActive, state.UpdatedAt
+			}
 			if changed {
 				record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.Node.ID, Command: command, State: state}
 				if err := workflow.ExecuteActivity(actx, ActivityRecordCommand, record).Get(ctx, nil); err != nil {
+					return state, err
+				}
+			}
+			if advancedToNextNode {
+				if err := notifyCurrentNode(ctx, actx, input.TenantID, state, "pending_approval", "合同审批待处理", "您有一项新的合同审批待办"); err != nil {
 					return state, err
 				}
 			}

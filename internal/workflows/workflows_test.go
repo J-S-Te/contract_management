@@ -13,9 +13,11 @@ import (
 )
 
 type memoryStore struct {
-	mu        sync.Mutex
-	commands  []ApprovalCommand
-	completed []CompleteApprovalActivityInput
+	mu            sync.Mutex
+	commands      []ApprovalCommand
+	recorded      []RecordCommandActivityInput
+	completed     []CompleteApprovalActivityInput
+	notifications []NotifyActivityInput
 }
 
 func (*memoryStore) StartApproval(context.Context, StartApprovalActivityInput) error { return nil }
@@ -23,6 +25,7 @@ func (s *memoryStore) RecordCommand(_ context.Context, in RecordCommandActivityI
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commands = append(s.commands, in.Command)
+	s.recorded = append(s.recorded, in)
 	return nil
 }
 func (s *memoryStore) CompleteApproval(_ context.Context, in CompleteApprovalActivityInput) error {
@@ -31,7 +34,12 @@ func (s *memoryStore) CompleteApproval(_ context.Context, in CompleteApprovalAct
 	s.completed = append(s.completed, in)
 	return nil
 }
-func (*memoryStore) CreateNotification(context.Context, NotifyActivityInput) error { return nil }
+func (s *memoryStore) CreateNotification(_ context.Context, in NotifyActivityInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifications = append(s.notifications, in)
+	return nil
+}
 func (*memoryStore) ArchiveExpired(context.Context, ExpiredArchiveInput) (ExpiredArchiveResult, error) {
 	return ExpiredArchiveResult{Archived: 2}, nil
 }
@@ -60,6 +68,14 @@ func TestContractApprovalWorkflowApprovesAllNodes(t *testing.T) {
 	require.Equal(t, approval.StatusApproved, state.Status)
 	require.Len(t, store.completed, 1)
 	require.Equal(t, contract.StatusActive, store.completed[0].TargetStatus)
+	require.Len(t, store.recorded, 3)
+	require.Equal(t, approval.NodeActive, store.recorded[0].State.Nodes[1].Status)
+	require.False(t, store.recorded[0].State.Nodes[1].StartedAt.IsZero())
+	require.Equal(t, approval.NodeActive, store.recorded[1].State.Nodes[2].Status)
+	require.False(t, store.recorded[1].State.Nodes[2].StartedAt.IsZero())
+	require.Equal(t, []string{"sales-user"}, store.notifications[0].Recipients)
+	require.Equal(t, []string{"tech-user"}, store.notifications[1].Recipients)
+	require.Equal(t, []string{"finance-user"}, store.notifications[2].Recipients)
 }
 
 func TestContractApprovalWorkflowWithdraws(t *testing.T) {
