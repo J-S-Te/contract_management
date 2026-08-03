@@ -35,6 +35,7 @@ func (p Principal) Has(permission string) bool { return p.Permissions[permission
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, int) ([]contract.Contract, error)
+	ListContractLifecycle(context.Context, string, string) ([]contract.LifecycleEvent, error)
 	ContractDashboard(context.Context, string, string, time.Time, int) (contract.Dashboard, error)
 	CreateContract(context.Context, contract.Contract, string) error
 	TransitionDirect(context.Context, string, string, uint64, contract.Status, string, string, string) error
@@ -323,6 +324,13 @@ func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (
 		return contract.Contract{}, ErrForbidden
 	}
 	return c, nil
+}
+
+func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id string) ([]contract.LifecycleEvent, error) {
+	if _, err := s.GetContract(ctx, actor, id); err != nil {
+		return nil, err
+	}
+	return s.Repo.ListContractLifecycle(ctx, actor.TenantID, id)
 }
 
 func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, status string, limit int) ([]contract.Contract, error) {

@@ -77,6 +77,7 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/contracts/:contractID", h.getContract)
+	api.GET("/contracts/:contractID/lifecycle", h.listContractLifecycle)
 	api.GET("/contracts/:contractID/preview", h.previewContract)
 	api.GET("/contracts/:contractID/export", h.exportContract)
 	api.GET("/contract-templates", h.listTemplates)
@@ -129,6 +130,15 @@ func (h *Handler) dashboard(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, summary)
+}
+
+func (h *Handler) listContractLifecycle(c *gin.Context) {
+	events, err := h.service.ListContractLifecycle(c.Request.Context(), principal(c), c.Param("contractID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, events)
 }
 
 func (h *Handler) auditWrites() gin.HandlerFunc {

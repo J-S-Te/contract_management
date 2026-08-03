@@ -72,15 +72,11 @@ type Dashboard struct {
 }
 
 type LifecycleEvent struct {
-	ID             string
-	TenantID       string
-	ContractID     string
-	FromStatus     Status
-	ToStatus       Status
-	ActorUserID    string
-	Reason         string
-	ApprovalID     string
-	WorkflowID     string
-	IdempotencyKey string
-	OccurredAt     time.Time
+	ID          string    `json:"id"`
+	ContractID  string    `json:"contract_id"`
+	FromStatus  Status    `json:"from_status"`
+	ToStatus    Status    `json:"to_status"`
+	ActorUserID string    `json:"actor_user_id"`
+	Reason      string    `json:"reason"`
+	OccurredAt  time.Time `json:"occurred_at"`
 }

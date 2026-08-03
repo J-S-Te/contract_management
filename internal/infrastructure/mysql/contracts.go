@@ -84,3 +84,21 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 		}).Error
 	})
 }
+
+func (r *Repository) ListContractLifecycle(ctx context.Context, tenantID, contractID string) ([]contract.LifecycleEvent, error) {
+	var records []lifecycleEventRecord
+	if err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).
+		Order("occurred_at ASC, id ASC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	events := make([]contract.LifecycleEvent, 0, len(records))
+	for _, record := range records {
+		events = append(events, contract.LifecycleEvent{
+			ID: record.ID, ContractID: record.ContractID,
+			FromStatus: contract.Status(record.FromStatus), ToStatus: contract.Status(record.ToStatus),
+			ActorUserID: valueOrEmpty(record.ActorUserID), Reason: valueOrEmpty(record.Reason), OccurredAt: record.OccurredAt,
+		})
+	}
+	return events, nil
+}

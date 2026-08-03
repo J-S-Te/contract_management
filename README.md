@@ -65,6 +65,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | DELETE | `/api/v1/contract-templates/{id}` | `admin` 角色 | 删除模板；已生成合同保存的是冻结文档，不受影响 |
 | POST | `/api/v1/contract-templates/{id}/preview` | `contract.create` | 根据表单值渲染安全的 HTML 预览 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
+| GET | `/api/v1/contracts/{id}/lifecycle` | `contract.read` | 查询合同创建、审批和状态流转明细；管理员可读取企业范围合同 |
 | GET | `/api/v1/contracts/{id}/preview` | `contract.read` | 按 DOCX 段落、字体和表格结构预览已固化的合同文档 |
 | GET | `/api/v1/contracts/{id}/export` | `contract.read` | 导出创建时固化的 DOCX，仅合同负责人可访问 |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |

@@ -19,6 +19,7 @@ type recordingRepository struct {
 	created              contract.Contract
 	approvalMeta         approval.Meta
 	actions              []approval.Action
+	lifecycle            []contract.LifecycleEvent
 	dashboard            contract.Dashboard
 	dashboardTenantID    string
 	dashboardOwnerUserID string
@@ -31,6 +32,10 @@ func (r *recordingRepository) GetContract(context.Context, string, string) (cont
 func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _ string, _ int) ([]contract.Contract, error) {
 	r.ownerUserID = ownerUserID
 	return nil, nil
+}
+
+func (r *recordingRepository) ListContractLifecycle(context.Context, string, string) ([]contract.LifecycleEvent, error) {
+	return r.lifecycle, nil
 }
 
 func (r *recordingRepository) ContractDashboard(_ context.Context, tenantID, ownerUserID string, _ time.Time, _ int) (contract.Dashboard, error) {
@@ -114,6 +119,24 @@ func TestAdminListContractsUsesTenantScopeAndCanReadTenantContract(t *testing.T)
 	}
 	if _, err := service.GetContract(context.Background(), actor, "contract-2"); err != nil {
 		t.Fatalf("GetContract() error = %v", err)
+	}
+}
+
+func TestAdminCanListTenantContractLifecycle(t *testing.T) {
+	want := []contract.LifecycleEvent{{ID: "event-1", ContractID: "contract-2", FromStatus: contract.StatusDraft, ToStatus: contract.StatusPending}}
+	repository := &recordingRepository{
+		contract:  contract.Contract{ID: "contract-2", TenantID: "tenant-1", OwnerUserID: "user-2"},
+		lifecycle: want,
+	}
+	service := &Service{Repo: repository}
+	actor := Principal{TenantID: "tenant-1", UserID: "admin-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
+
+	got, err := service.ListContractLifecycle(context.Background(), actor, "contract-2")
+	if err != nil {
+		t.Fatalf("ListContractLifecycle() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != want[0].ID {
+		t.Fatalf("ListContractLifecycle() = %#v, want %#v", got, want)
 	}
 }
 
