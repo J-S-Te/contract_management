@@ -209,6 +209,12 @@ func uintValueOrZero(value *uint64) uint64 {
 	return *value
 }
 
+// assignedApprovalTaskStatuses keeps upcoming tasks visible to their assignee.
+// Only active tasks are actionable; pending tasks are read-only previews.
+func assignedApprovalTaskStatuses() []approval.NodeStatus {
+	return []approval.NodeStatus{approval.NodeActive, approval.NodePending}
+}
+
 func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, limit int) ([]approval.Task, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -223,8 +229,9 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 	err := r.db.WithContext(ctx).Table("con_approval_task AS t").
 		Select("t.approval_id, i.contract_id, t.node_id, t.node_name, t.assignee_user_id, i.kind, t.status, t.node_index, i.created_at").
 		Joins("JOIN con_approval_instance AS i ON i.id = t.approval_id").
-		Where("i.tenant_id = ? AND t.assignee_user_id = ? AND t.status = ?", tenantID, userID, approval.NodeActive).
-		Order("i.created_at").Limit(limit).Scan(&rows).Error
+		Where("i.tenant_id = ? AND t.assignee_user_id = ? AND t.status IN ?", tenantID, userID, assignedApprovalTaskStatuses()).
+		Order("CASE WHEN t.status = 'active' THEN 0 ELSE 1 END").
+		Order("i.created_at, t.node_index").Limit(limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
