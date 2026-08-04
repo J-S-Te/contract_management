@@ -104,8 +104,12 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
           chmod 600 "$HOME/.ssh/id_ed25519"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          # 共享生产 Compose 可能已包含尚未首次发布的项目服务。Compose 会在限定
+          # contract-api 之前先插值并校验所有服务，因此缺少 PROJECT_IMAGE 会让
+          # 合同发布提前失败。仅为本次进程提供不可拉取的 digest 占位值；已有正式
+          # PROJECT_IMAGE 时保持原值，且不会把占位值写入服务器 .release.env。
           printf -v remote_command \
-            'command -v bash >/dev/null && test -x %q/bin/deploy-service.sh && cd %q && bash ./bin/deploy-service.sh contract %q' \
+            'command -v bash >/dev/null && test -x %q/bin/deploy-service.sh && cd %q && project_image=$(grep -m1 "^PROJECT_IMAGE=" .release.env | cut -d= -f2-) && PROJECT_IMAGE=${project_image:-invalid.local/project-management@sha256:0000000000000000000000000000000000000000000000000000000000000000} bash ./bin/deploy-service.sh contract %q' \
             "$DEPLOY_PATH" "$DEPLOY_PATH" "$IMAGE_REF"
           ssh \
             -o BatchMode=yes \
