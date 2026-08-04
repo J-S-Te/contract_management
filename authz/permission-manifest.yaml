@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 8
+  version: 9
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -26,7 +26,10 @@ permissions:
     resource: approved_contract
     action: read
     risk_level: LOW
-    enforced_by: [GET /api/v1/approved-contracts]
+    enforced_by:
+      - GET /api/v1/approved-contracts
+      - GET /api/v1/signing-records
+      - GET /api/v1/signing-records/{contract_id}
     constraints: [仅返回当前租户中已批准及后续状态的合同]
   - code: contract.document.download
     name: 下载合同文档
@@ -48,6 +51,19 @@ permissions:
     constraints:
       - 仅接受不超过 20MB 的 PDF
       - 仅允许当前租户中已批准及后续状态的合同
+  - code: contract.signing.manage
+    name: 管理合同签署与回传
+    resource: contract_signing
+    action: manage
+    risk_level: HIGH
+    enforced_by:
+      - PUT /api/v1/signing-records/{contract_id}/shipment
+      - POST /api/v1/signing-records/{contract_id}/received
+      - POST /api/v1/signing-records/{contract_id}/reminders
+      - POST /api/v1/signing-records/{contract_id}/confirm
+    constraints:
+      - 仅允许当前租户中已批准及后续状态的合同
+      - 回传 PDF 上传后必须核验印章、签名和签署日期才能完成
   - code: contract.read
     name: 查看合同
     resource: contract
@@ -151,6 +167,7 @@ roles:
       - contract.approved.read
       - contract.document.download
       - contract.stamped_pdf.upload
+      - contract.signing.manage
 
   - code: contract_specialist
     name: 合同专员
@@ -158,6 +175,7 @@ roles:
       - contract.approved.read
       - contract.document.download
       - contract.stamped_pdf.upload
+      - contract.signing.manage
 
   - code: sales_director
     name: 销售总监
@@ -227,5 +245,6 @@ compatibility:
     - contract.approved.read
     - contract.document.download
     - contract.stamped_pdf.upload
+    - contract.signing.manage
   known_gaps:
     - 合同数据范围有意固定为 SELF，不提供部门、组织子树或全租户管理范围

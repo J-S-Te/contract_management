@@ -42,6 +42,24 @@ func (r *recordingRepository) SaveStampedDocument(context.Context, string, contr
 func (r *recordingRepository) GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error) {
 	return contract.StampedDocument{}, nil
 }
+func (r *recordingRepository) ListSigningRecords(context.Context, string, int) ([]contract.SigningRecord, error) {
+	return nil, nil
+}
+func (r *recordingRepository) GetSigningRecord(context.Context, string, string) (contract.SigningRecord, error) {
+	return contract.SigningRecord{}, nil
+}
+func (r *recordingRepository) SaveSigningShipment(context.Context, string, string, string, contract.SigningShipment) error {
+	return nil
+}
+func (r *recordingRepository) MarkSigningReceived(context.Context, string, string, string) error {
+	return nil
+}
+func (r *recordingRepository) RecordSigningReminder(context.Context, string, string, string) error {
+	return nil
+}
+func (r *recordingRepository) ConfirmSigning(context.Context, string, string, string, contract.SigningConfirmation) error {
+	return nil
+}
 
 func (r *recordingRepository) ListContractLifecycle(context.Context, string, string) ([]contract.LifecycleEvent, error) {
 	return r.lifecycle, nil

@@ -48,6 +48,48 @@ type StampedDocument struct {
 	UploadedBy       string    `json:"uploaded_by"`
 }
 
+type SigningStatus string
+
+const (
+	SigningPendingShipment SigningStatus = "pending_shipment"
+	SigningInReturn        SigningStatus = "in_return"
+	SigningPendingReview   SigningStatus = "pending_review"
+	SigningCompleted       SigningStatus = "completed"
+)
+
+type SigningRecord struct {
+	Contract             Contract      `json:"contract"`
+	Method               string        `json:"method"`
+	Status               SigningStatus `json:"status"`
+	CourierNumber        string        `json:"courier_number,omitempty"`
+	RecipientName        string        `json:"recipient_name,omitempty"`
+	RecipientAddress     string        `json:"recipient_address,omitempty"`
+	MailedAt             *time.Time    `json:"mailed_at,omitempty"`
+	CustomerReceivedAt   *time.Time    `json:"customer_received_at,omitempty"`
+	ReturnedDocumentName string        `json:"returned_document_name,omitempty"`
+	ReturnedAt           *time.Time    `json:"returned_at,omitempty"`
+	SealVerified         bool          `json:"seal_verified"`
+	SignatureVerified    bool          `json:"signature_verified"`
+	SignedAt             *time.Time    `json:"signed_at,omitempty"`
+	ConfirmedAt          *time.Time    `json:"confirmed_at,omitempty"`
+	ReminderCount        uint          `json:"reminder_count"`
+	LastRemindedAt       *time.Time    `json:"last_reminded_at,omitempty"`
+	Version              uint64        `json:"version"`
+}
+
+type SigningShipment struct {
+	CourierNumber    string
+	RecipientName    string
+	RecipientAddress string
+	MailedAt         time.Time
+}
+
+type SigningConfirmation struct {
+	SealVerified      bool
+	SignatureVerified bool
+	SignedAt          time.Time
+}
+
 type DashboardContract struct {
 	ID                  string     `json:"id"`
 	Number              string     `json:"contract_number"`

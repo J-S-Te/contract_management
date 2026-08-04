@@ -82,6 +82,12 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	api.GET("/approved-contracts/:contractID/pdf", h.downloadApprovedPDF)
 	api.PUT("/approved-contracts/:contractID/stamped-pdf", h.uploadStampedPDF)
 	api.GET("/approved-contracts/:contractID/stamped-pdf", h.downloadStampedPDF)
+	api.GET("/signing-records", h.listSigningRecords)
+	api.GET("/signing-records/:contractID", h.getSigningRecord)
+	api.PUT("/signing-records/:contractID/shipment", h.saveSigningShipment)
+	api.POST("/signing-records/:contractID/received", h.markSigningReceived)
+	api.POST("/signing-records/:contractID/reminders", h.recordSigningReminder)
+	api.POST("/signing-records/:contractID/confirm", h.confirmSigning)
 	api.GET("/contracts/:contractID", h.getContract)
 	api.GET("/contracts/:contractID/lifecycle", h.listContractLifecycle)
 	api.GET("/contracts/:contractID/preview", h.previewContract)
@@ -458,6 +464,86 @@ func (h *Handler) downloadStampedPDF(c *gin.Context) {
 		return
 	}
 	h.download(c, found.OriginalFilename, ".pdf", "application/pdf", found.Document)
+}
+
+func (h *Handler) listSigningRecords(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	items, err := h.service.ListSigningRecords(c.Request.Context(), principal(c), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, items)
+}
+
+func (h *Handler) getSigningRecord(c *gin.Context) {
+	item, err := h.service.GetSigningRecord(c.Request.Context(), principal(c), c.Param("contractID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, item)
+}
+
+func (h *Handler) saveSigningShipment(c *gin.Context) {
+	var body struct {
+		CourierNumber    string `json:"courier_number"`
+		RecipientName    string `json:"recipient_name"`
+		RecipientAddress string `json:"recipient_address"`
+		MailedAt         string `json:"mailed_at"`
+	}
+	if !decode(c, &body) {
+		return
+	}
+	mailedAt, err := time.Parse("2006-01-02", body.MailedAt)
+	if err != nil || strings.TrimSpace(body.CourierNumber) == "" || strings.TrimSpace(body.RecipientName) == "" || strings.TrimSpace(body.RecipientAddress) == "" {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请完整填写快递单号、收件人、收件地址和邮寄日期", nil)
+		return
+	}
+	err = h.service.SaveSigningShipment(c.Request.Context(), principal(c), c.Param("contractID"), contract.SigningShipment{CourierNumber: strings.TrimSpace(body.CourierNumber), RecipientName: strings.TrimSpace(body.RecipientName), RecipientAddress: strings.TrimSpace(body.RecipientAddress), MailedAt: mailedAt.UTC()})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]bool{"saved": true})
+}
+
+func (h *Handler) markSigningReceived(c *gin.Context) {
+	if err := h.service.MarkSigningReceived(c.Request.Context(), principal(c), c.Param("contractID")); err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]bool{"recorded": true})
+}
+
+func (h *Handler) recordSigningReminder(c *gin.Context) {
+	if err := h.service.RecordSigningReminder(c.Request.Context(), principal(c), c.Param("contractID")); err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]bool{"recorded": true})
+}
+
+func (h *Handler) confirmSigning(c *gin.Context) {
+	var body struct {
+		SealVerified      bool   `json:"seal_verified"`
+		SignatureVerified bool   `json:"signature_verified"`
+		SignedAt          string `json:"signed_at"`
+	}
+	if !decode(c, &body) {
+		return
+	}
+	signedAt, err := time.Parse("2006-01-02", body.SignedAt)
+	if err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择有效的签署日期", nil)
+		return
+	}
+	err = h.service.ConfirmSigning(c.Request.Context(), principal(c), c.Param("contractID"), contract.SigningConfirmation{SealVerified: body.SealVerified, SignatureVerified: body.SignatureVerified, SignedAt: signedAt.UTC()})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]bool{"confirmed": true})
 }
 
 func (h *Handler) download(c *gin.Context, name, extension, contentType string, document []byte) {

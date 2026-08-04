@@ -66,7 +66,7 @@ func TestSyncAuthorizationCatalogUsesPublisherCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncAuthorizationCatalog() error = %v", err)
 	}
-	if published.CatalogVersion != "8" || len(published.Permissions) == 0 || len(published.Roles) == 0 {
+	if published.CatalogVersion != "9" || len(published.Permissions) == 0 || len(published.Roles) == 0 {
 		t.Fatalf("published payload = %#v", published)
 	}
 }

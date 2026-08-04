@@ -34,7 +34,13 @@ func (r *Repository) ListApprovedContracts(ctx context.Context, tenantID string,
 func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, document contract.StampedDocument) error {
 	digest := fmt.Sprintf("%x", sha256.Sum256(document.Document))
 	record := stampedDocumentRecord{ContractID: document.ContractID, TenantID: tenantID, OriginalFilename: document.OriginalFilename, ContentSHA256: digest, Document: document.Document, UploadedAt: document.UploadedAt, UploadedBy: document.UploadedBy}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.AssignmentColumns([]string{"original_filename", "content_sha256", "document", "uploaded_at", "uploaded_by"})}).Create(&record).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.AssignmentColumns([]string{"original_filename", "content_sha256", "document", "uploaded_at", "uploaded_by"})}).Create(&record).Error; err != nil {
+			return err
+		}
+		signing := signingRecord{ContractID: document.ContractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningPendingReview), Version: 1, UpdatedAt: document.UploadedAt, UpdatedBy: document.UploadedBy}
+		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningPendingReview, "version": gorm.Expr("version + 1"), "updated_at": document.UploadedAt, "updated_by": document.UploadedBy})}).Create(&signing).Error
+	})
 }
 
 func (r *Repository) GetStampedDocument(ctx context.Context, tenantID, contractID string) (contract.StampedDocument, error) {
@@ -47,6 +53,110 @@ func (r *Repository) GetStampedDocument(ctx context.Context, tenantID, contractI
 		return contract.StampedDocument{}, err
 	}
 	return contract.StampedDocument{ContractID: record.ContractID, OriginalFilename: record.OriginalFilename, Document: record.Document, UploadedAt: record.UploadedAt, UploadedBy: record.UploadedBy}, nil
+}
+
+func (r *Repository) ListSigningRecords(ctx context.Context, tenantID string, limit int) ([]contract.SigningRecord, error) {
+	contracts, err := r.ListApprovedContracts(ctx, tenantID, limit)
+	if err != nil || len(contracts) == 0 {
+		return nil, err
+	}
+	ids := make([]string, 0, len(contracts))
+	for _, item := range contracts {
+		ids = append(ids, item.ID)
+	}
+	var signingRows []signingRecord
+	if err := r.db.WithContext(ctx).Where("tenant_id = ? AND contract_id IN ?", tenantID, ids).Find(&signingRows).Error; err != nil {
+		return nil, err
+	}
+	var documents []stampedDocumentRecord
+	if err := r.db.WithContext(ctx).Select("contract_id", "original_filename", "uploaded_at").Where("tenant_id = ? AND contract_id IN ?", tenantID, ids).Find(&documents).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[string]signingRecord, len(signingRows))
+	for _, row := range signingRows {
+		byID[row.ContractID] = row
+	}
+	docByID := make(map[string]stampedDocumentRecord, len(documents))
+	for _, row := range documents {
+		docByID[row.ContractID] = row
+	}
+	result := make([]contract.SigningRecord, 0, len(contracts))
+	for _, item := range contracts {
+		result = append(result, signingFromRecords(item, byID[item.ID], docByID[item.ID]))
+	}
+	return result, nil
+}
+
+func (r *Repository) GetSigningRecord(ctx context.Context, tenantID, contractID string) (contract.SigningRecord, error) {
+	item, err := r.GetContract(ctx, tenantID, contractID)
+	if err != nil {
+		return contract.SigningRecord{}, err
+	}
+	var signing signingRecord
+	err = r.db.WithContext(ctx).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Take(&signing).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.SigningRecord{}, err
+	}
+	var document stampedDocumentRecord
+	err = r.db.WithContext(ctx).Select("contract_id", "original_filename", "uploaded_at").Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Take(&document).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.SigningRecord{}, err
+	}
+	return signingFromRecords(item, signing, document), nil
+}
+
+func signingFromRecords(item contract.Contract, row signingRecord, document stampedDocumentRecord) contract.SigningRecord {
+	status := contract.SigningPendingShipment
+	method := "paper"
+	version := uint64(0)
+	if row.ContractID != "" {
+		status, method, version = contract.SigningStatus(row.Status), row.Method, row.Version
+	}
+	return contract.SigningRecord{Contract: item, Method: method, Status: status, CourierNumber: valueOrEmpty(row.CourierNumber), RecipientName: valueOrEmpty(row.RecipientName), RecipientAddress: valueOrEmpty(row.RecipientAddress), MailedAt: row.MailedAt, CustomerReceivedAt: row.CustomerReceivedAt, ReturnedDocumentName: document.OriginalFilename, ReturnedAt: timePtr(document.UploadedAt), SealVerified: row.SealVerified, SignatureVerified: row.SignatureVerified, SignedAt: row.SignedAt, ConfirmedAt: row.ConfirmedAt, ReminderCount: row.ReminderCount, LastRemindedAt: row.LastRemindedAt, Version: version}
+}
+
+func (r *Repository) SaveSigningShipment(ctx context.Context, tenantID, contractID, actor string, shipment contract.SigningShipment) error {
+	now := time.Now().UTC()
+	record := signingRecord{ContractID: contractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningInReturn), CourierNumber: stringPtr(shipment.CourierNumber), RecipientName: stringPtr(shipment.RecipientName), RecipientAddress: stringPtr(shipment.RecipientAddress), MailedAt: &shipment.MailedAt, Version: 1, UpdatedAt: now, UpdatedBy: actor}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningInReturn, "courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName, "recipient_address": shipment.RecipientAddress, "mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})}).Create(&record).Error
+}
+
+func (r *Repository) MarkSigningReceived(ctx context.Context, tenantID, contractID, actor string) error {
+	now := time.Now().UTC()
+	result := r.db.WithContext(ctx).Model(&signingRecord{}).
+		Where("tenant_id = ? AND contract_id = ? AND status = ?", tenantID, contractID, contract.SigningInReturn).
+		Updates(map[string]any{"customer_received_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return apperrors.ErrStateConflict
+	}
+	return nil
+}
+
+func (r *Repository) RecordSigningReminder(ctx context.Context, tenantID, contractID, actor string) error {
+	now := time.Now().UTC()
+	result := r.db.WithContext(ctx).Model(&signingRecord{}).Where("tenant_id = ? AND contract_id = ? AND status = ?", tenantID, contractID, contract.SigningInReturn).Updates(map[string]any{"reminder_count": gorm.Expr("reminder_count + 1"), "last_reminded_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return apperrors.ErrStateConflict
+	}
+	return nil
+}
+
+func (r *Repository) ConfirmSigning(ctx context.Context, tenantID, contractID, actor string, confirmation contract.SigningConfirmation) error {
+	now := time.Now().UTC()
+	result := r.db.WithContext(ctx).Model(&signingRecord{}).Where("tenant_id = ? AND contract_id = ? AND status = ?", tenantID, contractID, contract.SigningPendingReview).Updates(map[string]any{"status": contract.SigningCompleted, "seal_verified": confirmation.SealVerified, "signature_verified": confirmation.SignatureVerified, "signed_at": confirmation.SignedAt, "confirmed_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return apperrors.ErrStateConflict
+	}
+	return nil
 }
 
 func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID string, expectedVersion uint64, target contract.Status, actorUserID, reason, idempotencyKey string) error {

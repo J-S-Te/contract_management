@@ -38,6 +38,12 @@ type Repository interface {
 	ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error)
 	SaveStampedDocument(context.Context, string, contract.StampedDocument) error
 	GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error)
+	ListSigningRecords(context.Context, string, int) ([]contract.SigningRecord, error)
+	GetSigningRecord(context.Context, string, string) (contract.SigningRecord, error)
+	SaveSigningShipment(context.Context, string, string, string, contract.SigningShipment) error
+	MarkSigningReceived(context.Context, string, string, string) error
+	RecordSigningReminder(context.Context, string, string, string) error
+	ConfirmSigning(context.Context, string, string, string, contract.SigningConfirmation) error
 	ListContractLifecycle(context.Context, string, string) ([]contract.LifecycleEvent, error)
 	ContractDashboard(context.Context, string, string, time.Time, int) (contract.Dashboard, error)
 	CreateContract(context.Context, contract.Contract, string) error
@@ -95,6 +101,58 @@ func (s *Service) GetStampedDocument(ctx context.Context, actor Principal, id st
 		return contract.StampedDocument{}, err
 	}
 	return s.Repo.GetStampedDocument(ctx, actor.TenantID, id)
+}
+
+func (s *Service) ListSigningRecords(ctx context.Context, actor Principal, limit int) ([]contract.SigningRecord, error) {
+	if !actor.Has("contract.approved.read") {
+		return nil, ErrForbidden
+	}
+	return s.Repo.ListSigningRecords(ctx, actor.TenantID, limit)
+}
+
+func (s *Service) GetSigningRecord(ctx context.Context, actor Principal, id string) (contract.SigningRecord, error) {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.approved.read"); err != nil {
+		return contract.SigningRecord{}, err
+	}
+	return s.Repo.GetSigningRecord(ctx, actor.TenantID, id)
+}
+
+func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id string, shipment contract.SigningShipment) error {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
+		return err
+	}
+	current, err := s.Repo.GetSigningRecord(ctx, actor.TenantID, id)
+	if err != nil {
+		return err
+	}
+	if current.Status == contract.SigningPendingReview || current.Status == contract.SigningCompleted {
+		return apperrors.ErrStateConflict
+	}
+	return s.Repo.SaveSigningShipment(ctx, actor.TenantID, id, actor.UserID, shipment)
+}
+
+func (s *Service) MarkSigningReceived(ctx context.Context, actor Principal, id string) error {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
+		return err
+	}
+	return s.Repo.MarkSigningReceived(ctx, actor.TenantID, id, actor.UserID)
+}
+
+func (s *Service) RecordSigningReminder(ctx context.Context, actor Principal, id string) error {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
+		return err
+	}
+	return s.Repo.RecordSigningReminder(ctx, actor.TenantID, id, actor.UserID)
+}
+
+func (s *Service) ConfirmSigning(ctx context.Context, actor Principal, id string, confirmation contract.SigningConfirmation) error {
+	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
+		return err
+	}
+	if !confirmation.SealVerified || !confirmation.SignatureVerified || confirmation.SignedAt.IsZero() {
+		return ErrValidation
+	}
+	return s.Repo.ConfirmSigning(ctx, actor.TenantID, id, actor.UserID, confirmation)
 }
 
 type UserReference struct {
