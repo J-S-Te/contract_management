@@ -23,6 +23,8 @@ import (
 type Principal struct {
 	TenantID, UserID string
 	DisplayName      string
+	UserName         string
+	Email            string
 	UserDirectory    []UserReference
 	Roles            []string
 	Permissions      map[string]bool

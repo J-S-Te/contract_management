@@ -129,7 +129,7 @@ func (h *Handler) me(c *gin.Context) {
 	}
 	userDirectory := append([]application.UserReference(nil), p.UserDirectory...)
 	writeData(c, http.StatusOK, map[string]any{
-		"tenant_id": p.TenantID, "user_id": p.UserID, "display_name": p.DisplayName, "role": role, "roles": roles,
+		"tenant_id": p.TenantID, "user_id": p.UserID, "display_name": p.DisplayName, "user_name": p.UserName, "email": p.Email, "role": role, "roles": roles,
 		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,
 		"user_directory": userDirectory,
 	})

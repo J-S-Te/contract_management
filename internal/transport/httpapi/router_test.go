@@ -62,7 +62,7 @@ func TestAuthenticationFailureAbortsGinHandlerChain(t *testing.T) {
 func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
 		return application.Principal{
-			TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六", Roles: []string{"sales"},
+			TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六", UserName: "zhangliu", Email: "zhangliu@example.com", Roles: []string{"sales"},
 			Permissions:    map[string]bool{"contract.create": true, "contract.read": true},
 			RoleConfigHash: "hash-1", AuthzRevision: 9,
 			UserDirectory: []application.UserReference{
@@ -84,6 +84,8 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 			TenantID       string                      `json:"tenant_id"`
 			UserID         string                      `json:"user_id"`
 			DisplayName    string                      `json:"display_name"`
+			UserName       string                      `json:"user_name"`
+			Email          string                      `json:"email"`
 			Role           map[string]string           `json:"role"`
 			Permissions    []string                    `json:"permissions"`
 			RoleConfigHash string                      `json:"role_config_hash"`
@@ -94,7 +96,7 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Data.TenantID != "tenant-1" || body.Data.UserID != "user-1" || body.Data.DisplayName != "章六" ||
+	if body.Data.TenantID != "tenant-1" || body.Data.UserID != "user-1" || body.Data.DisplayName != "章六" || body.Data.UserName != "zhangliu" || body.Data.Email != "zhangliu@example.com" ||
 		body.Data.Role["code"] != "sales" || body.Data.AuthzRevision != 9 ||
 		body.Data.RoleConfigHash != "hash-1" || len(body.Data.Permissions) != 2 ||
 		len(body.Data.UserDirectory) != 2 || body.Data.UserDirectory[0].DisplayName != "章六" ||
