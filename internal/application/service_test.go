@@ -8,6 +8,7 @@ import (
 
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
+	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/stretchr/testify/mock"
 	temporalmocks "go.temporal.io/sdk/mocks"
@@ -194,13 +195,14 @@ func TestContractDashboardScopesAdminToTenantAndOtherUsersToSelf(t *testing.T) {
 
 func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 	repository := &recordingRepository{}
-	service := &Service{Repo: repository}
+	service := serviceWithContractTemplate(t, repository)
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六",
 		Permissions: map[string]bool{"contract.create": true},
 	}
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
-		Number: "CON-001", Title: "合同", Type: "service", ServiceType: "consulting", Content: "body",
+		Number: "CON-001", Title: "合同", Type: "service", TemplateID: "template-1",
+		ServiceItems: []contract.ServiceItem{{ServiceType: "consulting"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateContract() error = %v", err)
@@ -213,31 +215,65 @@ func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 
 func TestCreateContractAllowsNumberToBeAssignedAfterApproval(t *testing.T) {
 	repository := &recordingRepository{}
-	service := &Service{Repo: repository}
+	service := serviceWithContractTemplate(t, repository)
 	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
-		Title: "测评合同", Type: "直签", ServiceType: "等保测评", Content: "body",
-		CustomerName: "示例客户", Systems: []contract.SystemInfo{{Name: "业务系统", Level: "三级"}},
+		Title: "测评合同", Type: "直签", TemplateID: "template-1", CustomerName: "示例客户",
+		ServiceItems: []contract.ServiceItem{{ServiceType: "等保测评", Systems: []contract.SystemInfo{{Name: "业务系统", Level: "三级"}}}},
 	})
 	if err != nil {
 		t.Fatalf("CreateContract() error = %v", err)
 	}
-	if created.Number != "" || repository.created.Number != "" || repository.created.CustomerName != "示例客户" || len(repository.created.Systems) != 1 {
+	if created.Number != "" || repository.created.Number != "" || repository.created.CustomerName != "示例客户" || len(repository.created.ServiceItems) != 1 || len(repository.created.Systems) != 1 {
 		t.Fatalf("created contract = %#v, persisted = %#v", created, repository.created)
+	}
+}
+
+func TestCreateContractRequiresTemplateAndServiceItems(t *testing.T) {
+	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
+	withoutTemplate := &Service{Repo: &recordingRepository{}}
+	_, err := withoutTemplate.CreateContract(context.Background(), actor, contract.Contract{
+		Title: "测评合同", Type: "直签", Content: "手工正文",
+		ServiceItems: []contract.ServiceItem{{ServiceType: "等保测评"}},
+	})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("CreateContract() without template error = %v, want ErrValidation", err)
+	}
+
+	withoutServiceItems := serviceWithContractTemplate(t, &recordingRepository{})
+	_, err = withoutServiceItems.CreateContract(context.Background(), actor, contract.Contract{
+		Title: "测评合同", Type: "直签", TemplateID: "template-1",
+	})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("CreateContract() without service items error = %v, want ErrValidation", err)
 	}
 }
 
 func TestCreateContractRejectsStartDateAfterEndDate(t *testing.T) {
 	start := time.Date(2026, time.February, 2, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, -1)
-	service := &Service{Repo: &recordingRepository{}}
+	service := serviceWithContractTemplate(t, &recordingRepository{})
 	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
 	_, err := service.CreateContract(context.Background(), actor, contract.Contract{
-		Number: "CON-001", Title: "合同", Type: "service", ServiceType: "consulting", Content: "body",
-		StartDate: &start, EndDate: &end,
+		Number: "CON-001", Title: "合同", Type: "service", TemplateID: "template-1",
+		ServiceItems: []contract.ServiceItem{{ServiceType: "consulting"}},
+		StartDate:    &start, EndDate: &end,
 	})
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("CreateContract() error = %v, want ErrValidation", err)
+	}
+}
+
+func serviceWithContractTemplate(t *testing.T, repository Repository) *Service {
+	t.Helper()
+	return &Service{
+		Repo: repository,
+		Templates: &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+			"template-1": {
+				ID: "template-1", TenantID: "tenant-1", Name: "测试模板",
+				Content: applicationTestDOCX(t, "合同正文"),
+			},
+		}},
 	}
 }
 

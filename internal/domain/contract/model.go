@@ -17,6 +17,7 @@ type Contract struct {
 	CustomerContact     string            `json:"customer_contact,omitempty"`
 	CustomerPhone       string            `json:"customer_phone,omitempty"`
 	Systems             []SystemInfo      `json:"systems,omitempty"`
+	ServiceItems        []ServiceItem     `json:"service_items,omitempty"`
 	CustomerCreditLevel string            `json:"customer_credit_level,omitempty"`
 	OwnerUserID         string            `json:"owner_user_id"`
 	OwnerDisplayName    string            `json:"owner_display_name"`
@@ -38,6 +39,11 @@ type Contract struct {
 type SystemInfo struct {
 	Name  string `json:"name"`
 	Level string `json:"level"`
+}
+
+type ServiceItem struct {
+	ServiceType string       `json:"service_type"`
+	Systems     []SystemInfo `json:"systems,omitempty"`
 }
 
 type StampedDocument struct {

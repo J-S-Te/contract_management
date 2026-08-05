@@ -540,6 +540,12 @@ func contractFromRecord(record contractRecord) contract.Contract {
 	if len(record.SystemsJSON) > 0 {
 		_ = json.Unmarshal(record.SystemsJSON, &result.Systems)
 	}
+	if len(record.ServiceItemsJSON) > 0 {
+		_ = json.Unmarshal(record.ServiceItemsJSON, &result.ServiceItems)
+	}
+	if len(result.ServiceItems) == 0 && result.ServiceType != "" {
+		result.ServiceItems = []contract.ServiceItem{{ServiceType: result.ServiceType, Systems: result.Systems}}
+	}
 	return result
 }
 

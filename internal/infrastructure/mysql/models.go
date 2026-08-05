@@ -21,6 +21,7 @@ type contractRecord struct {
 	CustomerContact      *string
 	CustomerPhone        *string
 	SystemsJSON          []byte `gorm:"type:json"`
+	ServiceItemsJSON     []byte `gorm:"type:json"`
 	CustomerCreditLevel  *string
 	OwnerUserID          string
 	OwnerDisplayName     string

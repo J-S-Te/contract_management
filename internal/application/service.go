@@ -197,9 +197,11 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		}
 		c.NumberFormat = item.NumberFormat
 	}
-	if c.Title == "" || c.Type == "" || c.ServiceType == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 || !validSystems(c.Systems) {
+	if c.Title == "" || c.Type == "" || c.TemplateID == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 || !validServiceItems(c.ServiceItems) {
 		return c, ErrValidation
 	}
+	c.ServiceType = c.ServiceItems[0].ServiceType
+	c.Systems = flattenedSystems(c.ServiceItems)
 	if c.StartDate != nil && c.EndDate != nil && c.StartDate.After(*c.EndDate) {
 		return c, ErrValidation
 	}
@@ -234,6 +236,26 @@ func validSystems(items []contract.SystemInfo) bool {
 		}
 	}
 	return true
+}
+
+func validServiceItems(items []contract.ServiceItem) bool {
+	if len(items) == 0 || len(items) > 20 {
+		return false
+	}
+	for _, item := range items {
+		if item.ServiceType == "" || !validSystems(item.Systems) {
+			return false
+		}
+	}
+	return true
+}
+
+func flattenedSystems(items []contract.ServiceItem) []contract.SystemInfo {
+	result := make([]contract.SystemInfo, 0)
+	for _, item := range items {
+		result = append(result, item.Systems...)
+	}
+	return result
 }
 
 func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractID string, termsIdentical bool) (StartResult, error) {

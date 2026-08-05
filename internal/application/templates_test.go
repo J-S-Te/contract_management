@@ -159,6 +159,7 @@ func TestCreateContractRendersAndFreezesTemplateDocument(t *testing.T) {
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
 		Number: "CON-100", Title: "标准合同", Type: "service", ServiceType: "consulting",
 		TemplateID: "template-1", TemplateValues: map[string]string{"customer_name": "示例公司"},
+		ServiceItems: []contract.ServiceItem{{ServiceType: "consulting"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateContract() error = %v", err)
