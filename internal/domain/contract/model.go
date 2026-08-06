@@ -12,6 +12,7 @@ type Contract struct {
 	ServiceType         string            `json:"service_type"`
 	OpportunityID       string            `json:"opportunity_id,omitempty"`
 	OpportunityName     string            `json:"opportunity_name,omitempty"`
+	CRMCustomerID       uint64            `json:"crm_customer_id,omitempty"`
 	CustomerName        string            `json:"customer_name,omitempty"`
 	CustomerAddress     string            `json:"customer_address,omitempty"`
 	CustomerContact     string            `json:"customer_contact,omitempty"`

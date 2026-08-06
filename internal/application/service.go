@@ -197,7 +197,7 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		}
 		c.NumberFormat = item.NumberFormat
 	}
-	if c.Title == "" || c.Type == "" || c.TemplateID == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 || !validServiceItems(c.ServiceItems) {
+	if c.Title == "" || c.Type == "" || c.TemplateID == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 || !validServiceItems(c.ServiceItems) || (c.OpportunityID == "") != (c.CRMCustomerID == 0) {
 		return c, ErrValidation
 	}
 	c.ServiceType = c.ServiceItems[0].ServiceType

@@ -16,6 +16,7 @@ type contractRecord struct {
 	ServiceType          string
 	OpportunityID        *string
 	OpportunityName      *string
+	CRMCustomerID        *uint64
 	CustomerName         *string
 	CustomerAddress      *string
 	CustomerContact      *string
