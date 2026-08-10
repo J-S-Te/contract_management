@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>UniLab 设计规范 · Design System v1.0</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="./ui-kit.css" />
+<style>
+  /* ---- 仅规范手册自身用到的排版样式（不属于 UI Kit） ---- */
+  body{background:var(--content)}
+  .doc{max-width:1120px;margin:0 auto;padding:0 32px 96px}
+  .doc-hero{background:var(--sidebar);color:#fff;padding:52px 32px 44px;margin-bottom:32px}
+  .doc-hero .inner{max-width:1120px;margin:0 auto}
+  .doc-hero h1{font-size:34px;font-weight:700;letter-spacing:.5px}
+  .doc-hero p{color:var(--sidebar-text);font-size:15px;margin-top:12px;max-width:760px;line-height:1.7}
+  .doc-hero .meta{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+  .doc-hero .meta span{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:#E2E8F0;font-size:12px;padding:5px 12px;border-radius:999px}
+
+  .toc{position:sticky;top:0;z-index:20;background:rgba(241,245,249,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:10px 0;margin-bottom:32px}
+  .toc .inner{max-width:1120px;margin:0 auto;padding:0 32px;display:flex;gap:6px;flex-wrap:wrap}
+  .toc a{font-size:13px;color:var(--muted);padding:6px 12px;border-radius:8px}
+  .toc a:hover{background:#fff;color:var(--ink)}
+
+  section{margin-bottom:56px;scroll-margin-top:64px}
+  section>h2{font-size:22px;color:var(--ink);font-weight:700;margin-bottom:6px;display:flex;align-items:baseline;gap:12px}
+  section>h2 em{font-style:normal;font-size:13px;color:var(--faint);font-weight:400;letter-spacing:1px}
+  section>.lead{font-size:13.5px;color:var(--muted);margin-bottom:20px;line-height:1.7;max-width:820px}
+  h3.sub{font-size:15px;color:var(--ink);font-weight:600;margin:26px 0 12px;padding-left:10px;border-left:3px solid var(--primary)}
+
+  .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:12px}
+  .sw{background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+  .sw .chipbox{height:62px;display:flex;align-items:flex-end;justify-content:flex-end;padding:6px 8px}
+  .sw .body{padding:10px 12px}
+  .sw b{display:block;font-size:12.5px;color:var(--ink);font-family:var(--font-mono)}
+  .sw span{display:block;font-size:11.5px;color:var(--muted);margin-top:3px}
+  .sw code{font-size:11px;color:var(--faint);font-family:var(--font-mono)}
+  .ratio{font-size:10.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:rgba(255,255,255,.9);color:#0F172A}
+  .ratio.bad{background:#FEF2F2;color:var(--red-text)}
+  .ratio.good{background:#ECFDF5;color:var(--green-text)}
+
+  .typescale .r{display:flex;align-items:baseline;gap:18px;padding:13px 0;border-bottom:1px solid var(--line-soft)}
+  .typescale .r:last-child{border-bottom:none}
+  .typescale .tok{width:150px;flex-shrink:0;font-family:var(--font-mono);font-size:12px;color:var(--primary)}
+  .typescale .spec{width:170px;flex-shrink:0;font-size:12px;color:var(--muted)}
+  .typescale .demo{color:var(--ink);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .scaleboxes{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+  .scalebox{text-align:center}
+  .scalebox .b{background:var(--primary-soft);border:1px solid var(--primary-border);border-radius:6px}
+  .scalebox span{display:block;font-size:11px;color:var(--muted);margin-top:6px;font-family:var(--font-mono)}
+
+  .demo-area{background:#fff;border:1px solid var(--line);border-radius:12px;padding:22px;box-shadow:var(--shadow)}
+  .demo-area.on-gray{background:var(--content);border-style:dashed}
+  .demo-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .snippet{position:relative;margin-top:10px}
+  .snippet pre{background:#0F172A;color:#E2E8F0;border-radius:10px;padding:14px 16px;font-family:var(--font-mono);font-size:12px;line-height:1.7;overflow-x:auto;white-space:pre}
+  .snippet .cp{position:absolute;top:9px;right:9px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);color:#CBD5E1;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer;font-family:var(--font)}
+  .snippet .cp:hover{background:rgba(255,255,255,.2);color:#fff}
+
+  table.spec-tbl{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+  table.spec-tbl th{background:var(--sunken);text-align:left;font-size:12.5px;font-weight:600;color:var(--muted);padding:11px 14px;border-bottom:1px solid var(--line)}
+  table.spec-tbl td{padding:11px 14px;font-size:13px;color:var(--body);border-bottom:1px solid var(--line-soft);vertical-align:top}
+  table.spec-tbl tr:last-child td{border-bottom:none}
+  table.spec-tbl code{font-family:var(--font-mono);font-size:12px;color:var(--primary);background:var(--primary-soft);padding:1px 6px;border-radius:4px}
+
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:900px){.rules{grid-template-columns:1fr}}
+  .rule{border-radius:12px;padding:16px 18px;border:1px solid}
+  .rule.do{background:var(--green-soft);border-color:#C7F0D6}
+  .rule.dont{background:var(--red-soft);border-color:#FCD5D5}
+  .rule b{display:block;font-size:13px;margin-bottom:8px;font-weight:700}
+  .rule.do b{color:var(--green-text)} .rule.dont b{color:var(--red-text)}
+  .rule ul{margin:0;padding-left:18px}
+  .rule li{font-size:12.5px;color:var(--body);line-height:1.85}
+
+  .elev{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:18px}
+  .elev .e{background:#fff;border-radius:12px;padding:18px;text-align:center;font-size:12px;color:var(--muted)}
+  .elev .e b{display:block;color:var(--ink);font-size:13px;margin-bottom:4px}
+
+  footer.doc-foot{border-top:1px solid var(--line);padding-top:22px;color:var(--muted);font-size:12.5px;line-height:1.9}
+</style>
+</head>
+<body>
+
+<div class="doc-hero">
+  <div class="inner">
+    <div class="proto-tag" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#FDBA74">Design System v1.0</div>
+    <h1 style="margin-top:14px">UniLab 设计规范</h1>
+    <p>从「具身智能实训基地管理系统」5 份高保真原型中反向抽取、经无障碍实测校正后的设计系统。所有令牌与组件均已落到可直接引用的 <code style="font-family:var(--font-mono);color:#93C5FD">ui-kit.css</code>，其他项目只需覆盖令牌层（<code style="font-family:var(--font-mono);color:#93C5FD">:root</code>）即可换肤复用。</p>
+    <div class="meta">
+      <span>基线：course / training / device / RBAC 五份原型</span>
+      <span>17 组令牌 · 26 类组件 · 5 个交互模式</span>
+      <span>WCAG 2.1 AA 实测校正</span>
+    </div>
+  </div>
+</div>
+
+<nav class="toc"><div class="inner" id="toc"></div></nav>
+
+<div class="doc">
+
+  <!-- ===================== 1 设计原则 ===================== -->
+  <section id="s-principle">
+    <h2>01 设计原则 <em>PRINCIPLES</em></h2>
+    <p class="lead">五条原则是所有取舍的裁决依据。当组件方案有争议时，按序号优先级判断。</p>
+    <div class="grid grid-3" id="principles"></div>
+  </section>
+
+  <!-- ===================== 2 色彩 ===================== -->
+  <section id="s-color">
+    <h2>02 色彩 <em>COLOR</em></h2>
+    <p class="lead">品牌单主色 + 四级墨色 + 六语义色。语义色有<b>两套值</b>：饱和值用于图形/大字号，<code style="font-family:var(--font-mono);font-size:12px">-text</code> 变体用于小字号——这是本次无障碍实测后的强制修正。</p>
+
+    <h3 class="sub">2.1 品牌色</h3>
+    <div class="swatches" id="sw-brand"></div>
+
+    <h3 class="sub">2.2 墨色（文字层级）</h3>
+    <div class="swatches" id="sw-ink"></div>
+
+    <h3 class="sub">2.3 表面与描边</h3>
+    <div class="swatches" id="sw-surface"></div>
+
+    <h3 class="sub">2.4 语义色 · 饱和值（图形、图标、≥18px 文字）</h3>
+    <div class="swatches" id="sw-sem"></div>
+
+    <h3 class="sub">2.5 语义色 · 文本安全变体（小字号必用）</h3>
+    <p class="note" style="margin-bottom:12px">下方每格标注的是「该色在对应 soft 底色上的对比度」。左列为原型原值（多数不达标），右列为修正值。</p>
+    <table class="spec-tbl">
+      <thead><tr><th style="width:110px">语义</th><th>原型原值（底色）</th><th style="width:110px">实测</th><th>修正令牌</th><th style="width:110px">实测</th><th>用途</th></tr></thead>
+      <tbody id="a11y-rows"></tbody>
+    </table>
+
+    <h3 class="sub">2.6 语义映射约定</h3>
+    <table class="spec-tbl">
+      <thead><tr><th style="width:90px">色</th><th style="width:180px">业务语义</th><th>本系统实例</th></tr></thead>
+      <tbody id="sem-map"></tbody>
+    </table>
+  </section>
+
+  <!-- ===================== 3 排版 ===================== -->
+  <section id="s-type">
+    <h2>03 排版 <em>TYPOGRAPHY</em></h2>
+    <p class="lead">中文优先字体栈，11 级字号阶。基准 14px / 行高 1.5。字号阶刻意保留 0.5px 步进（13.5px），是密集型管理后台在信息密度与可读性之间的取舍结果。</p>
+    <div class="demo-area">
+      <div class="typescale" id="typescale"></div>
+    </div>
+    <div class="rules u-mt4">
+      <div class="rule do"><b>✓ 应当</b><ul>
+        <li>正文用 <code>--body</code>，标题用 <code>--ink</code>，说明用 <code>--muted</code></li>
+        <li>KPI 数值 28px/700/行高 1，配 12.5px 标签形成强对比</li>
+        <li>表格单元格统一 13.5px，表头 12.5px/600</li>
+        <li>脚注类文字行高放宽到 1.6，避免密集小字挤压</li>
+      </ul></div>
+      <div class="rule dont"><b>✗ 禁止</b><ul>
+        <li>用 <code>--faint</code>(#94A3B8, 2.6:1) 承载任何需要阅读的文字</li>
+        <li>新增字号档位——11 级已覆盖全部场景，加档即失控</li>
+        <li>正文使用 700 字重，强调用 600 或改颜色层级</li>
+        <li>在深色侧栏用 #475569 做分组标题（2.4:1，已修正为 #94A3B8）</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ===================== 4 间距圆角阴影 ===================== -->
+  <section id="s-space">
+    <h2>04 间距 · 圆角 · 层高 <em>SPACING / RADIUS / ELEVATION</em></h2>
+    <p class="lead">4px 基准栅格，允许 2px 半步用于图标与文字的光学对齐。圆角按「元素体量」递增：越大的容器圆角越大。</p>
+
+    <h3 class="sub">4.1 间距阶</h3>
+    <div class="demo-area"><div class="scaleboxes" id="spacing"></div></div>
+
+    <h3 class="sub">4.2 圆角阶</h3>
+    <div class="demo-area"><div class="scaleboxes" id="radius"></div></div>
+
+    <h3 class="sub">4.3 层高（5 级）</h3>
+    <div class="demo-area on-gray"><div class="elev" id="elev"></div></div>
+
+    <h3 class="sub">4.4 固定布局尺寸</h3>
+    <table class="spec-tbl">
+      <thead><tr><th style="width:200px">令牌</th><th style="width:110px">值</th><th>说明</th></tr></thead>
+      <tbody id="layout-rows"></tbody>
+    </table>
+  </section>
+
+  <!-- ===================== 5 组件 ===================== -->
+  <section id="s-comp">
+    <h2>05 组件库 <em>COMPONENTS</em></h2>
+    <p class="lead">26 类组件，全部来自真实原型、非臆造。每块下方为可直接复制的 HTML 片段。</p>
+    <div id="components"></div>
+  </section>
+
+  <!-- ===================== 6 交互模式 ===================== -->
+  <section id="s-pattern">
+    <h2>06 交互模式 <em>PATTERNS</em></h2>
+    <p class="lead">比组件更高一层的可复用资产——这五个模式是本项目原型真正的差异化价值，也是最值得其他项目借鉴的部分。</p>
+    <div id="patterns"></div>
+  </section>
+
+  <!-- ===================== 7 无障碍 ===================== -->
+  <section id="s-a11y">
+    <h2>07 无障碍 <em>ACCESSIBILITY · WCAG 2.1 AA</em></h2>
+    <p class="lead">本节是对原型的<b>诚实审计</b>：原型在色彩对比上有 7 处不达标，UI Kit 已全部修正。移植到其他项目时请勿回退这些值。</p>
+    <div class="rules">
+      <div class="rule do"><b>✓ UI Kit 已内置</b><ul>
+        <li>统一 <code>:focus-visible</code> 焦点环（2px 主色 + 2px 偏移）——原型完全缺失</li>
+        <li>7 个 <code>--*-text</code> 安全色变体，全部实测 ≥4.5:1</li>
+        <li>侧栏分组标题提亮至 6.9:1</li>
+        <li><code>prefers-reduced-motion</code> 降级</li>
+        <li><code>.sr-only</code> 屏幕阅读器专用类</li>
+      </ul></div>
+      <div class="rule dont"><b>✗ 仍待补齐（移植时须做）</b><ul>
+        <li>模态/抽屉的焦点陷阱与 ESC 关闭、打开时焦点转移</li>
+        <li>权限矩阵 ✓/◐/✗ 需配 <code>aria-label</code>——纯符号对读屏不可用</li>
+        <li>状态<b>不可仅靠颜色传达</b>：冲突态需同时给红框+文案+图标</li>
+        <li>触控目标 ≥44px（当前 <code>.pill</code> 仅 32px，触屏场景需放大）</li>
+        <li>图表（雷达图/热力图）需提供等价数据表</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ===================== 8 移植清单 ===================== -->
+  <section id="s-adopt">
+    <h2>08 跨项目移植清单 <em>ADOPTION</em></h2>
+    <p class="lead">其他项目借鉴本规范的标准路径，四步走。</p>
+    <div id="adopt"></div>
+  </section>
+
+  <footer class="doc-foot">
+    <b style="color:var(--ink)">UniLab 设计规范 v1.0</b><br>
+    资产：<code style="font-family:var(--font-mono)">ui-kit.css</code>（样式库） · <code style="font-family:var(--font-mono)">设计规范.html</code>（本手册） · <code style="font-family:var(--font-mono)">设计规范.md</code>（文字版） · <code style="font-family:var(--font-mono)">starter-template.html</code>（起步模板）<br>
+    基线来源：course-management.html / course-management-roles.html / training-management-roles.html / device-management-roles.html / 跨子系统RBAC权限总表.html<br>
+    维护约定：组件层变更须同步更新本手册的实例与代码片段；令牌层变更须重跑对比度实测。
+  </footer>
+</div>
+
+<div class="toast" id="toast"><span class="d"></span><span id="toastMsg">已复制</span></div>
+
+<script>
+/* ========== 数据 ========== */
+const PRINCIPLES=[
+  ['①','信息密度优先','管理后台的用户是每天用 8 小时的专业角色，不是首次访问的访客。宁可字号小 0.5px、行高紧一点，也要让一屏承载更多决策信息。'],
+  ['②','状态即色彩','颜色只服务于状态语义，不做装饰。六个语义色各有唯一含义，任何新状态必须归入现有语义，不得引入第八种颜色。'],
+  ['③','权限可见化','用户看不到的功能就不该出现在导航里；能看不能改的必须有明确的只读锁标。权限差异是界面结构的一部分，不是运行时的报错。'],
+  ['④','危险操作前置拦截','冲突、越权、安全风险必须在提交<b>前</b>用红框+文案+禁用按钮拦截，并给出可行替代方案。不允许「点了才报错」。'],
+  ['⑤','需求可追溯','每个界面区块标注其对应的需求编号（如 FR-CUR-0304）。设计与文档双向可查，评审时不必翻文档比对。']
+];
+
+const SW={
+  brand:[
+    ['--primary','#2563EB','主按钮/链接/激活','白字 5.2:1','good'],
+    ['--primary-d','#1D4ED8','hover / pressed','',''],
+    ['--primary-soft','#EFF6FF','激活药丸底/标签底','',''],
+    ['--primary-border','#BFDBFE','激活药丸描边','','']
+  ],
+  ink:[
+    ['--ink','#0F172A','一级：标题/数值','17.9:1','good'],
+    ['--body','#475569','二级：正文/单元格','7.6:1','good'],
+    ['--muted','#64748B','三级：标签/说明','4.8:1','good'],
+    ['--faint','#94A3B8','装饰：占位/图标','2.6:1 禁用于正文','bad']
+  ],
+  surface:[
+    ['--content','#F1F5F9','页面底/输入底','',''],
+    ['--card','#FFFFFF','卡片/表格/弹层','',''],
+    ['--sunken','#F8FAFC','表头/矩阵行首','',''],
+    ['--line','#E2E8F0','标准描边','',''],
+    ['--line-soft','#EDF0F5','行间弱分隔','',''],
+    ['--line-strong','#CBD5E1','hover 边框/滚动条','',''],
+    ['--sidebar','#0F172A','深色侧栏底','',''],
+    ['--sidebar-hover','#1E293B','侧栏 hover / 激活','','']
+  ],
+  sem:[
+    ['--green','#16A34A','正常/在线/通过','',''],
+    ['--amber','#D97706','警告/待处理/只读','',''],
+    ['--red','#DC2626','故障/冲突/急停','',''],
+    ['--sky','#0EA5E9','进行中/信息/仿真','',''],
+    ['--violet','#8B5CF6','特殊/科研/竞赛','',''],
+    ['--gray','#64748B','停用/归档/无','','']
+  ]
+};
+
+const A11Y=[
+  ['正常 green','#16A34A on #ECFDF5','3.2:1','--green-text #15803D','4.8:1','.tag.green / 状态药丸'],
+  ['警告 amber','#D97706 on #FEF3C7','2.9:1','--amber-text #B45309','4.5:1','.tag.amber / 只读徽标'],
+  ['危险 red','#DC2626 on #FEF2F2','4.4:1','--red-text #B91C1C','5.9:1','.tag.red / 冲突提示'],
+  ['信息 sky','#0EA5E9 on #E0F2FE','2.5:1','--sky-text #0369A1','5.2:1','.tag.sky'],
+  ['特殊 violet','#8B5CF6 on #F5F3FF','3.9:1','--violet-text #6D28D9','6.5:1','.tag.violet'],
+  ['中性 gray','#64748B on #F1F5F9','4.3:1','--gray-text #475569','6.9:1','.tag.gray / .chip'],
+  ['侧栏分组标题','#475569 on #0F172A','2.4:1','--sidebar-label #94A3B8','6.9:1','.nav-group / 只读锁标']
+];
+
+const SEMMAP=[
+  ['green','正常 · 在线 · 通过 · 已完成','设备在线、评测通过、课程已发布、进度达标'],
+  ['amber','警告 · 待处理 · 受限 · 只读','待审批、维护中、教师只读锁标、权限受限 ◐'],
+  ['red','故障 · 冲突 · 急停 · 禁止','排课工位冲突、设备故障、急停按钮、越权拦截'],
+  ['sky','进行中 · 信息 · 仿真','实训进行中、仿真环境、提示性信息'],
+  ['violet','特殊 · 科研 · 竞赛','科研项目、竞赛专享通道、特殊资源'],
+  ['gray','停用 · 归档 · 无','课程已归档、设备报废、权限 ✗']
+];
+
+const TYPE=[
+  ['--fs-display','28px / 700 / lh 1','1,284'],
+  ['--fs-title','22px / 700','页面主标题 · 课程体系管理'],
+  ['--fs-subtitle','16px / 600~700','弹层与抽屉标题'],
+  ['--fs-card','15px / 600','卡片标题 · 本周课表冲突'],
+  ['--fs-base','14px / 400 / lh 1.5','正文基准字号，段落与描述文本使用此档'],
+  ['--fs-ui','13.5px / 400~500','控件文字：按钮 / 导航项 / 表格单元格'],
+  ['--fs-sm','13px / 400','次级说明、筛选药丸、搜索框'],
+  ['--fs-label','12.5px / 600','表头、KPI 标签'],
+  ['--fs-hint','12px / 400 / lh 1.6','提示与脚注，说明性补充信息'],
+  ['--fs-micro','11.5px / 600','芯片 chip、只读徽标'],
+  ['--fs-nano','11px / 400 / +1px 字距','侧栏分组标题（大写）']
+];
+
+const SPACING=[['--sp-1',4],['--sp-2',8],['--sp-3',12],['--sp-4',16],['--sp-5',20],['--sp-6',24],['--sp-7',32],['--sp-8',40]];
+const RADIUS=[['--r-xs',6,'芯片/徽标'],['--r-sm',8,'按钮/输入/药丸'],['--r-md',10,'分段控件/toast'],['--r-lg',12,'卡片/表格'],['--r-xl',14,'模态框'],['--r-full',999,'标签/状态']];
+const ELEV=[
+  ['L1 --shadow','卡片 · KPI · 表格','var(--shadow)'],
+  ['L2 --shadow-pop','悬浮卡 · 下拉','var(--shadow-pop)'],
+  ['L3 --shadow-drawer','右侧抽屉','var(--shadow-drawer)'],
+  ['L4 --shadow-toast','轻提示','var(--shadow-toast)'],
+  ['L5 --shadow-modal','模态框','var(--shadow-modal)']
+];
+const LAYOUT=[
+  ['--w-sidebar','248px','侧栏固定宽，不可折叠（导航项 ≥6 条时保证文字不截断）'],
+  ['--h-topbar','64px','顶栏高，容纳 38px 控件 + 上下 13px 呼吸'],
+  ['--pad-page','24px','内容区内边距'],
+  ['--gap-grid','16px','卡片栅格间距（KPI/卡片统一）'],
+  ['--w-drawer','420px','右侧抽屉宽，max-width 92vw'],
+  ['--w-modal','560px','模态框宽，max-width 92vw'],
+  ['--h-control','32px','紧凑控件高（药丸/搜索）'],
+  ['--h-button','38px','标准按钮高'],
+  ['z-index','20/30/40/41/50/60','sticky / dropdown / mask / drawer / modal / toast']
+];
+
+const COMPONENTS=[
+  ['按钮 Button','三种意图 + 禁用态。图标 16px，与文字间距 6px。',
+   '<button class="btn btn-primary">保存排课</button> <button class="btn btn-ghost">取消</button> <button class="btn btn-danger">急停</button> <button class="btn btn-primary" disabled>禁止保存</button>'],
+  ['标签 Tag','状态语义标签，圆角全圆。文字用 -text 安全变体。',
+   '<span class="tag green">在线</span> <span class="tag amber">待审批</span> <span class="tag red">冲突</span> <span class="tag sky">进行中</span> <span class="tag violet">科研</span> <span class="tag gray">已归档</span> <span class="tag blue">P0</span>'],
+  ['芯片 Chip / 徽标 Badge','芯片承载元信息，只读徽标承载权限状态。',
+   '<span class="chip">ROS2</span> <span class="chip blue">FR-CUR-0304</span> <span class="chip green">已发布</span> &nbsp; <span class="ro-badge lock">只读</span> <span class="ro-badge ok">可编辑</span> <span class="proto-tag">原型 Mock 数据</span>'],
+  ['KPI 卡','数值 28px/700 + 标签 12.5px + 增减 12px。4 列栅格，≤1280px 降 2 列。',
+   '<div class="kpis" style="margin:0"><div class="kpi"><div class="lbl">在册课程</div><div class="val">128<small> 门</small></div><div class="delta up">↑ 12 较上学期</div></div><div class="kpi"><div class="lbl">设备在线率</div><div class="val">96.4<small>%</small></div><div class="delta up">↑ 2.1%</div></div><div class="kpi"><div class="lbl">本周排课冲突</div><div class="val">3</div><div class="delta down">↓ 需处理</div></div><div class="kpi"><div class="lbl">实训完成率</div><div class="val">87<small>%</small></div><div class="delta up">↑ 5%</div></div></div>'],
+  ['卡片 Card','头部 16/20 内边距 + 弱描边分隔 + 主体 18/20。',
+   '<div class="card"><div class="card-head"><h3>课程体系结构</h3><span class="hint">FR-CUR-0101</span></div><div class="card-body">卡片主体内容区，承载表格、图表或表单。</div></div>'],
+  ['筛选工具条','药丸筛选 + 搜索 + 右对齐计数。',
+   '<div class="toolbar" style="margin:0"><span class="pill active">全部类型</span><span class="pill">课件 <span class="chev">▾</span></span><span class="pill">视频 <span class="chev">▾</span></span><div class="search"><input placeholder="搜索资源名称…" /></div><div class="count">共 <b>248</b> 条</div></div>'],
+  ['表格 Table','flex 行模型。表头 sunken 底，行间弱分隔，hover 高亮，操作列右对齐。',
+   '<div class="table"><div class="trow th"><div style="width:180px">课程编码</div><div style="flex:1">课程名称</div><div style="width:120px">阶段</div><div style="width:110px">状态</div><div style="width:90px" class="u-right">操作</div></div><div class="trow"><div style="width:180px" class="strong">CUR-ROS-001</div><div style="flex:1">ROS2 机器人操作系统基础</div><div style="width:120px">专业基础</div><div style="width:110px"><span class="tag green">已发布</span></div><div style="width:90px" class="u-right act"><a>详情</a></div></div><div class="trow"><div style="width:180px" class="strong">CUR-NAV-004</div><div style="flex:1">移动机器人自主导航</div><div style="width:120px">专业核心</div><div style="width:110px"><span class="tag amber">草稿</span></div><div style="width:90px" class="u-right act"><a>详情</a></div></div></div>'],
+  ['权限矩阵符号','四态符号。必须配 aria-label，不可仅靠颜色与字形。',
+   '<div class="demo-row"><span class="sym ok" aria-label="完全权限">✓</span><span class="u-muted" style="font-size:12.5px">完全</span><span class="sym part" aria-label="受限权限">◐</span><span class="u-muted" style="font-size:12.5px">受限（仅本人/所授课程/需申请）</span><span class="sym no" aria-label="无权限">✗</span><span class="u-muted" style="font-size:12.5px">无</span><span class="sym na" aria-label="不涉及">—</span><span class="u-muted" style="font-size:12.5px">不涉及</span></div>'],
+  ['反馈状态','冲突/通过双态框 + 进度条 + 空态。危险态必须同时有色、框、文案。',
+   '<div class="conflict">⚠ 工位冲突：该时段四足机器人仅 3 台空闲，需求 4 台。建议改至周四 5-6 节。</div><div class="okbox u-mt3">✓ 工位充足：四足机器人 6 台空闲，可排课。</div><div class="u-mt3"><div class="bar"><i style="width:72%"></i></div><div class="note">章节完成度 72%</div></div>'],
+  ['角色切换器','分段控件，激活项白底+L1 阴影。用于角色感知原型。',
+   '<div class="role-switch"><button class="active"><span class="av" style="background:linear-gradient(135deg,#2563EB,#0EA5E9)">管</span>管理员</button><button><span class="av" style="background:linear-gradient(135deg,#16A34A,#0EA5E9)">师</span>教师</button><button><span class="av" style="background:linear-gradient(135deg,#D97706,#DC2626)">生</span>学生</button></div>'],
+  ['键值详情','抽屉/弹层内的字段展示，键列固定 90px。',
+   '<div class="kv"><div class="k">课程编码</div><div class="v">CUR-ROS-001</div></div><div class="kv"><div class="k">关联仓库</div><div class="v">gitlab/unilab/ros2-basic · Tag v1.2.0</div></div><div class="kv"><div class="k">先修课程</div><div class="v">Python 程序设计、Linux 基础</div></div>'],
+  ['轻提示 Toast','底部居中，深色底。成功绿点 / 失败红点。2.5s 自动消失。',
+   '<button class="btn btn-ghost" onclick="showToast(\'排课已发布，实训任务已下发\')">触发成功提示</button> <button class="btn btn-ghost" onclick="showToast(\'保存失败：存在工位冲突\',true)">触发失败提示</button>']
+];
+
+const PATTERNS=[
+  ['P1 · 角色感知界面 <span class="tag blue">最高复用价值</span>',
+   '同一套界面按角色裁剪，权限差异体现在<b>结构</b>而非报错。',
+   ['<b>导航裁剪</b>：无权限的模块直接从侧栏移除（学生看不到「机器人绑定」），而不是点进去报 403',
+    '<b>默认落地页差异化</b>：管理员→总览，教师→课表编排，学生→我的进度。开屏即是该角色的主战场',
+    '<b>只读锁标</b>：能看不能改的区块，标题右侧挂 <code>.ro-badge.lock</code>，动作按钮同步禁用',
+    '<b>动作语义降级</b>：同一个按钮，管理员是「保存排课」，教师变「提交申请」',
+    '<b>权限矩阵自查口</b>：顶栏常驻「权限对照」入口，任何人可自查边界，减少客服问询'],
+   'const ROLES={\n  admin:{ label:\'管理员\', defaultView:\'overview\',\n          nav:[\'overview\',\'curriculum\',\'schedule\',\'binding\'],\n          perm:{ editSchedule:true, publishTraining:true } },\n  teacher:{ label:\'教师\', defaultView:\'schedule\',\n          nav:[\'overview\',\'curriculum\',\'schedule\',\'binding\'],\n          perm:{ editSchedule:false, requestTraining:true } },\n  student:{ label:\'学生\', defaultView:\'progress\',\n          nav:[\'overview\',\'curriculum\',\'schedule\'],   // 无 binding\n          perm:{ editSchedule:false } }\n};\n// 渲染时：nav 决定侧栏项，perm 决定按钮文案与禁用态'],
+
+  ['P2 · 提交前冲突拦截',
+   '资源类系统（排课、预约、算力）的通用范式：<b>实时校验 → 视觉拦截 → 给替代方案</b>。',
+   ['选择资源与数量的<b>同时</b>发起占用查询，不等提交',
+    '冲突时：红框(<code>.conflict</code>) + 具体数字说明「需 4 台，仅 3 台空闲」+ 主按钮 disabled',
+    '必须给<b>可执行替代方案</b>（改时段 / 减数量 / 排队），否则用户只能干瞪眼',
+    '通过时同样给正反馈（<code>.okbox</code>），让用户确信系统真的校验过'],
+   '// 反例：提交后才报错 → 用户已填完整个表单\n// 正例：onChange 即校验\nselect.onchange = () => {\n  const free = queryFreeSlots(model, timeslot);\n  if (free < qty) {\n    box.className = \'conflict\';\n    box.textContent = `工位冲突：需 ${qty} 台，仅 ${free} 台空闲。建议改至 ${suggest()}`;\n    saveBtn.disabled = true;\n  } else { box.className = \'okbox\'; saveBtn.disabled = false; }\n};'],
+
+  ['P3 · 需求追溯徽标',
+   '每个视图右上角标注对应需求编号，设计-文档双向可查。',
+   ['卡片头右侧用 <code>.card-head .hint</code> 或 <code>.chip.blue</code> 标 <code>FR-CUR-0304</code>',
+    '评审会上可直接按编号定位 SRS 条目，省去来回翻文档',
+    '联调阶段前端可按编号回查验收标准，减少「这里到底该怎么样」的往返',
+    '成本极低（一个 chip），收益在评审与验收阶段兑现'],
+   '<div class="card-head">\n  <h3>课表编排</h3>\n  <span class="hint">FR-CUR-0301 ~ 0305</span>\n</div>'],
+
+  ['P4 · 单页多视图',
+   '原型阶段用 <code>.view.active</code> 切换而非多文件，保证状态连续、便于演示。',
+   ['所有视图放同一 HTML，<code>.view</code> 默认 display:none，激活项加 <code>.active</code>',
+    '切换带 6px 上移淡入（0.25s），给出「换页了」的空间感知',
+    '角色切换时同步重算导航与默认视图，一次切换全局生效',
+    '正式开发替换为路由即可，结构一一对应'],
+   'function go(view){\n  document.querySelectorAll(\'.view\').forEach(v=>v.classList.remove(\'active\'));\n  document.getElementById(\'v-\'+view).classList.add(\'active\');\n  document.querySelectorAll(\'.nav-item\').forEach(n=>\n    n.classList.toggle(\'active\', n.dataset.view===view));\n}'],
+
+  ['P5 · Mock 数据显式标识',
+   '原型里所有假数据必须可识别，避免干系人误当真实数据讨论。',
+   ['页面顶部挂 <code>.proto-tag</code> 标明「原型 Mock 数据」',
+    '涉及跨系统的数据，在 <code>.note</code> 里写明真实来源（如「工位占用需接设备管理 IC-04」）',
+    '评审时这条能挡掉大量「这个数据对不对」的无效讨论',
+    '交付研发时，Mock 标识的位置就是接口对接点清单']
+   ,'<div class="proto-tag">原型 Mock 数据</div>\n<p class="note">工位占用为内置模拟值；真实数据接设备管理子系统 IC-04 设备状态查询。</p>']
+];
+
+const ADOPT=[
+  ['第 1 步 · 引入并换肤','复制 <code>ui-kit.css</code>，只改 <code>:root</code> 令牌层。换主色需同时改 <code>--primary</code>/<code>-d</code>/<code>-soft</code>/<code>-border</code> 四个值，并重测白字对比度 ≥4.5:1。组件层<b>不要改</b>。'],
+  ['第 2 步 · 裁剪组件','按项目需要删除用不到的组件段（§4~§16 有清晰分节注释）。保留 §1 令牌与 §2 基础层。'],
+  ['第 3 步 · 复用交互模式','P1 角色感知与 P2 冲突拦截是跨领域通用的，优先移植。P3 需求追溯适合有 SRS 的项目，P5 适合原型评审场景。'],
+  ['第 4 步 · 守住无障碍底线','小字号一律用 <code>--*-text</code> 变体；不得用 <code>--faint</code> 承载正文；焦点环不得移除；危险状态必须色+框+文案三重表达。']
+];
+
+/* ========== 渲染 ========== */
+const $=id=>document.getElementById(id);
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+// TOC
+const SECTIONS=[['s-principle','设计原则'],['s-color','色彩'],['s-type','排版'],['s-space','间距层高'],['s-comp','组件库'],['s-pattern','交互模式'],['s-a11y','无障碍'],['s-adopt','移植清单']];
+$('toc').innerHTML=SECTIONS.map((s,i)=>`<a href="#${s[0]}">${String(i+1).padStart(2,'0')} ${s[1]}</a>`).join('');
+
+// 原则
+$('principles').innerHTML=PRINCIPLES.map(p=>`
+  <div class="card"><div class="card-body">
+    <div style="font-size:26px;font-weight:700;color:var(--primary);line-height:1">${p[0]}</div>
+    <div style="font-size:14.5px;font-weight:600;color:var(--ink);margin:8px 0 8px">${p[1]}</div>
+    <div style="font-size:12.5px;color:var(--muted);line-height:1.8">${p[2]}</div>
+  </div></div>`).join('');
+
+// 色卡
+function swatch(list,dark){
+  return list.map(([tok,hex,use,ratio,cls])=>`
+    <div class="sw">
+      <div class="chipbox" style="background:${hex}">${ratio?`<span class="ratio ${cls}">${ratio}</span>`:''}</div>
+      <div class="body"><b>${tok}</b><code>${hex}</code><span>${use}</span></div>
+    </div>`).join('');
+}
+$('sw-brand').innerHTML=swatch(SW.brand);
+$('sw-ink').innerHTML=swatch(SW.ink);
+$('sw-surface').innerHTML=swatch(SW.surface);
+$('sw-sem').innerHTML=swatch(SW.sem);
+
+$('a11y-rows').innerHTML=A11Y.map(r=>`<tr>
+  <td><b style="color:var(--ink)">${r[0]}</b></td>
+  <td><code>${r[1]}</code></td>
+  <td><span class="tag red">${r[2]}</span></td>
+  <td><code>${r[3]}</code></td>
+  <td><span class="tag green">${r[4]}</span></td>
+  <td style="color:var(--muted)">${r[5]}</td></tr>`).join('');
+
+$('sem-map').innerHTML=SEMMAP.map(r=>`<tr>
+  <td><span class="tag ${r[0]}">${r[0]}</span></td>
+  <td style="color:var(--ink)">${r[1]}</td>
+  <td style="color:var(--muted)">${r[2]}</td></tr>`).join('');
+
+// 排版
+$('typescale').innerHTML=TYPE.map(t=>`<div class="r">
+  <div class="tok">${t[0]}</div><div class="spec">${t[1]}</div>
+  <div class="demo" style="font-size:${t[1].split(' ')[0]};font-weight:${(t[1].match(/\/\s*(\d{3})/)||[,'400'])[1]}">${t[2]}</div>
+</div>`).join('');
+
+// 间距
+$('spacing').innerHTML=SPACING.map(([t,v])=>`<div class="scalebox">
+  <div class="b" style="width:${v}px;height:${Math.max(v,10)}px"></div><span>${v}</span>
+  <span style="color:var(--faint);font-size:10px">${t}</span></div>`).join('');
+
+$('radius').innerHTML=RADIUS.map(([t,v,u])=>`<div class="scalebox">
+  <div class="b" style="width:56px;height:56px;border-radius:${v}px"></div>
+  <span>${v===999?'full':v+'px'}</span>
+  <span style="color:var(--faint);font-size:10px">${u}</span></div>`).join('');
+
+$('elev').innerHTML=ELEV.map(([n,u,s])=>`<div class="e" style="box-shadow:${s}"><b>${n.split(' ')[0]}</b>${u}<div style="font-family:var(--font-mono);font-size:10.5px;color:var(--faint);margin-top:6px">${n.split(' ')[1]}</div></div>`).join('');
+
+$('layout-rows').innerHTML=LAYOUT.map(r=>`<tr><td><code>${r[0]}</code></td><td style="color:var(--ink);font-weight:600">${r[1]}</td><td style="color:var(--muted)">${r[2]}</td></tr>`).join('');
+
+// 组件
+$('components').innerHTML=COMPONENTS.map((c,i)=>`
+  <h3 class="sub">${c[0]}</h3>
+  <p class="note" style="margin:0 0 10px">${c[1]}</p>
+  <div class="demo-area"><div class="demo-row">${c[2]}</div></div>
+  <div class="snippet"><button class="cp" data-i="${i}">复制</button><pre id="code-${i}">${esc(c[2])}</pre></div>
+`).join('');
+
+// 模式
+$('patterns').innerHTML=PATTERNS.map((p,i)=>`
+  <h3 class="sub">${p[0]}</h3>
+  <p class="note" style="margin:0 0 10px">${p[1]}</p>
+  <div class="demo-area">
+    <ul style="padding-left:20px;margin:0">${p[2].map(x=>`<li style="font-size:13px;color:var(--body);line-height:2">${x}</li>`).join('')}</ul>
+  </div>
+  <div class="snippet"><button class="cp" data-i="p${i}">复制</button><pre id="code-p${i}">${esc(p[3])}</pre></div>
+`).join('');
+
+// 移植
+$('adopt').innerHTML=ADOPT.map((a,i)=>`
+  <div class="card u-mb3"><div class="card-body" style="display:flex;gap:16px;align-items:flex-start">
+    <div style="width:34px;height:34px;border-radius:9px;background:var(--primary-soft);color:var(--primary);display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">${i+1}</div>
+    <div><div style="font-size:14px;font-weight:600;color:var(--ink);margin-bottom:6px">${a[0]}</div>
+    <div style="font-size:13px;color:var(--body);line-height:1.85">${a[1]}</div></div>
+  </div></div>`).join('');
+
+// 复制
+document.addEventListener('click',e=>{
+  const b=e.target.closest('.cp'); if(!b) return;
+  const txt=document.getElementById('code-'+b.dataset.i).textContent;
+  navigator.clipboard.writeText(txt).then(()=>showToast('代码片段已复制到剪贴板'))
+    .catch(()=>showToast('复制失败，请手动选择',true));
+});
+
+let tt;
+function showToast(msg,err){
+  const t=$('toast'); $('toastMsg').textContent=msg;
+  t.classList.toggle('err',!!err); t.classList.add('show');
+  clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2500);
+}
+</script>
+</body>
+</html>
