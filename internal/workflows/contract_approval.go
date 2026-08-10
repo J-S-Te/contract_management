@@ -177,7 +177,10 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 	switch command.Action {
 	case ActionApprove:
 		node.ApprovedBy[command.ActorUserID] = true
-		passed := node.Node.Countersign == approval.CountersignAny
+		// Rule nodes are role-based or-sign nodes: when a role has multiple directors,
+		// any one director may approve and advance the workflow. Requiring every
+		// assignee is reserved for an explicit add-sign all-sign operation.
+		passed := node.Node.Countersign == approval.CountersignAny || (command.RoleNodeOrSign && len(node.AddedSignerIDs) == 0)
 		if !passed {
 			passed = true
 			for _, id := range node.Node.AssigneeIDs {
@@ -207,6 +210,9 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 			if !contains(node.Node.AssigneeIDs, target) {
 				node.Node.AssigneeIDs = append(node.Node.AssigneeIDs, target)
 			}
+			if !contains(node.AddedSignerIDs, target) {
+				node.AddedSignerIDs = append(node.AddedSignerIDs, target)
+			}
 		}
 		node.Node.Countersign = command.Countersign
 		return true, false, nil
@@ -218,6 +224,12 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 		for i, id := range node.Node.AssigneeIDs {
 			if id == command.ActorUserID {
 				node.Node.AssigneeIDs[i] = targets[0]
+				break
+			}
+		}
+		for i, id := range node.AddedSignerIDs {
+			if id == command.ActorUserID {
+				node.AddedSignerIDs[i] = targets[0]
 				break
 			}
 		}

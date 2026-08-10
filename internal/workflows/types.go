@@ -77,6 +77,7 @@ type ApprovalCommand struct {
 	Action           CommandAction            `json:"action"`
 	ActorUserID      string                   `json:"actor_user_id"`
 	ActorDisplayName string                   `json:"actor_display_name"`
+	RoleNodeOrSign   bool                     `json:"role_node_or_sign,omitempty"`
 	Comment          string                   `json:"comment,omitempty"`
 	TargetUserIDs    []string                 `json:"target_user_ids,omitempty"`
 	Countersign      approval.CountersignMode `json:"countersign,omitempty"`
@@ -85,11 +86,12 @@ type ApprovalCommand struct {
 }
 
 type RuntimeNode struct {
-	Node        approval.Node       `json:"node"`
-	Status      approval.NodeStatus `json:"status"`
-	ApprovedBy  map[string]bool     `json:"approved_by"`
-	StartedAt   time.Time           `json:"started_at,omitempty"`
-	CompletedAt time.Time           `json:"completed_at,omitempty"`
+	Node           approval.Node       `json:"node"`
+	Status         approval.NodeStatus `json:"status"`
+	ApprovedBy     map[string]bool     `json:"approved_by"`
+	AddedSignerIDs []string            `json:"added_signer_ids,omitempty"`
+	StartedAt      time.Time           `json:"started_at,omitempty"`
+	CompletedAt    time.Time           `json:"completed_at,omitempty"`
 }
 
 type ApprovalState struct {

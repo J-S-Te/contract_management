@@ -169,6 +169,29 @@ func TestAnySignNodeAdvancesAfterOneOfMultipleAssigneesApproves(t *testing.T) {
 	require.Equal(t, 1, state.CurrentNodeIndex)
 }
 
+func TestRoleNodeWithLegacyAllSignAdvancesAfterOneDirectorApproves(t *testing.T) {
+	state := ApprovalState{
+		Status: approval.StatusRunning,
+		Nodes: []RuntimeNode{{
+			Node: approval.Node{
+				ID: "finance-director", RoleCode: "finance_director",
+				AssigneeIDs: []string{"finance-director-1", "finance-director-2"},
+				Countersign: approval.CountersignAll,
+			},
+			Status: approval.NodeActive, ApprovedBy: map[string]bool{},
+		}},
+	}
+
+	changed, terminal, err := applyContractCommand(&state, ApprovalCommand{
+		Action: ActionApprove, ActorUserID: "finance-director-1", RoleNodeOrSign: true, OccurredAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, terminal)
+	require.Equal(t, approval.NodeApproved, state.Nodes[0].Status)
+	require.Equal(t, 1, state.CurrentNodeIndex)
+}
+
 func TestAddedSignerApprovalContinuesAllSignNodeNormally(t *testing.T) {
 	state := ApprovalState{Status: approval.StatusRunning, Nodes: []RuntimeNode{{
 		Node:   approval.Node{ID: "review", AssigneeIDs: []string{"original"}, Countersign: approval.CountersignAll},

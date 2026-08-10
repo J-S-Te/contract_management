@@ -378,6 +378,10 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 			return "", err
 		}
 	}
+	// Approval-rule nodes assign every active user of a director role. Carry the
+	// or-sign policy on new commands so running workflows do not need historical
+	// decisions rewritten when this behavior is introduced.
+	command.RoleNodeOrSign = command.Action == workflows.ActionApprove
 	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
 	if err := s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command); err != nil {
 		return "", err
