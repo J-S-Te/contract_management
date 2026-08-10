@@ -419,6 +419,9 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 				if err := insertLifecycle(tx, activityInput, contract.StatusApproved, contract.StatusActive, actor, "approval completed; contract activated", in.ApprovalID+":activated"); err != nil {
 					return err
 				}
+				if err := enqueueProjectActivation(tx, in.TenantID, in.ContractID); err != nil {
+					return err
+				}
 			} else {
 				if err := updateStatus(tx, in.TenantID, in.ContractID, contract.StatusPending, contract.StatusDraft, actor); err != nil {
 					return err

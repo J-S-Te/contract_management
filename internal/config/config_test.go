@@ -103,3 +103,12 @@ func TestLoadRejectsPlatformURLWithPath(t *testing.T) {
 		t.Fatalf("Load() error = %v, want invalid platform URL error", err)
 	}
 }
+
+func TestProjectIntegrationRequiresHTTPOrigin(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("PROJECT_INTEGRATION_ENABLED", "true")
+	t.Setenv("PROJECT_API_BASE_URL", "http://project-api:8082/internal")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PROJECT_API_BASE_URL") {
+		t.Fatalf("URL error = %v", err)
+	}
+}

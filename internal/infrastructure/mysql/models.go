@@ -204,6 +204,23 @@ type notificationOutboxRecord struct {
 
 func (notificationOutboxRecord) TableName() string { return "con_notification_outbox" }
 
+type projectDeliveryOutboxRecord struct {
+	ID              string `gorm:"primaryKey"`
+	TenantID        string
+	ContractID      string
+	ContractVersion uint64
+	PayloadJSON     []byte `gorm:"type:json"`
+	DeliveryStatus  string
+	Attempts        uint
+	NextAttemptAt   time.Time
+	LockedAt        *time.Time
+	DeliveredAt     *time.Time
+	LastError       *string
+	CreatedAt       time.Time
+}
+
+func (projectDeliveryOutboxRecord) TableName() string { return "con_project_delivery_outbox" }
+
 func stringPtr(value string) *string {
 	if value == "" {
 		return nil

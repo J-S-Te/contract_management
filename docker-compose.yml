@@ -8,6 +8,7 @@ x-contract-environment: &contract-environment
     PLATFORM_BASE_URL: http://platform-api:8080
     OIDC_BACKCHANNEL_BASE_URL: http://platform-api:8080
     TEMPORAL_ADDRESS: temporal:7233
+    PROJECT_API_BASE_URL: http://project-api:8082
     CONTRACT_RUN_WORKER_WITH_API: "true"
     GIN_MODE: release
 

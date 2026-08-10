@@ -10,6 +10,7 @@
 - Temporal 长流程：72 小时节点超时、定时提醒、通过、拒绝、会签/或签、转交、退回历史节点、申请人撤回、评论和催办。
 - 提交时固化规则版本、节点和合同 SHA-256；运行中规则变更不影响既有流程，审批完成前合同内容发生变化会阻断生效。
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
+- 合同激活事务同步写入项目投递 Outbox；API/Worker 通过受控内部网络异步投递，失败指数退避重试，项目侧按合同版本幂等建项。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
 - 按平台接入规范实现 OIDC Authorization Code + PKCE：独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验平台签发的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`，不共享平台 `bp_session`。
 - 本地会话通过轮换 Refresh Token 定期取得最新授权快照；角色撤销、权限变更和授权版本更新默认在一分钟内生效。
@@ -103,6 +104,8 @@ docker compose --env-file .env.local up -d --build
 ```
 
 Compose 会先等待 MySQL 健康，再由一次性 `migrate` 服务按编号执行所有待完成迁移；只有迁移成功后 API 才会启动。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关仅把 `/contract_management/api/`、`/contract_management/auth/` 等后端路径转发至本服务并去除前缀，其余 `/contract_management/` 页面由统一前端承载。
+
+启用合同到项目对接时，设置 `PROJECT_INTEGRATION_ENABLED=true` 和 `PROJECT_API_BASE_URL`，项目服务设置 `CONTRACT_INTEGRATION_ENABLED=true`。Compose 内项目地址为 `http://project-api:8082`，内部接口不得通过公网或门户网关暴露。投递达到 `PROJECT_INTEGRATION_MAX_ATTEMPTS` 后进入 `dead` 状态，需运维核对网络和项目接口后重新置为 `pending`。
 
 审批人根据基础平台中合同应用的有效角色动态解析，直接用户授权、组织授权和岗位继承均会生效。同一角色有多人时采用或签，任一人处理后进入下一节点。不要在镜像或仓库中保存 Temporal API Key 或数据库密码。
 

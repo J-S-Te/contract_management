@@ -43,6 +43,10 @@ type Config struct {
 	NodeTimeout               time.Duration
 	ReminderInterval          time.Duration
 	ArchiveCron               string
+	ProjectIntegrationEnabled bool
+	ProjectAPIBaseURL         string
+	ProjectIntegrationPoll    time.Duration
+	ProjectIntegrationRetries uint
 }
 
 func Load() (Config, error) {
@@ -60,8 +64,8 @@ func Load() (Config, error) {
 		PlatformCatalogClientID: os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
 		PlatformCatalogSecret:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
 		TemporalAddress:         env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
-		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"),
-		ArchiveCron:    env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
+		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
+		ProjectAPIBaseURL: env("PROJECT_API_BASE_URL", "http://localhost:8082"),
 	}
 	var err error
 	if c.NodeTimeout, err = duration("APPROVAL_NODE_TIMEOUT", 72*time.Hour); err != nil {
@@ -89,6 +93,17 @@ func Load() (Config, error) {
 	if c.PlatformCatalogSync, err = strconv.ParseBool(env("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED: %w", err)
 	}
+	if c.ProjectIntegrationEnabled, err = strconv.ParseBool(env("PROJECT_INTEGRATION_ENABLED", "false")); err != nil {
+		return c, fmt.Errorf("PROJECT_INTEGRATION_ENABLED: %w", err)
+	}
+	if c.ProjectIntegrationPoll, err = duration("PROJECT_INTEGRATION_POLL_INTERVAL", 2*time.Second); err != nil {
+		return c, err
+	}
+	retries, parseErr := strconv.ParseUint(env("PROJECT_INTEGRATION_MAX_ATTEMPTS", "20"), 10, 32)
+	if parseErr != nil || retries == 0 {
+		return c, fmt.Errorf("PROJECT_INTEGRATION_MAX_ATTEMPTS must be a positive integer")
+	}
+	c.ProjectIntegrationRetries = uint(retries)
 	if err := c.validate(); err != nil {
 		return c, err
 	}
@@ -98,6 +113,14 @@ func Load() (Config, error) {
 func (c Config) validate() error {
 	if strings.TrimSpace(c.HTTPAddress) == "" {
 		return fmt.Errorf("HTTP_ADDRESS must not be empty")
+	}
+	if c.ProjectIntegrationEnabled {
+		if !validHTTPOrigin(c.ProjectAPIBaseURL) {
+			return fmt.Errorf("PROJECT_API_BASE_URL must be an HTTP(S) origin")
+		}
+	}
+	if c.ProjectIntegrationPoll <= 0 {
+		return fmt.Errorf("PROJECT_INTEGRATION_POLL_INTERVAL must be positive")
 	}
 	platformURL, err := url.ParseRequestURI(c.PlatformBaseURL)
 	if err != nil || (platformURL.Scheme != "http" && platformURL.Scheme != "https") ||
@@ -168,6 +191,11 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func validHTTPOrigin(value string) bool {
+	parsed, err := url.ParseRequestURI(value)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" && (parsed.Path == "" || parsed.Path == "/")
 }
 
 func env(key, fallback string) string {

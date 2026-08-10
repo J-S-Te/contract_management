@@ -43,7 +43,14 @@ type SystemInfo struct {
 }
 
 type ServiceItem struct {
+	SourceID    string       `json:"source_id,omitempty"`
+	Name        string       `json:"name,omitempty"`
 	ServiceType string       `json:"service_type"`
+	Site        string       `json:"site,omitempty"`
+	Batch       string       `json:"batch,omitempty"`
+	Category    string       `json:"category,omitempty"`
+	Requirement string       `json:"requirement,omitempty"`
+	TestMode    string       `json:"test_mode,omitempty"`
 	Systems     []SystemInfo `json:"systems,omitempty"`
 }
 

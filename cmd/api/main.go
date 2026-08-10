@@ -15,6 +15,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/config"
 	store "github.com/j-s-te/contract-management/internal/infrastructure/mysql"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
+	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	"github.com/j-s-te/contract-management/internal/transport/httpapi"
 )
 
@@ -48,6 +49,10 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
+	if cfg.ProjectIntegrationEnabled {
+		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger}
+		go dispatcher.Run(ctx)
+	}
 	service := &application.Service{
 		Repo:             repository,
 		Templates:        repository,

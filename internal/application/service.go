@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
@@ -243,7 +244,8 @@ func validServiceItems(items []contract.ServiceItem) bool {
 		return false
 	}
 	for _, item := range items {
-		if item.ServiceType == "" || !validSystems(item.Systems) {
+		mode := strings.ToUpper(strings.TrimSpace(item.TestMode))
+		if item.ServiceType == "" || !validSystems(item.Systems) || (mode != "" && mode != "STANDARD" && mode != "PENETRATION") {
 			return false
 		}
 	}
