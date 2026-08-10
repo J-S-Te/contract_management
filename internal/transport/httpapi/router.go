@@ -746,6 +746,8 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
 	case errors.Is(err, application.ErrForbidden):
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
+	case errors.Is(err, application.ErrApprovalTargetForbidden):
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_APPROVAL_TARGET_FORBIDDEN", "只能加签具有合同审批权限的用户", nil)
 	case errors.Is(err, apperrors.ErrNotFound):
 		writeEnvelopeError(c, http.StatusNotFound, "CON_NOT_FOUND", "资源不存在", nil)
 	case errors.Is(err, apperrors.ErrVersionConflict):

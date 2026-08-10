@@ -431,6 +431,48 @@ func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 	}
 }
 
+func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	repository := &recordingRepository{approvalMeta: approval.Meta{
+		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
+		WorkflowID: "workflow-1", RunID: "run-1",
+	}}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
+		UserDirectory: []UserReference{
+			{UserID: "sales-1", Roles: []string{"sales"}},
+			{UserID: "specialist-1", Roles: []string{"contract_specialist"}},
+		},
+	}
+
+	for _, target := range []string{"sales-1", "specialist-1", "unknown-user"} {
+		if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{target}}); !errors.Is(err, ErrApprovalTargetForbidden) {
+			t.Fatalf("Command(add-sign %q) error = %v, want ErrApprovalTargetForbidden", target, err)
+		}
+	}
+}
+
+func TestCommandAllowsAddSignTargetWithApprovalProcessRole(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("SignalWorkflow", mock.Anything, "workflow-1", "run-1", workflows.CommandSignalName, mock.MatchedBy(func(command workflows.ApprovalCommand) bool {
+		return command.Action == workflows.ActionAddSign && len(command.TargetUserIDs) == 1 && command.TargetUserIDs[0] == "finance-1"
+	})).Return(nil)
+	repository := &recordingRepository{approvalMeta: approval.Meta{
+		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
+		WorkflowID: "workflow-1", RunID: "run-1",
+	}}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
+		UserDirectory: []UserReference{{UserID: "finance-1", Roles: []string{"finance_director"}}},
+	}
+
+	if commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{"finance-1"}}); err != nil || commandID == "" {
+		t.Fatalf("Command(add-sign) commandID=%q error=%v", commandID, err)
+	}
+}
+
 func TestGetApprovalDetailRejectsUnrelatedUser(t *testing.T) {
 	repository := &recordingRepository{approvalMeta: approval.Meta{ApplicantUserID: "applicant-1"}}
 	service := &Service{Repo: repository}

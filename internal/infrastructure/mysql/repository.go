@@ -457,10 +457,17 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 
 func (r *Repository) CreateNotification(ctx context.Context, in workflows.NotifyActivityInput) error {
 	now := time.Now().UTC()
-	records := make([]notificationOutboxRecord, 0, len(in.Recipients))
+	records := make([]notificationOutboxRecord, 0, len(in.Recipients)+len(in.RoleRecipients))
 	for _, recipient := range uniqueStrings(in.Recipients) {
 		records = append(records, notificationOutboxRecord{
 			ID: newID(), TenantID: in.TenantID, RecipientKey: "user:" + recipient, RecipientUserID: stringPtr(recipient),
+			NotificationType: in.Type, Title: in.Title, Content: in.Content, ContractID: stringPtr(in.ContractID),
+			ApprovalID: stringPtr(in.ApprovalID), DedupeKey: in.DedupeKey, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now,
+		})
+	}
+	for _, roleCode := range uniqueStrings(in.RoleRecipients) {
+		records = append(records, notificationOutboxRecord{
+			ID: newID(), TenantID: in.TenantID, RecipientKey: "role:" + roleCode, RecipientRoleCode: stringPtr(roleCode),
 			NotificationType: in.Type, Title: in.Title, Content: in.Content, ContractID: stringPtr(in.ContractID),
 			ApprovalID: stringPtr(in.ApprovalID), DedupeKey: in.DedupeKey, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now,
 		})

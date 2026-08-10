@@ -46,6 +46,11 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 			if err := notifyRecipients(ctx, actx, input.TenantID, state, "approved", "合同审批已通过", "合同已批准并生效", "approved", []string{input.ApplicantUserID}); err != nil {
 				return state, err
 			}
+			if workflow.GetVersion(ctx, "contract-specialist-signing-notification", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+				if err := notifyRoles(ctx, actx, input.TenantID, state, "signing_pending", "合同审批已通过，待办理签署", "有一份已生效合同等待登记寄出和回传跟踪", "contract-specialist-signing", []string{"contract_specialist"}); err != nil {
+					return state, err
+				}
+			}
 			break
 		}
 

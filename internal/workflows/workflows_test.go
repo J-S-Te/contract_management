@@ -76,6 +76,9 @@ func TestContractApprovalWorkflowApprovesAllNodes(t *testing.T) {
 	require.Equal(t, []string{"sales-user"}, store.notifications[0].Recipients)
 	require.Equal(t, []string{"tech-user"}, store.notifications[1].Recipients)
 	require.Equal(t, []string{"finance-user"}, store.notifications[2].Recipients)
+	require.Equal(t, []string{"owner"}, store.notifications[3].Recipients)
+	require.Equal(t, []string{"contract_specialist"}, store.notifications[4].RoleRecipients)
+	require.Equal(t, "signing_pending", store.notifications[4].Type)
 }
 
 func TestContractApprovalWorkflowWithdraws(t *testing.T) {
@@ -159,6 +162,33 @@ func TestAnySignNodeAdvancesAfterOneOfMultipleAssigneesApproves(t *testing.T) {
 	changed, terminal, err := applyContractCommand(&state, ApprovalCommand{
 		Action: ActionApprove, ActorUserID: "director-1", OccurredAt: time.Now().UTC(),
 	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, terminal)
+	require.Equal(t, approval.NodeApproved, state.Nodes[0].Status)
+	require.Equal(t, 1, state.CurrentNodeIndex)
+}
+
+func TestAddedSignerApprovalContinuesAllSignNodeNormally(t *testing.T) {
+	state := ApprovalState{Status: approval.StatusRunning, Nodes: []RuntimeNode{{
+		Node:   approval.Node{ID: "review", AssigneeIDs: []string{"original"}, Countersign: approval.CountersignAll},
+		Status: approval.NodeActive, ApprovedBy: map[string]bool{},
+	}}}
+
+	changed, terminal, err := applyContractCommand(&state, ApprovalCommand{Action: ActionAddSign, ActorUserID: "original", TargetUserIDs: []string{"added"}, Countersign: approval.CountersignAll})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, terminal)
+	require.ElementsMatch(t, []string{"original", "added"}, state.Nodes[0].Node.AssigneeIDs)
+
+	changed, terminal, err = applyContractCommand(&state, ApprovalCommand{Action: ActionApprove, ActorUserID: "added", OccurredAt: time.Now().UTC()})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, terminal)
+	require.Equal(t, approval.NodeActive, state.Nodes[0].Status)
+	require.Equal(t, 0, state.CurrentNodeIndex)
+
+	changed, terminal, err = applyContractCommand(&state, ApprovalCommand{Action: ActionApprove, ActorUserID: "original", OccurredAt: time.Now().UTC()})
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.False(t, terminal)

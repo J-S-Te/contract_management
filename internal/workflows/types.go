@@ -134,5 +134,6 @@ type CompleteApprovalActivityInput struct {
 type NotifyActivityInput struct {
 	TenantID, ApprovalID, ContractID, Type string
 	Recipients                             []string
+	RoleRecipients                         []string
 	Title, Content, DedupeKey              string
 }

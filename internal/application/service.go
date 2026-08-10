@@ -373,6 +373,11 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 			return "", ErrForbidden
 		}
 	}
+	if command.Action == workflows.ActionAddSign {
+		if err := validateApprovalProcessTargets(actor.UserDirectory, command.TargetUserIDs); err != nil {
+			return "", err
+		}
+	}
 	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
 	if err := s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command); err != nil {
 		return "", err
@@ -596,6 +601,37 @@ func approversForRole(directory []UserReference, roleCode string) []string {
 	return unique(result)
 }
 
+func validateApprovalProcessTargets(directory []UserReference, targetUserIDs []string) error {
+	targets := unique(targetUserIDs)
+	if len(targets) == 0 {
+		return ErrApprovalTargetForbidden
+	}
+	eligible := make(map[string]bool, len(directory))
+	for _, user := range directory {
+		for _, role := range user.Roles {
+			if roleCanProcessApproval(role) {
+				eligible[user.UserID] = true
+				break
+			}
+		}
+	}
+	for _, target := range targets {
+		if !eligible[target] {
+			return ErrApprovalTargetForbidden
+		}
+	}
+	return nil
+}
+
+func roleCanProcessApproval(roleCode string) bool {
+	switch roleCode {
+	case "admin", "sales_director", "tech_director", "finance_director":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) taskQueue() string {
 	if s.TaskQueue == "" {
 		return workflows.TaskQueue
@@ -614,6 +650,7 @@ func unique(values []string) []string {
 }
 
 var (
-	ErrForbidden  = errors.New("forbidden")
-	ErrValidation = errors.New("validation failed")
+	ErrForbidden               = errors.New("forbidden")
+	ErrValidation              = errors.New("validation failed")
+	ErrApprovalTargetForbidden = errors.New("approval target cannot process contract approvals")
 )

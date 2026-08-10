@@ -77,3 +77,8 @@ func notifyRecipients(ctx, actx workflow.Context, tenantID string, state Approva
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, Recipients: unique(recipients), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
 	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
 }
+
+func notifyRoles(ctx, actx workflow.Context, tenantID string, state ApprovalState, typ, title, content, keySuffix string, roles []string) error {
+	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, RoleRecipients: unique(roles), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
+	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
+}
