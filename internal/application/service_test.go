@@ -410,6 +410,27 @@ func TestGetApprovalDetailReturnsContractToAssignedApprover(t *testing.T) {
 	}
 }
 
+func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("SignalWorkflow", mock.Anything, "workflow-1", "run-1", workflows.CommandSignalName, mock.MatchedBy(func(command workflows.ApprovalCommand) bool {
+		return command.CommandID != "" && command.ActorUserID == "approver-1" && command.Action == workflows.ActionApprove
+	})).Return(nil)
+	repository := &recordingRepository{approvalMeta: approval.Meta{
+		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
+		WorkflowID: "workflow-1", RunID: "run-1",
+	}}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true}}
+
+	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	if err != nil {
+		t.Fatalf("Command() error = %v", err)
+	}
+	if commandID == "" {
+		t.Fatal("Command() returned an empty command id")
+	}
+}
+
 func TestGetApprovalDetailRejectsUnrelatedUser(t *testing.T) {
 	repository := &recordingRepository{approvalMeta: approval.Meta{ApplicantUserID: "applicant-1"}}
 	service := &Service{Repo: repository}

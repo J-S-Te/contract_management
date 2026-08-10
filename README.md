@@ -89,7 +89,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | GET/POST | `/api/v1/approval-rules` | `approval.view` / `approval_rule.manage` | 查询或新增审批规则 |
 | PUT/DELETE | `/api/v1/approval-rules/{id}` | `approval_rule.manage` | 按 `version` 乐观锁更新或删除规则 |
 
-动作接口返回 `202` 表示 Signal 已由 Temporal 接收。最终状态通过审批详情查询；持久化待办和动作记录由 Activity 最终一致地更新。
+动作接口返回 `202` 表示 Signal 已由 Temporal 接收，并在响应中返回唯一 `command_id`。客户端必须在审批详情的动作记录中观察到相同 `command_id` 后才能提示处理成功；终态操作还需等待合同状态完成同步。审批中心在页面可见时按秒同步发起列表、待办和已打开详情，持久化待办和动作记录仍由 Activity 事务性更新。
 
 DOCX 模板变量可直接使用中文字段，例如 `{{客户名称}}`；也兼容 `{{field_name:中文字段名}}`、带默认值的 `{{发票类型 '专票'}}` 和原型模板中的 `{{金额_大写 合同金额}}`。变量可位于正文、页眉或页脚，并允许被 Word 拆分为多个文本片段。创建合同请求通过 `template_id` 和 `template_values` 提交字段值，服务端会重新渲染，不能用客户端预览内容替代。
 

@@ -166,7 +166,7 @@ func (r *Repository) ListApprovalActions(ctx context.Context, tenantID, approval
 	result := make([]approval.Action, 0, len(records))
 	for _, record := range records {
 		result = append(result, approval.Action{
-			ID: record.ID, NodeID: valueOrEmpty(record.NodeID), Action: record.Action,
+			ID: record.ID, CommandID: record.CommandID, NodeID: valueOrEmpty(record.NodeID), Action: record.Action,
 			ActorUserID: record.ActorUserID, ActorDisplayName: record.ActorDisplayName, Comment: valueOrEmpty(record.Comment), OccurredAt: record.OccurredAt,
 		})
 	}

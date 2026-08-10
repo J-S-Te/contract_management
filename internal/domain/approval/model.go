@@ -95,6 +95,7 @@ type Summary struct {
 
 type Action struct {
 	ID               string    `json:"id"`
+	CommandID        string    `json:"command_id"`
 	NodeID           string    `json:"node_id,omitempty"`
 	Action           string    `json:"action"`
 	ActorUserID      string    `json:"actor_user_id"`

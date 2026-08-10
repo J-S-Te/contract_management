@@ -347,34 +347,37 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
 }
 
-func (s *Service) Command(ctx context.Context, actor Principal, approvalID string, command workflows.ApprovalCommand) error {
+func (s *Service) Command(ctx context.Context, actor Principal, approvalID string, command workflows.ApprovalCommand) (string, error) {
 	meta, err := s.Repo.GetApprovalMeta(ctx, actor.TenantID, approvalID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if meta.Status != approval.StatusRunning {
-		return apperrors.ErrStateConflict
+		return "", apperrors.ErrStateConflict
 	}
 	switch command.Action {
 	case workflows.ActionWithdraw:
 		if meta.ApplicantUserID != actor.UserID {
-			return ErrForbidden
+			return "", ErrForbidden
 		}
 	case workflows.ActionUrge:
 		if meta.ApplicantUserID != actor.UserID && !actor.Has("approval.manage") {
-			return ErrForbidden
+			return "", ErrForbidden
 		}
 	case workflows.ActionComment:
 		if !actor.Has("approval.view") && meta.ApplicantUserID != actor.UserID {
-			return ErrForbidden
+			return "", ErrForbidden
 		}
 	default:
 		if !actor.Has("approval.process") {
-			return ErrForbidden
+			return "", ErrForbidden
 		}
 	}
 	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
-	return s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command)
+	if err := s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command); err != nil {
+		return "", err
+	}
+	return command.CommandID, nil
 }
 
 func (s *Service) GetApprovalState(ctx context.Context, actor Principal, approvalID string) (workflows.ApprovalState, error) {

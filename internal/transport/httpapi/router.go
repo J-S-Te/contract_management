@@ -685,11 +685,12 @@ func (h *Handler) command(pathAction string) gin.HandlerFunc {
 			return
 		}
 		command := workflows.ApprovalCommand{Action: actions[pathAction], Comment: strings.TrimSpace(body.Comment), TargetUserIDs: body.TargetUserIDs, Countersign: body.Countersign, TargetNodeID: body.TargetNodeID}
-		if err := h.service.Command(c.Request.Context(), principal(c), c.Param("approvalID"), command); err != nil {
+		commandID, err := h.service.Command(c.Request.Context(), principal(c), c.Param("approvalID"), command)
+		if err != nil {
 			writeError(c, err)
 			return
 		}
-		writeData(c, http.StatusAccepted, map[string]string{"status": "accepted"})
+		writeData(c, http.StatusAccepted, map[string]string{"status": "accepted", "command_id": commandID})
 	}
 }
 
