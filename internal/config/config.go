@@ -52,7 +52,7 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
-		OIDCIssuer: env("OIDC_ISSUER", "http://localhost:8080"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
+		OIDCIssuer: env("OIDC_ISSUER", "http://47.111.20.119:18090/realms/basic-platform"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
 		OIDCBackchannelBaseURL: os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),

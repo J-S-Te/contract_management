@@ -13,7 +13,7 @@
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - 合同激活事务同步写入项目投递 Outbox；API/Worker 通过受控内部网络异步投递，失败指数退避重试，项目侧按合同版本幂等建项。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
-- 按平台接入规范实现 OIDC Authorization Code + PKCE：独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验平台签发的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`，不共享平台 `bp_session`。
+- 使用 `github.com/coreos/go-oidc/v3` 对接 Keycloak OIDC Authorization Code + PKCE：通过 discovery 获取授权、Token、UserInfo、JWKS 和登出端点，独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验 Keycloak 映射的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`。
 - 本地会话通过轮换 Refresh Token 定期取得最新授权快照；角色撤销、权限变更和授权版本更新默认在一分钟内生效。
 - 启用 `PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED` 后，API 启动时使用独立机器 Client 将内嵌权限清单发布到平台；同步失败时拒绝启动，避免运行时权限与平台目录漂移。
 - 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
@@ -100,7 +100,7 @@ DOCX 模板变量可直接使用中文字段，例如 `{{客户名称}}`；也�
 
 ```bash
 cp .env.example .env.local
-# 填入平台“一键接入”返回的 Client ID、一次性 Secret、Tenant ID 和精确回调地址。
+# 填入 Keycloak Client Secret、Tenant ID 和在 Keycloak 登记的精确回调地址。
 docker compose --env-file .env.local up -d --build
 ```
 
@@ -112,7 +112,7 @@ Compose 会先等待 MySQL 健康，再由一次性 `migrate` 服务按编号执
 
 审批节点角色编码必须与权限清单一致：`admin`、`sales_director`、`tech_director`、`finance_director`。同一合同版本最多只能存在一个运行中的关键状态变更审批。
 
-OIDC 浏览器 Client 与审计机器 Client 必须分离。浏览器 OIDC 配置来自平台“一键接入”，审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。通知 outbox 不会直接调用平台通知控制面，因为当前机器 Token 的已发布权限边界仅包含审计写入。
+OIDC 浏览器 Client 与审计机器 Client 必须分离。浏览器登录使用 Keycloak realm `basic-platform`；Issuer 为 `http://47.111.20.119:18090/realms/basic-platform`，不能只填写 Keycloak 根地址。Keycloak Client 必须配置精确回调地址，并将 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 映射到 ID Token 和 UserInfo。审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。
 
 平台管理员应通过“子系统一键接入”注册 `contract_management/dev`，公开 BaseURL 使用门户地址，UpstreamURL 使用 `http://contract-api:8081`，路径前缀使用 `/contract_management`。首次启用审计时，应另行创建 `service + client_secret_basic + client_credentials` 客户端并授予 `audit.ingest` scope。
 

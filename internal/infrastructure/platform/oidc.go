@@ -61,7 +61,7 @@ type localSession struct {
 	ExpiresAt      time.Time
 }
 
-type platformIDTokenClaims struct {
+type oidcIDTokenClaims struct {
 	Subject        string   `json:"sub"`
 	Nonce          string   `json:"nonce"`
 	TenantID       string   `json:"tenant_id"`
@@ -71,7 +71,7 @@ type platformIDTokenClaims struct {
 	AuthzRevision  uint64   `json:"authz_revision"`
 }
 
-type platformUserInfoClaims struct {
+type oidcUserInfoClaims struct {
 	Subject            string                      `json:"sub"`
 	Name               string                      `json:"name"`
 	PreferredUsername  string                      `json:"preferred_username"`
@@ -82,16 +82,17 @@ type platformUserInfoClaims struct {
 // OIDCAuthenticator owns the contract system's OIDC login transactions and independent local
 // sessions. Browser requests never reuse the platform bp_session cookie.
 type OIDCAuthenticator struct {
-	options      OIDCOptions
-	provider     *oidc.Provider
-	verifier     *oidc.IDTokenVerifier
-	oauth2Config oauth2.Config
-	httpClient   *http.Client
-	now          func() time.Time
-	refresh      func(context.Context, *localSession, time.Time) error
-	mutex        sync.Mutex
-	transactions map[string]loginTransaction
-	sessions     map[string]*localSession
+	options            OIDCOptions
+	provider           *oidc.Provider
+	verifier           *oidc.IDTokenVerifier
+	oauth2Config       oauth2.Config
+	endSessionEndpoint string
+	httpClient         *http.Client
+	now                func() time.Time
+	refresh            func(context.Context, *localSession, time.Time) error
+	mutex              sync.Mutex
+	transactions       map[string]loginTransaction
+	sessions           map[string]*localSession
 }
 
 func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthenticator, error) {
@@ -114,6 +115,12 @@ func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthen
 	if err != nil {
 		return nil, fmt.Errorf("load OIDC discovery: %w", err)
 	}
+	var discovery struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	if err := provider.Claims(&discovery); err != nil {
+		return nil, fmt.Errorf("decode OIDC discovery: %w", err)
+	}
 	authenticator := &OIDCAuthenticator{
 		options: options, provider: provider,
 		verifier: provider.Verifier(&oidc.Config{ClientID: options.ClientID}),
@@ -121,7 +128,8 @@ func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthen
 			ClientID: options.ClientID, ClientSecret: options.ClientSecret,
 			Endpoint: provider.Endpoint(), RedirectURL: options.RedirectURI, Scopes: options.Scopes,
 		},
-		httpClient: httpClient, now: time.Now,
+		endSessionEndpoint: strings.TrimSpace(discovery.EndSessionEndpoint),
+		httpClient:         httpClient, now: time.Now,
 		transactions: make(map[string]loginTransaction), sessions: make(map[string]*localSession),
 	}
 	return authenticator, nil
@@ -235,12 +243,12 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "OIDC ID token verification failed", http.StatusUnauthorized)
 		return
 	}
-	var claims platformIDTokenClaims
+	var claims oidcIDTokenClaims
 	if err := idToken.Claims(&claims); err != nil || claims.Nonce != transaction.Nonce {
 		http.Error(writer, "OIDC ID token claims are invalid", http.StatusUnauthorized)
 		return
 	}
-	principal, err := principalFromPlatformClaims(claims, a.options.TenantID)
+	principal, err := principalFromOIDCClaims(claims, a.options.TenantID)
 	if err != nil {
 		http.Error(writer, "OIDC authorization claims are invalid", http.StatusUnauthorized)
 		return
@@ -290,11 +298,11 @@ func (a *OIDCAuthenticator) refreshSession(ctx context.Context, session *localSe
 	if err != nil {
 		return fmt.Errorf("verify refreshed OIDC ID token: %w", err)
 	}
-	var claims platformIDTokenClaims
+	var claims oidcIDTokenClaims
 	if err := idToken.Claims(&claims); err != nil {
 		return fmt.Errorf("decode refreshed OIDC ID token: %w", err)
 	}
-	principal, err := principalFromPlatformClaims(claims, a.options.TenantID)
+	principal, err := principalFromOIDCClaims(claims, a.options.TenantID)
 	if err != nil {
 		return err
 	}
@@ -329,7 +337,7 @@ func (a *OIDCAuthenticator) loadUserInfo(ctx context.Context, token *oauth2.Toke
 	if err != nil {
 		return "", "", "", nil, fmt.Errorf("load OIDC UserInfo: %w", err)
 	}
-	var claims platformUserInfoClaims
+	var claims oidcUserInfoClaims
 	if err := info.Claims(&claims); err != nil {
 		return "", "", "", nil, fmt.Errorf("decode OIDC UserInfo: %w", err)
 	}
@@ -379,7 +387,7 @@ func (a *OIDCAuthenticator) deleteSession(id string, expected *localSession) {
 	}
 }
 
-func principalFromPlatformClaims(claims platformIDTokenClaims, expectedTenantID string) (application.Principal, error) {
+func principalFromOIDCClaims(claims oidcIDTokenClaims, expectedTenantID string) (application.Principal, error) {
 	if strings.TrimSpace(claims.Subject) == "" || claims.Subject != strings.TrimSpace(claims.Subject) {
 		return application.Principal{}, errors.New("OIDC subject is missing or malformed")
 	}
@@ -436,8 +444,8 @@ func (transport *backchannelTransport) RoundTrip(request *http.Request) (*http.R
 func (a *OIDCAuthenticator) Logout(writer http.ResponseWriter, request *http.Request) {
 	idToken := a.clearLocalSession(writer, request)
 
-	endpoint, err := url.Parse(strings.TrimRight(a.options.Issuer, "/") + "/oauth2/logout")
-	if err != nil {
+	endpoint, err := url.Parse(a.endSessionEndpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
 		http.Redirect(writer, request, a.publicPath("/logged-out"), http.StatusFound)
 		return
 	}

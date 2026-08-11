@@ -94,6 +94,19 @@ func TestLoadAllowsRegisteredApplicationWithoutAuditCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsToKeycloakRealmIssuer(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("OIDC_ISSUER", "")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.OIDCIssuer != "http://47.111.20.119:18090/realms/basic-platform" {
+		t.Fatalf("OIDCIssuer = %q", config.OIDCIssuer)
+	}
+}
+
 func TestLoadRejectsPlatformURLWithPath(t *testing.T) {
 	validEnvironment(t)
 	t.Setenv("PLATFORM_BASE_URL", "https://platform.example.com/internal")

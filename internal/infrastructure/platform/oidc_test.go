@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,49 @@ import (
 	"github.com/j-s-te/contract-management/internal/application"
 	"golang.org/x/oauth2"
 )
+
+func TestNewOIDCAuthenticatorUsesDiscoveredKeycloakEndpoints(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/realms/basic-platform/.well-known/openid-configuration" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(writer, `{
+			"issuer": %q,
+			"authorization_endpoint": %q,
+			"token_endpoint": %q,
+			"userinfo_endpoint": %q,
+			"jwks_uri": %q,
+			"end_session_endpoint": %q
+		}`,
+			server.URL+"/realms/basic-platform",
+			server.URL+"/realms/basic-platform/protocol/openid-connect/auth",
+			server.URL+"/realms/basic-platform/protocol/openid-connect/token",
+			server.URL+"/realms/basic-platform/protocol/openid-connect/userinfo",
+			server.URL+"/realms/basic-platform/protocol/openid-connect/certs",
+			server.URL+"/realms/basic-platform/protocol/openid-connect/logout",
+		)
+	}))
+	defer server.Close()
+
+	authenticator, err := NewOIDCAuthenticator(context.Background(), OIDCOptions{
+		Issuer:       server.URL + "/realms/basic-platform",
+		ClientID:     "contract_management-prod-web",
+		ClientSecret: "secret",
+		RedirectURI:  "http://contract.example.com/contract_management/auth/callback",
+		Scopes:       []string{"openid", "profile"},
+	})
+	if err != nil {
+		t.Fatalf("NewOIDCAuthenticator() error = %v", err)
+	}
+	if authenticator.oauth2Config.Endpoint.AuthURL != server.URL+"/realms/basic-platform/protocol/openid-connect/auth" ||
+		authenticator.oauth2Config.Endpoint.TokenURL != server.URL+"/realms/basic-platform/protocol/openid-connect/token" ||
+		authenticator.endSessionEndpoint != server.URL+"/realms/basic-platform/protocol/openid-connect/logout" {
+		t.Fatalf("discovered endpoints = %#v, logout = %q", authenticator.oauth2Config.Endpoint, authenticator.endSessionEndpoint)
+	}
+}
 
 func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
 	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
@@ -235,14 +279,14 @@ func TestOIDCPublicPathUsesConfiguredPortalPrefix(t *testing.T) {
 	}
 }
 
-func TestPrincipalFromPlatformClaimsUsesPlatformAuthorization(t *testing.T) {
-	principal, err := principalFromPlatformClaims(platformIDTokenClaims{
+func TestPrincipalFromOIDCClaimsUsesMappedAuthorization(t *testing.T) {
+	principal, err := principalFromOIDCClaims(oidcIDTokenClaims{
 		Subject: "user-1", TenantID: "tenant-1", Roles: []string{"sales"},
 		Permissions:    []string{"contract.read", "contract.create"},
 		RoleConfigHash: "hash-1", AuthzRevision: 7,
 	}, "tenant-1")
 	if err != nil {
-		t.Fatalf("principalFromPlatformClaims() error = %v", err)
+		t.Fatalf("principalFromOIDCClaims() error = %v", err)
 	}
 	if principal.UserID != "user-1" || principal.TenantID != "tenant-1" ||
 		!principal.Has("contract.read") || principal.Has("approval.process") ||
@@ -251,23 +295,68 @@ func TestPrincipalFromPlatformClaimsUsesPlatformAuthorization(t *testing.T) {
 	}
 }
 
-func TestPrincipalFromPlatformClaimsRejectsTenantMismatch(t *testing.T) {
-	_, err := principalFromPlatformClaims(platformIDTokenClaims{
+func TestPrincipalFromOIDCClaimsRejectsTenantMismatch(t *testing.T) {
+	_, err := principalFromOIDCClaims(oidcIDTokenClaims{
 		Subject: "user-1", TenantID: "tenant-2", Roles: []string{"sales"},
 		Permissions: []string{"contract.read"}, RoleConfigHash: "hash-1", AuthzRevision: 1,
 	}, "tenant-1")
 	if err == nil {
-		t.Fatal("principalFromPlatformClaims() error = nil, want tenant mismatch")
+		t.Fatal("principalFromOIDCClaims() error = nil, want tenant mismatch")
 	}
 }
 
-func TestPrincipalFromPlatformClaimsRejectsWildcardPermission(t *testing.T) {
-	_, err := principalFromPlatformClaims(platformIDTokenClaims{
+func TestPrincipalFromOIDCClaimsRejectsWildcardPermission(t *testing.T) {
+	_, err := principalFromOIDCClaims(oidcIDTokenClaims{
 		Subject: "admin-1", TenantID: "tenant-1", Roles: []string{"admin"},
 		Permissions: []string{"all"}, RoleConfigHash: "hash-1", AuthzRevision: 2,
 	}, "tenant-1")
 	if err == nil {
-		t.Fatal("principalFromPlatformClaims() error = nil, want wildcard rejection")
+		t.Fatal("principalFromOIDCClaims() error = nil, want wildcard rejection")
+	}
+}
+
+func TestOIDCLogoutUsesDiscoveredKeycloakEndSessionEndpoint(t *testing.T) {
+	authenticator := &OIDCAuthenticator{
+		options: OIDCOptions{
+			ClientID:              "contract_management-prod-web",
+			PostLogoutRedirectURI: "http://47.111.20.119/contract_management/logged-out",
+			SessionCookieName:     "contract_management_session",
+			PathPrefix:            "/contract_management",
+		},
+		endSessionEndpoint: "http://47.111.20.119:18090/realms/basic-platform/protocol/openid-connect/logout",
+		sessions:           make(map[string]*localSession),
+	}
+	request := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
+	response := httptest.NewRecorder()
+
+	authenticator.Logout(response, request)
+
+	location, err := url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse logout redirect: %v", err)
+	}
+	if response.Code != http.StatusFound || location.Path != "/realms/basic-platform/protocol/openid-connect/logout" {
+		t.Fatalf("status = %d, location = %q", response.Code, location.String())
+	}
+	if location.Query().Get("client_id") != "contract_management-prod-web" ||
+		location.Query().Get("post_logout_redirect_uri") != "http://47.111.20.119/contract_management/logged-out" ||
+		location.Query().Get("state") == "" {
+		t.Fatalf("logout query = %v", location.Query())
+	}
+}
+
+func TestOIDCLogoutFallsBackToLocalRedirectWithoutDiscoveredEndpoint(t *testing.T) {
+	authenticator := &OIDCAuthenticator{
+		options:  OIDCOptions{SessionCookieName: "contract_management_session", PathPrefix: "/contract_management"},
+		sessions: make(map[string]*localSession),
+	}
+	request := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
+	response := httptest.NewRecorder()
+
+	authenticator.Logout(response, request)
+
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "/contract_management/logged-out" {
+		t.Fatalf("status = %d, location = %q", response.Code, response.Header().Get("Location"))
 	}
 }
 
