@@ -16,12 +16,13 @@ import (
 )
 
 type projectActivationPayload struct {
-	ContractID      string                     `json:"contract_id"`
-	ContractVersion string                     `json:"contract_version"`
-	ContractName    string                     `json:"contract_name"`
-	Customer        string                     `json:"customer"`
-	EffectiveAt     time.Time                  `json:"effective_at"`
-	Services        []projectActivationService `json:"services"`
+	ContractID              string                     `json:"contract_id"`
+	ContractVersion         string                     `json:"contract_version"`
+	ContractName            string                     `json:"contract_name"`
+	Customer                string                     `json:"customer"`
+	EffectiveAt             time.Time                  `json:"effective_at"`
+	StampedContractUploaded bool                       `json:"stamped_contract_uploaded"`
+	Services                []projectActivationService `json:"services"`
 }
 type projectActivationService struct {
 	SourceID    string `json:"source_id"`
@@ -39,6 +40,12 @@ type projectDeliveryCandidate struct {
 	ContractID string
 }
 
+type legacyProjectDeliveryCandidate struct {
+	ID         string
+	TenantID   string
+	ContractID string
+}
+
 func projectDeliveryEligibleStatuses() []contract.Status {
 	return []contract.Status{
 		contract.StatusActive,
@@ -51,12 +58,41 @@ func projectDeliveryEligibleStatuses() []contract.Status {
 }
 
 // ReconcileProjectDeliveries backfills contracts that reached an effective or
-// terminal post-effective state before project integration was enabled. A
-// contract with any existing outbox row is left untouched, so reconciliation
-// cannot create a second project for a previously delivered contract.
+// terminal post-effective state before project integration was enabled. It
+// also refreshes legacy deliveries that predate the stamped-contract flag;
+// the same outbox row is reused so a second project cannot be created.
 func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error) {
+	created := 0
+	var legacyDeliveries []legacyProjectDeliveryCandidate
+	err := r.db.WithContext(ctx).Table("con_project_delivery_outbox AS o").
+		Select("o.id, o.tenant_id, o.contract_id").
+		Joins("JOIN con_contract AS c ON c.id = o.contract_id AND c.tenant_id = o.tenant_id").
+		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
+		Where("JSON_CONTAINS_PATH(o.payload_json, 'one', '$.stamped_contract_uploaded') = 0").
+		Order("o.created_at ASC").Scan(&legacyDeliveries).Error
+	if err != nil {
+		return 0, err
+	}
+	for _, candidate := range legacyDeliveries {
+		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var record projectDeliveryOutboxRecord
+			if lockErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", candidate.ID).Take(&record).Error; lockErr != nil {
+				return lockErr
+			}
+			var stampedDocumentCount int64
+			if countErr := tx.Model(&stampedDocumentRecord{}).Where("tenant_id = ? AND contract_id = ?", candidate.TenantID, candidate.ContractID).Count(&stampedDocumentCount).Error; countErr != nil {
+				return countErr
+			}
+			return refreshProjectDeliveryStampStatus(tx, record, stampedDocumentCount > 0)
+		})
+		if err != nil {
+			return created, err
+		}
+		created++
+	}
+
 	var candidates []projectDeliveryCandidate
-	err := r.db.WithContext(ctx).Table("con_contract AS c").
+	err = r.db.WithContext(ctx).Table("con_contract AS c").
 		Select("c.tenant_id, c.id AS contract_id").
 		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
 		Where("JSON_LENGTH(c.service_items_json) > 0").
@@ -64,10 +100,9 @@ func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error
 		Order("c.created_at ASC").
 		Scan(&candidates).Error
 	if err != nil {
-		return 0, err
+		return created, err
 	}
 
-	created := 0
 	for _, candidate := range candidates {
 		inserted := false
 		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -133,7 +168,11 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	if row.StartDate != nil {
 		effectiveAt = row.StartDate.UTC()
 	}
-	payload := projectActivationPayload{ContractID: row.ID, ContractVersion: fmt.Sprintf("%d", row.Version), ContractName: row.Title, Customer: firstProjectValue(valueOrEmpty(row.CustomerName), "未指定客户"), EffectiveAt: effectiveAt, Services: services}
+	var stampedDocumentCount int64
+	if err := tx.Model(&stampedDocumentRecord{}).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Count(&stampedDocumentCount).Error; err != nil {
+		return err
+	}
+	payload := projectActivationPayload{ContractID: row.ID, ContractVersion: fmt.Sprintf("%d", row.Version), ContractName: row.Title, Customer: firstProjectValue(valueOrEmpty(row.CustomerName), "未指定客户"), EffectiveAt: effectiveAt, StampedContractUploaded: stampedDocumentCount > 0, Services: services}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -141,6 +180,45 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	now := time.Now().UTC()
 	record := projectDeliveryOutboxRecord{ID: newID(), TenantID: tenantID, ContractID: row.ID, ContractVersion: row.Version, PayloadJSON: encoded, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error
+}
+
+// markProjectDeliveryStamped refreshes an existing activation delivery after
+// the stamped contract is uploaded. Reusing the original outbox row preserves
+// the contract-version idempotency key while allowing project management to
+// clear its non-blocking upload warning.
+func markProjectDeliveryStamped(tx *gorm.DB, tenantID, contractID string) error {
+	var record projectDeliveryOutboxRecord
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).
+		Order("created_at DESC").Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return refreshProjectDeliveryStampStatus(tx, record, true)
+}
+
+func refreshProjectDeliveryStampStatus(tx *gorm.DB, record projectDeliveryOutboxRecord, uploaded bool) error {
+	var payload projectActivationPayload
+	if err := json.Unmarshal(record.PayloadJSON, &payload); err != nil {
+		return fmt.Errorf("decode project delivery for stamped contract: %w", err)
+	}
+	payload.StampedContractUploaded = uploaded
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return tx.Model(&projectDeliveryOutboxRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
+		"payload_json":    encoded,
+		"delivery_status": "pending",
+		"attempts":        0,
+		"next_attempt_at": time.Now().UTC(),
+		"locked_at":       nil,
+		"delivered_at":    nil,
+		"last_error":      nil,
+	}).Error
 }
 func firstProjectValue(values ...string) string {
 	for _, value := range values {

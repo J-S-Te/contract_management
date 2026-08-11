@@ -39,7 +39,10 @@ func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, d
 			return err
 		}
 		signing := signingRecord{ContractID: document.ContractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningPendingReview), Version: 1, UpdatedAt: document.UploadedAt, UpdatedBy: document.UploadedBy}
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningPendingReview, "version": gorm.Expr("version + 1"), "updated_at": document.UploadedAt, "updated_by": document.UploadedBy})}).Create(&signing).Error
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningPendingReview, "version": gorm.Expr("version + 1"), "updated_at": document.UploadedAt, "updated_by": document.UploadedBy})}).Create(&signing).Error; err != nil {
+			return err
+		}
+		return markProjectDeliveryStamped(tx, tenantID, document.ContractID)
 	})
 }
 
