@@ -34,6 +34,68 @@ type projectActivationService struct {
 	TestMode    string `json:"test_mode"`
 }
 
+type projectDeliveryCandidate struct {
+	TenantID   string
+	ContractID string
+}
+
+func projectDeliveryEligibleStatuses() []contract.Status {
+	return []contract.Status{
+		contract.StatusActive,
+		contract.StatusInProgress,
+		contract.StatusPendingPay,
+		contract.StatusCompleted,
+		contract.StatusTerminated,
+		contract.StatusArchived,
+	}
+}
+
+// ReconcileProjectDeliveries backfills contracts that reached an effective or
+// terminal post-effective state before project integration was enabled. A
+// contract with any existing outbox row is left untouched, so reconciliation
+// cannot create a second project for a previously delivered contract.
+func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error) {
+	var candidates []projectDeliveryCandidate
+	err := r.db.WithContext(ctx).Table("con_contract AS c").
+		Select("c.tenant_id, c.id AS contract_id").
+		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
+		Where("JSON_LENGTH(c.service_items_json) > 0").
+		Where("NOT EXISTS (SELECT 1 FROM con_project_delivery_outbox AS o WHERE o.tenant_id = c.tenant_id AND o.contract_id = c.id)").
+		Order("c.created_at ASC").
+		Scan(&candidates).Error
+	if err != nil {
+		return 0, err
+	}
+
+	created := 0
+	for _, candidate := range candidates {
+		inserted := false
+		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var existing int64
+			if countErr := tx.Model(&projectDeliveryOutboxRecord{}).
+				Where("tenant_id = ? AND contract_id = ?", candidate.TenantID, candidate.ContractID).
+				Count(&existing).Error; countErr != nil {
+				return countErr
+			}
+			if existing > 0 {
+				return nil
+			}
+			if enqueueErr := enqueueProjectActivation(tx, candidate.TenantID, candidate.ContractID); enqueueErr != nil {
+				return enqueueErr
+			}
+			inserted = true
+			return nil
+		})
+		if err != nil {
+			return created, err
+		}
+		if inserted {
+			created++
+		}
+	}
+	return created, nil
+}
+
 func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	var row contractRecord
 	if err := tx.Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&row).Error; err != nil {

@@ -24,6 +24,10 @@ type Store interface {
 	MarkProjectDeliveryFailed(context.Context, string, string, uint, bool) error
 }
 
+type deliveryReconciler interface {
+	ReconcileProjectDeliveries(context.Context) (int, error)
+}
+
 type Dispatcher struct {
 	Store       Store
 	BaseURL     string
@@ -37,6 +41,13 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	if d.Store == nil {
 		return
 	}
+	if count, err := d.reconcile(ctx); err != nil {
+		if d.Logger != nil {
+			d.Logger.Error("reconcile historical contract deliveries", "error", err)
+		}
+	} else if count > 0 && d.Logger != nil {
+		d.Logger.Info("historical contract deliveries queued", "count", count)
+	}
 	ticker := time.NewTicker(d.Poll)
 	defer ticker.Stop()
 	for {
@@ -49,6 +60,14 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (d *Dispatcher) reconcile(ctx context.Context) (int, error) {
+	reconciler, ok := d.Store.(deliveryReconciler)
+	if !ok {
+		return 0, nil
+	}
+	return reconciler.ReconcileProjectDeliveries(ctx)
 }
 
 func (d *Dispatcher) dispatchOne(ctx context.Context) error {

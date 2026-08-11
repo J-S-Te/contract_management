@@ -10,9 +10,15 @@ import (
 )
 
 type memoryStore struct {
-	delivery  Delivery
-	delivered string
-	failed    string
+	delivery   Delivery
+	delivered  string
+	failed     string
+	reconciled int
+}
+
+func (s *memoryStore) ReconcileProjectDeliveries(context.Context) (int, error) {
+	s.reconciled++
+	return 2, nil
 }
 
 func (s *memoryStore) ClaimProjectDelivery(context.Context) (Delivery, bool, error) {
@@ -52,5 +58,18 @@ func TestDispatcherPostsActivationPayloadOverInternalNetwork(t *testing.T) {
 	}
 	if store.delivered != store.delivery.ID || store.failed != "" {
 		t.Fatalf("store=%+v", store)
+	}
+}
+
+func TestDispatcherReconcilesHistoricalContractsBeforeDelivery(t *testing.T) {
+	store := &memoryStore{}
+	dispatcher := &Dispatcher{Store: store}
+
+	count, err := dispatcher.reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("reconcile() error = %v", err)
+	}
+	if count != 2 || store.reconciled != 1 {
+		t.Fatalf("reconcile() count=%d calls=%d, want 2 and 1", count, store.reconciled)
 	}
 }

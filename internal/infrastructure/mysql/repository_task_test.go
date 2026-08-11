@@ -38,3 +38,12 @@ func TestContractFromRecordReadsNestedServiceItemsAndMapsLegacyRows(t *testing.T
 		t.Fatalf("legacy contract = %#v", legacy)
 	}
 }
+
+func TestProjectDeliveryEligibleStatusesIncludeArchived(t *testing.T) {
+	for _, status := range projectDeliveryEligibleStatuses() {
+		if status == contract.StatusArchived {
+			return
+		}
+	}
+	t.Fatal("project delivery reconciliation must include archived contracts")
+}
