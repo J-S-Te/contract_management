@@ -550,7 +550,14 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, 
 	if scoped, ok := s.Repo.(ScopedRepository); ok {
 		return scoped.ListContractsScoped(ctx, filter, status, limit)
 	}
-	items, err := s.Repo.ListContracts(ctx, actor.TenantID, "", status, limit)
+	if !filter.AllowAll && !filter.AllowSelf && len(filter.OrganizationIDs) == 0 && len(filter.ProjectIDs) == 0 {
+		return nil, ErrForbidden
+	}
+	ownerUserID := ""
+	if filter.AllowSelf {
+		ownerUserID = actor.UserID
+	}
+	items, err := s.Repo.ListContracts(ctx, actor.TenantID, ownerUserID, status, limit)
 	return filterContracts(items, filter), err
 }
 
