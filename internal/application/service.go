@@ -22,6 +22,10 @@ import (
 )
 
 type Principal struct {
+	// Subject is the issuer-native OIDC subject (Keycloak user id). UserID and
+	// IdentityID remain the platform identity id used by business ownership and
+	// audit rules.
+	Subject                                string
 	TenantID, UserID, IdentityID, PersonID string
 	DisplayName, UserName, Email           string
 	Roles                                  []string

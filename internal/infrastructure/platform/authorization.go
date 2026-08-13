@@ -47,7 +47,7 @@ func principalFromAuthorizationContext(identity compactIdentity, context Authori
 		return application.Principal{}, fmt.Errorf("%w: %v", ErrAuthorizationForbidden, err)
 	}
 	return application.Principal{
-		TenantID: identity.TenantID, UserID: identity.Subject, IdentityID: identity.IdentityID,
+		Subject: identity.Subject, TenantID: identity.TenantID, UserID: identity.IdentityID, IdentityID: identity.IdentityID,
 		PersonID: firstNonEmpty(context.PersonID, identity.PersonID), Roles: roles, Permissions: permissions,
 		DataScopes: scopes, PermissionScopes: permissionScopes, AuthorizationRevision: context.AuthorizationRevision,
 		CatalogVersion: catalog.Version,
