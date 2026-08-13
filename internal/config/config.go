@@ -39,6 +39,8 @@ type Config struct {
 	PlatformCatalogSync       bool
 	PlatformCatalogClientID   string
 	PlatformCatalogSecret     string
+	PlatformPersonnelClientID string
+	PlatformPersonnelSecret   string
 	TemporalAddress           string
 	TemporalNamespace         string
 	TemporalTaskQueue         string
@@ -64,10 +66,12 @@ func Load() (Config, error) {
 		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
 		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
 		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
-		PlatformApplicationID:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
-		PlatformCatalogClientID: os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
-		PlatformCatalogSecret:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
-		TemporalAddress:         env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
+		PlatformApplicationID:     os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
+		PlatformCatalogClientID:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
+		PlatformCatalogSecret:     os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
+		PlatformPersonnelClientID: os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID"),
+		PlatformPersonnelSecret:   os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET"),
+		TemporalAddress:           env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
 		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 		ProjectAPIBaseURL: env("PROJECT_API_BASE_URL", "http://localhost:8082"),
 	}
@@ -198,6 +202,9 @@ func (c Config) validate() error {
 	if c.PlatformCatalogSync && (strings.TrimSpace(c.PlatformApplicationID) == "" ||
 		strings.TrimSpace(c.PlatformCatalogClientID) == "" || strings.TrimSpace(c.PlatformCatalogSecret) == "") {
 		return fmt.Errorf("platform authorization catalog synchronization requires application ID, client ID and client secret")
+	}
+	if (strings.TrimSpace(c.PlatformPersonnelClientID) == "") != (strings.TrimSpace(c.PlatformPersonnelSecret) == "") {
+		return fmt.Errorf("platform personnel directory configuration must provide client ID and secret together")
 	}
 	return nil
 }

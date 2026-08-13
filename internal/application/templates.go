@@ -21,7 +21,7 @@ type TemplateRepository interface {
 }
 
 func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, filename string, content []byte) (contracttemplate.Template, error) {
-	if !hasRole(actor, "admin") {
+	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
 	name, filename = strings.TrimSpace(name), filepath.Base(strings.TrimSpace(filename))
@@ -50,7 +50,7 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 }
 
 func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contracttemplate.Template, error) {
-	if !actor.Has("contract.create") && !hasRole(actor, "admin") {
+	if !actor.Has("contract.create") && !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return nil, ErrForbidden
 	}
 	if s.Templates == nil {
@@ -60,7 +60,7 @@ func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contrac
 }
 
 func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name, numberFormat string, fields []contracttemplate.Field) (contracttemplate.Template, error) {
-	if !hasRole(actor, "admin") {
+	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
 	if s.Templates == nil {
@@ -128,7 +128,7 @@ func normalizeNumberFormat(value string) (string, error) {
 }
 
 func (s *Service) DeleteTemplate(ctx context.Context, actor Principal, id string) error {
-	if !hasRole(actor, "admin") {
+	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return ErrForbidden
 	}
 	if s.Templates == nil {
@@ -157,7 +157,7 @@ func (s *Service) renderTemplate(ctx context.Context, actor Principal, id string
 	if err != nil {
 		return nil, nil, err
 	}
-	normalized, err := normalizeTemplateValues(item.Fields, values, hasRole(actor, "admin"))
+	normalized, err := normalizeTemplateValues(item.Fields, values, hasPermissionOrAdmin(actor, "contract.template.manage"))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -204,4 +204,8 @@ func hasRole(actor Principal, expected string) bool {
 		}
 	}
 	return false
+}
+
+func hasPermissionOrAdmin(actor Principal, permission string) bool {
+	return actor.Has(permission) || hasRole(actor, "admin")
 }

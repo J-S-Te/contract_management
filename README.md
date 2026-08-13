@@ -18,7 +18,7 @@
 - 启用 `PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED` 后，API 启动时使用独立机器 Client 将内嵌权限清单发布到平台；同步失败时拒绝启动，避免运行时权限与平台目录漂移。
 - 配置 `PLATFORM_AUDIT_CLIENT_ID`、`PLATFORM_AUDIT_CLIENT_SECRET`、`PLATFORM_APPLICATION_CODE` 和 `PLATFORM_ENVIRONMENT_CODE` 后，合同写操作会以 OAuth Client Credentials 和 `audit.ingest` scope 写入基础平台审计。
 - 合同服务自身提供 `/`、`/auth/login`、`/auth/callback`、`/auth/logout` 和合同台账页面；统一门户通过 `/contract_management/` 访问，合同 API、数据库和 Temporal 不直接暴露宿主机端口。
-- 超级管理员可上传不超过 10MB 的 DOCX 合同模板；销售人员在新建合同时选择模板、填写动态字段、预览并导出渲染后的 DOCX。渲染结果随合同固化，不受后续模板变化影响。
+- 超级管理员或具备 `contract.template.manage` 权限的用户可上传不超过 10MB 的 DOCX 合同模板；销售人员在新建合同时选择模板、填写动态字段、预览并导出渲染后的 DOCX。渲染结果随合同固化，不受后续模板变化影响。
 
 ## 目录
 
@@ -60,11 +60,11 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 |---|---|---|---|
 | GET | `/api/v1/auth/me` | 已登录 | 返回平台授权快照，用于前端菜单和按钮展示 |
 | POST | `/api/v1/contracts` | `contract.create` | 创建草稿并计算正文 SHA-256 |
-| GET | `/api/v1/contract-templates` | `contract.create` 或 `admin` 角色 | 查询当前租户可用的 DOCX 模板和动态字段 |
+| GET | `/api/v1/contract-templates` | `contract.create` 或 `contract.template.manage`（兼容 `admin` 角色） | 查询当前租户可用的 DOCX 模板和动态字段 |
 | GET | `/api/v1/dashboard` | `contract.read` | admin 查看当前租户、其他用户查看本人合同的总额、总数、审批中、生效未到期和超期统计及最近 200 条业务明细 |
-| POST | `/api/v1/contract-templates` | `admin` 角色 | 上传并解析 DOCX 模板，最大 10MB |
-| PUT | `/api/v1/contract-templates/{id}` | `admin` 角色 | 编辑模板名称、字段标签、默认值和管理员锁定状态 |
-| DELETE | `/api/v1/contract-templates/{id}` | `admin` 角色 | 删除模板；已生成合同保存的是冻结文档，不受影响 |
+| POST | `/api/v1/contract-templates` | `contract.template.manage`（兼容 `admin` 角色） | 上传并解析 DOCX 模板，最大 10MB |
+| PUT | `/api/v1/contract-templates/{id}` | `contract.template.manage`（兼容 `admin` 角色） | 编辑模板名称、字段标签、默认值和管理员锁定状态 |
+| DELETE | `/api/v1/contract-templates/{id}` | `contract.template.manage`（兼容 `admin` 角色） | 删除模板；已生成合同保存的是冻结文档，不受影响 |
 | POST | `/api/v1/contract-templates/{id}/preview` | `contract.create` | 根据表单值渲染安全的 HTML 预览 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询合同；任何角色都只能读取自己负责的合同 |
 | GET | `/api/v1/contracts/{id}/lifecycle` | `contract.read` | 查询合同创建、审批和状态流转明细；管理员可读取企业范围合同 |
@@ -168,3 +168,10 @@ set +a
 - API 与 Worker 必须使用相同的 Temporal namespace/task queue 和兼容的 Workflow 代码。上线修改 Workflow 时保留 replay 测试历史；不要直接改动已经执行过的确定性分支。
 - `MYSQL_DSN` 必须包含 `parseTime=true`；数据库账号仅授予 `contract_management` 所需权限。
 - 审批命令的权限先由 HTTP 用例校验，Workflow 再校验当前处理人/申请人，形成双重业务约束。
+# 审批人员目录
+
+合同审批人不从 Keycloak Token 中读取业务角色。API 使用独立的基础平台机器客户端调用
+`/api/v1/internal/owner-directory`，按审批角色实时筛选可选人员。该客户端只能授予
+`owner_directory.read`，通过 `PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID` 和
+`PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET` 注入；缺失、无权限、平台不可用或响应不完整时
+审批规则失败关闭，不回退为所有用户。
