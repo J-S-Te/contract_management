@@ -422,7 +422,7 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 }
 
 func (s *Service) Command(ctx context.Context, actor Principal, approvalID string, command workflows.ApprovalCommand) (string, error) {
-	meta, err := s.Repo.GetApprovalMeta(ctx, actor.TenantID, approvalID)
+	meta, _, err := s.queryApprovalState(ctx, actor, approvalID)
 	if err != nil {
 		return "", err
 	}
@@ -477,7 +477,7 @@ func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approv
 	if err != nil {
 		return ApprovalDetail{}, err
 	}
-	contractSnapshot, err := s.Repo.GetContract(ctx, actor.TenantID, meta.ContractID)
+	contractSnapshot, err := s.getApprovalContract(ctx, actor, meta.ContractID)
 	if err != nil {
 		return ApprovalDetail{}, err
 	}
@@ -496,6 +496,9 @@ func (s *Service) queryApprovalState(ctx context.Context, actor Principal, appro
 	if err != nil {
 		return approval.Meta{}, workflows.ApprovalState{}, err
 	}
+	if _, err := s.getApprovalContract(ctx, actor, meta.ContractID); err != nil {
+		return approval.Meta{}, workflows.ApprovalState{}, err
+	}
 	if !actor.Has("approval.view") && !actor.Has("approval.process") && meta.ApplicantUserID != actor.UserID {
 		return approval.Meta{}, workflows.ApprovalState{}, ErrForbidden
 	}
@@ -508,6 +511,14 @@ func (s *Service) queryApprovalState(ctx context.Context, actor Principal, appro
 		return approval.Meta{}, workflows.ApprovalState{}, err
 	}
 	return meta, state, nil
+}
+
+func (s *Service) getApprovalContract(ctx context.Context, actor Principal, contractID string) (contract.Contract, error) {
+	filter, ok := actor.Scope("contract.read")
+	if !ok {
+		return contract.Contract{}, ErrForbidden
+	}
+	return s.getContractScoped(ctx, filter, contractID)
 }
 
 func (s *Service) ListMyTasks(ctx context.Context, actor Principal, limit int) ([]approval.Task, error) {

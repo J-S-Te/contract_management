@@ -458,7 +458,7 @@ func TestGetApprovalDetailReturnsContractToAssignedApprover(t *testing.T) {
 	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
 		Return(encoded, nil)
 	repository := &recordingRepository{
-		contract: contract.Contract{ID: "contract-1", OwnerUserID: "applicant-1", Content: "contract body"},
+		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1", Content: "contract body"},
 		approvalMeta: approval.Meta{
 			ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1",
 			ApplicantUserID: "applicant-1", WorkflowID: "workflow-1", RunID: "run-1",
@@ -467,8 +467,10 @@ func TestGetApprovalDetailReturnsContractToAssignedApprover(t *testing.T) {
 	}
 	service := &Service{Repo: repository, Temporal: temporal}
 	actor := Principal{
-		TenantID: "tenant-1", UserID: "approver-1",
-		Permissions: map[string]bool{"approval.process": true},
+		TenantID:         "tenant-1",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
 	}
 
 	detail, err := service.GetApprovalDetail(context.Background(), actor, "approval-1")
@@ -482,15 +484,31 @@ func TestGetApprovalDetailReturnsContractToAssignedApprover(t *testing.T) {
 
 func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	encoded := temporalmocks.NewEncodedValue(t)
+	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
+		target := arguments.Get(0).(*workflows.ApprovalState)
+		*target = state
+	}).Return(nil)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
+		Return(encoded, nil)
 	temporal.On("SignalWorkflow", mock.Anything, "workflow-1", "run-1", workflows.CommandSignalName, mock.MatchedBy(func(command workflows.ApprovalCommand) bool {
 		return command.CommandID != "" && command.ActorUserID == "approver-1" && command.Action == workflows.ActionApprove && command.RoleNodeOrSign
 	})).Return(nil)
-	repository := &recordingRepository{approvalMeta: approval.Meta{
-		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
-		WorkflowID: "workflow-1", RunID: "run-1",
-	}}
+	repository := &recordingRepository{
+		approvalMeta: approval.Meta{
+			ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
+			WorkflowID: "workflow-1", RunID: "run-1",
+		},
+		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+	}
 	service := &Service{Repo: repository, Temporal: temporal}
-	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true}}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
 
 	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
 	if err != nil {
@@ -503,16 +521,27 @@ func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 
 func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	encoded := temporalmocks.NewEncodedValue(t)
+	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
+		target := arguments.Get(0).(*workflows.ApprovalState)
+		*target = state
+	}).Return(nil)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
+		Return(encoded, nil)
 	repository := &recordingRepository{approvalMeta: approval.Meta{
 		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
 		WorkflowID: "workflow-1", RunID: "run-1",
-	}}
+	}, contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"}}
 	service := &Service{Repo: repository, Temporal: temporal, Personnel: personnelStub{users: []UserReference{
 		{UserID: "sales-1", Roles: []string{"sales"}},
 		{UserID: "specialist-1", Roles: []string{"contract_specialist"}},
 	}}}
 	actor := Principal{
-		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
+		TenantID:         "tenant-1",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
 	}
 
 	for _, target := range []string{"sales-1", "specialist-1", "unknown-user"} {
@@ -524,16 +553,27 @@ func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
 
 func TestCommandAllowsAddSignTargetWithApprovalProcessRole(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	encoded := temporalmocks.NewEncodedValue(t)
+	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
+		target := arguments.Get(0).(*workflows.ApprovalState)
+		*target = state
+	}).Return(nil)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
+		Return(encoded, nil)
 	temporal.On("SignalWorkflow", mock.Anything, "workflow-1", "run-1", workflows.CommandSignalName, mock.MatchedBy(func(command workflows.ApprovalCommand) bool {
 		return command.Action == workflows.ActionAddSign && len(command.TargetUserIDs) == 1 && command.TargetUserIDs[0] == "finance-1"
 	})).Return(nil)
 	repository := &recordingRepository{approvalMeta: approval.Meta{
 		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
 		WorkflowID: "workflow-1", RunID: "run-1",
-	}}
+	}, contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"}}
 	service := &Service{Repo: repository, Temporal: temporal, Personnel: personnelStub{users: []UserReference{{UserID: "finance-1", Roles: []string{"finance_director"}}}}}
 	actor := Principal{
-		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
+		TenantID:         "tenant-1",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
 	}
 
 	if commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{"finance-1"}}); err != nil || commandID == "" {
@@ -545,6 +585,24 @@ func TestGetApprovalDetailRejectsUnrelatedUser(t *testing.T) {
 	repository := &recordingRepository{approvalMeta: approval.Meta{ApplicantUserID: "applicant-1"}}
 	service := &Service{Repo: repository}
 	actor := Principal{TenantID: "tenant-1", UserID: "unrelated-user", Permissions: map[string]bool{}}
+
+	if _, err := service.GetApprovalDetail(context.Background(), actor, "approval-1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("GetApprovalDetail() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestGetApprovalDetailRejectsDifferentContractScope(t *testing.T) {
+	repository := &recordingRepository{
+		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+		approvalMeta: approval.Meta{ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", WorkflowID: "workflow-1", RunID: "run-1", ApplicantUserID: "applicant-1", Status: approval.StatusRunning},
+	}
+	service := &Service{Repo: repository}
+	actor := Principal{
+		TenantID:         "tenant-2",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
 
 	if _, err := service.GetApprovalDetail(context.Background(), actor, "approval-1"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("GetApprovalDetail() error = %v, want ErrForbidden", err)

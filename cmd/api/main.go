@@ -65,6 +65,7 @@ func main() {
 		TaskQueue:        cfg.TemporalTaskQueue,
 		NodeTimeout:      cfg.NodeTimeout,
 		ReminderInterval: cfg.ReminderInterval,
+		Personnel:        platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout),
 	}
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,

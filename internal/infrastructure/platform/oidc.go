@@ -254,6 +254,8 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		status := http.StatusUnauthorized
 		if errors.Is(err, ErrAuthorizationForbidden) {
 			status = http.StatusForbidden
+		} else if errors.Is(err, ErrAuthorizationInvalid) {
+			status = http.StatusForbidden
 		} else if errors.Is(err, ErrAuthorizationUnavailable) {
 			status = http.StatusServiceUnavailable
 		}
@@ -284,7 +286,11 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		return
 	}
 	record, err := a.newSessionRecord(rawSession, principal, token, rawIDToken, earliestExpiry(idExpiry, token.Expiry), now)
-	if err != nil || a.store.CreateSession(request.Context(), record) != nil {
+	if err != nil {
+		a.writeCallbackError(writer, request, "session", http.StatusInternalServerError, err)
+		return
+	}
+	if err := a.store.CreateSession(request.Context(), record); err != nil {
 		a.writeCallbackError(writer, request, "session", http.StatusServiceUnavailable, err)
 		return
 	}
