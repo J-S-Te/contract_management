@@ -322,9 +322,9 @@ func validateCompactIDTokenClaims(claims oidcIDTokenClaims, expectedNonce, expec
 	subject := strings.TrimSpace(claims.Subject)
 	identityID := strings.TrimSpace(claims.IdentityID)
 	if identityID == "" {
-		identityID = subject
+		return compactIdentity{}, errors.New("OIDC ID token identity_id is required")
 	}
-	if subject == "" || subject != claims.Subject || identityID != subject || claims.TokenUse != "id_token" ||
+	if subject == "" || subject != claims.Subject || claims.TokenUse != "id_token" ||
 		claims.TenantID != expectedTenantID || expectedNonce != "" && claims.Nonce != expectedNonce {
 		return compactIdentity{}, errors.New("OIDC ID token stable identity claims are invalid")
 	}
@@ -362,7 +362,8 @@ func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record Ses
 		return record, false, ErrAuthorizationInvalid
 	}
 	token := &oauth2.Token{AccessToken: accessToken, RefreshToken: refreshToken, Expiry: record.TokenExpiresAt}
-	identity := compactIdentity{Subject: current.UserID, IdentityID: current.IdentityID, TenantID: current.TenantID, PersonID: current.PersonID}
+	subject := firstNonEmpty(current.Subject, current.UserID)
+	identity := compactIdentity{Subject: subject, IdentityID: current.IdentityID, TenantID: current.TenantID, PersonID: current.PersonID}
 	refreshedTokens := false
 	if !record.TokenExpiresAt.After(now) {
 		token, err = a.refreshTokens(oidc.ClientContext(ctx, a.httpClient), token)
@@ -392,7 +393,7 @@ func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record Ses
 		return record, false, err
 	}
 	principal, err := principalFromAuthorizationContext(identity, snapshot, a.catalog, a.options.ClientID, a.options.ApplicationCode, a.options.EnvironmentCode)
-	if err != nil || principal.IdentityID != current.IdentityID || principal.TenantID != current.TenantID {
+	if err != nil || principal.Subject != subject || principal.IdentityID != current.IdentityID || principal.TenantID != current.TenantID {
 		if err == nil {
 			err = ErrAuthorizationInvalid
 		}
@@ -464,6 +465,11 @@ func principalFromJSON(raw []byte) (application.Principal, error) {
 	var principal application.Principal
 	if err := json.Unmarshal(raw, &principal); err != nil {
 		return application.Principal{}, err
+	}
+	if principal.Subject == "" {
+		// Sessions created before the subject/identity split can be upgraded on
+		// read because their legacy UserID was the platform identity id.
+		principal.Subject = principal.UserID
 	}
 	if principal.IdentityID == "" || principal.UserID != principal.IdentityID || principal.TenantID == "" || principal.AuthorizationRevision == 0 {
 		return application.Principal{}, ErrAuthorizationInvalid

@@ -14,18 +14,18 @@ import (
 )
 
 func TestValidateCompactIDTokenClaimsAcceptsStableIdentityOnly(t *testing.T) {
-	identity, err := validateCompactIDTokenClaims(oidcIDTokenClaims{Subject: "identity-1", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "id_token"}, "nonce-1", "tenant-1")
+	identity, err := validateCompactIDTokenClaims(oidcIDTokenClaims{Subject: "kc-user-1", IdentityID: "identity-1", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "id_token"}, "nonce-1", "tenant-1")
 	if err != nil {
 		t.Fatalf("validateCompactIDTokenClaims() error = %v", err)
 	}
-	if identity.Subject != "identity-1" || identity.IdentityID != identity.Subject {
+	if identity.Subject != "kc-user-1" || identity.IdentityID != "identity-1" {
 		t.Fatalf("identity = %#v", identity)
 	}
 }
 
 func TestValidateCompactIDTokenClaimsRejectsBoundaryMismatch(t *testing.T) {
 	tests := []oidcIDTokenClaims{
-		{Subject: "identity-1", IdentityID: "identity-2", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "id_token"},
+		{Subject: "identity-1", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "id_token"},
 		{Subject: "identity-1", TenantID: "tenant-2", Nonce: "nonce-1", TokenUse: "id_token"},
 		{Subject: "identity-1", TenantID: "tenant-1", Nonce: "wrong", TokenUse: "id_token"},
 		{Subject: "identity-1", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "access_token"},
@@ -39,8 +39,8 @@ func TestValidateCompactIDTokenClaimsRejectsBoundaryMismatch(t *testing.T) {
 
 func TestPrincipalFromAuthorizationContextAllowsApplicationEmptyScopeID(t *testing.T) {
 	catalog := testCatalog()
-	principal, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, AuthorizationContext{
-		Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "contract_management-prod-web", ApplicationCode: "contract_management", EnvironmentCode: "prod",
+	principal, err := principalFromAuthorizationContext(compactIdentity{Subject: "kc-user-1", IdentityID: "identity-1", TenantID: "tenant-1"}, AuthorizationContext{
+		Subject: "kc-user-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "contract_management-prod-web", ApplicationCode: "contract_management", EnvironmentCode: "prod",
 		Roles: []string{"sales"}, Permissions: []string{"contract.read"}, AuthorizationRevision: 2,
 		DataScopes: []AuthorizationDataScope{{RoleCode: "sales", ScopeType: "APPLICATION"}},
 	}, catalog, "contract_management-prod-web", "contract_management", "prod")
@@ -139,7 +139,7 @@ func TestHTTPAuthorizationContextClientRequiresSingleJSONObject(t *testing.T) {
 }
 
 func TestSessionPrincipalRoundTripIncludesDataScopes(t *testing.T) {
-	want := application.Principal{TenantID: "tenant-1", UserID: "identity-1", IdentityID: "identity-1", AuthorizationRevision: 3, Permissions: map[string]bool{"contract.read": true}, PermissionScopes: map[string]contract.ScopeFilter{"contract.read": {AllowAll: true}}}
+	want := application.Principal{Subject: "kc-user-1", TenantID: "tenant-1", UserID: "identity-1", IdentityID: "identity-1", AuthorizationRevision: 3, Permissions: map[string]bool{"contract.read": true}, PermissionScopes: map[string]contract.ScopeFilter{"contract.read": {AllowAll: true}}}
 	raw, _ := json.Marshal(want)
 	got, err := principalFromJSON(raw)
 	if err != nil || !got.PermissionScopes["contract.read"].AllowAll {
