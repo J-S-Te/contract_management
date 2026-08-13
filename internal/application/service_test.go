@@ -26,6 +26,15 @@ type recordingRepository struct {
 	dashboardOwnerUserID string
 }
 
+type personnelStub struct {
+	users []UserReference
+	err   error
+}
+
+func (s personnelStub) ListEligibleUsers(context.Context, Principal, []string) ([]UserReference, error) {
+	return s.users, s.err
+}
+
 func (r *recordingRepository) GetContract(context.Context, string, string) (contract.Contract, error) {
 	return r.contract, nil
 }
@@ -313,18 +322,19 @@ func TestDefaultApprovalNodesUseManifestRoleCodes(t *testing.T) {
 }
 
 func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) {
-	service := &Service{}
-	actor := Principal{UserDirectory: []UserReference{
+	directory := []UserReference{
 		{UserID: "director-2", Roles: []string{"sales_director"}},
 		{UserID: "director-1", Roles: []string{"sales_director", "tech_director"}},
 		{UserID: "ordinary-user", Roles: []string{"sales"}},
-	}}
+	}
+	service := &Service{Personnel: personnelStub{users: directory}}
+	actor := Principal{}
 	nodes := []approval.Node{{
 		ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director",
 		Countersign: approval.CountersignAll, AssigneeIDs: []string{"stale-configured-user"},
 	}}
 
-	if err := service.resolveNodes(actor, nodes); err != nil {
+	if err := service.resolveNodes(context.Background(), actor, nodes); err != nil {
 		t.Fatalf("resolveNodes() error = %v", err)
 	}
 	if nodes[0].Countersign != approval.CountersignAny {
@@ -336,9 +346,9 @@ func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) 
 }
 
 func TestResolveNodesRejectsRoleWithoutActivePlatformHolder(t *testing.T) {
-	service := &Service{}
+	service := &Service{Personnel: personnelStub{}}
 	nodes := []approval.Node{{ID: "finance", RoleCode: "finance_director"}}
-	if err := service.resolveNodes(Principal{}, nodes); err == nil {
+	if err := service.resolveNodes(context.Background(), Principal{}, nodes); err == nil {
 		t.Fatal("resolveNodes() error = nil")
 	}
 }
@@ -437,13 +447,12 @@ func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
 		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
 		WorkflowID: "workflow-1", RunID: "run-1",
 	}}
-	service := &Service{Repo: repository, Temporal: temporal}
+	service := &Service{Repo: repository, Temporal: temporal, Personnel: personnelStub{users: []UserReference{
+		{UserID: "sales-1", Roles: []string{"sales"}},
+		{UserID: "specialist-1", Roles: []string{"contract_specialist"}},
+	}}}
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
-		UserDirectory: []UserReference{
-			{UserID: "sales-1", Roles: []string{"sales"}},
-			{UserID: "specialist-1", Roles: []string{"contract_specialist"}},
-		},
 	}
 
 	for _, target := range []string{"sales-1", "specialist-1", "unknown-user"} {
@@ -462,10 +471,9 @@ func TestCommandAllowsAddSignTargetWithApprovalProcessRole(t *testing.T) {
 		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
 		WorkflowID: "workflow-1", RunID: "run-1",
 	}}
-	service := &Service{Repo: repository, Temporal: temporal}
+	service := &Service{Repo: repository, Temporal: temporal, Personnel: personnelStub{users: []UserReference{{UserID: "finance-1", Roles: []string{"finance_director"}}}}}
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
-		UserDirectory: []UserReference{{UserID: "finance-1", Roles: []string{"finance_director"}}},
 	}
 
 	if commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{"finance-1"}}); err != nil || commandID == "" {

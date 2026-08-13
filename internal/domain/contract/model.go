@@ -17,6 +17,9 @@ type Contract struct {
 	CustomerAddress     string            `json:"customer_address,omitempty"`
 	CustomerContact     string            `json:"customer_contact,omitempty"`
 	CustomerPhone       string            `json:"customer_phone,omitempty"`
+	OwnerIdentityID     string            `json:"owner_identity_id,omitempty"`
+	OwnerOrgID          string            `json:"owner_org_id,omitempty"`
+	ProjectID           string            `json:"project_id,omitempty"`
 	Systems             []SystemInfo      `json:"systems,omitempty"`
 	ServiceItems        []ServiceItem     `json:"service_items,omitempty"`
 	CustomerCreditLevel string            `json:"customer_credit_level,omitempty"`
@@ -35,6 +38,17 @@ type Contract struct {
 	ContentHash         string            `json:"content_hash"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`
+}
+
+// ScopeFilter is the row-level contract boundary calculated from the platform
+// authorization context. An empty filter never means unrestricted access.
+type ScopeFilter struct {
+	TenantID        string
+	IdentityID      string
+	OrganizationIDs []string
+	ProjectIDs      []string
+	AllowAll        bool
+	AllowSelf       bool
 }
 
 type SystemInfo struct {

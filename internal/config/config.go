@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -24,6 +25,9 @@ type Config struct {
 	OIDCSessionCookieName     string
 	OIDCSessionTTL            time.Duration
 	OIDCAuthorizationRefresh  time.Duration
+	OIDCAuthorizationTimeout  time.Duration
+	OIDCAuthorizationMaxStale time.Duration
+	OIDCSessionEncryptionKey  []byte
 	OIDCSessionSecure         bool
 	AppPublicURL              string
 	AppPathPrefix             string
@@ -52,7 +56,7 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
-		OIDCIssuer: env("OIDC_ISSUER", "http://47.111.20.119:18090/realms/basic-platform"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
+		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
 		OIDCBackchannelBaseURL: os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
@@ -79,6 +83,20 @@ func Load() (Config, error) {
 	}
 	if c.OIDCAuthorizationRefresh, err = duration("OIDC_AUTHORIZATION_REFRESH_INTERVAL", time.Minute); err != nil {
 		return c, err
+	}
+	if c.OIDCAuthorizationTimeout, err = duration("OIDC_AUTHORIZATION_CONTEXT_TIMEOUT", 10*time.Second); err != nil {
+		return c, err
+	}
+	if c.OIDCAuthorizationMaxStale, err = duration("OIDC_AUTHORIZATION_MAX_STALE", 2*time.Minute); err != nil {
+		return c, err
+	}
+	encodedKey := strings.TrimSpace(os.Getenv("OIDC_SESSION_ENCRYPTION_KEY_BASE64"))
+	if encodedKey == "" {
+		return c, fmt.Errorf("OIDC_SESSION_ENCRYPTION_KEY_BASE64 is required")
+	}
+	c.OIDCSessionEncryptionKey, err = base64.StdEncoding.DecodeString(encodedKey)
+	if err != nil || len(c.OIDCSessionEncryptionKey) != 32 {
+		return c, fmt.Errorf("OIDC_SESSION_ENCRYPTION_KEY_BASE64 must decode to exactly 32 bytes")
 	}
 	if c.OIDCSessionSecure, err = strconv.ParseBool(env("OIDC_SESSION_COOKIE_SECURE", "true")); err != nil {
 		return c, fmt.Errorf("OIDC_SESSION_COOKIE_SECURE: %w", err)
@@ -149,8 +167,12 @@ func (c Config) validate() error {
 		return fmt.Errorf("OIDC_SCOPES must include openid")
 	}
 	if strings.TrimSpace(c.OIDCSessionCookieName) == "" || c.OIDCSessionTTL <= 0 ||
-		c.OIDCAuthorizationRefresh <= 0 || c.OIDCAuthorizationRefresh >= c.OIDCSessionTTL {
+		c.OIDCAuthorizationRefresh <= 0 || c.OIDCAuthorizationRefresh >= c.OIDCSessionTTL ||
+		c.OIDCAuthorizationTimeout <= 0 || c.OIDCAuthorizationMaxStale < 0 || c.OIDCAuthorizationMaxStale >= c.OIDCSessionTTL {
 		return fmt.Errorf("OIDC session cookie name, positive TTL and a shorter positive authorization refresh interval are required")
+	}
+	if strings.TrimSpace(c.PlatformApplicationCode) == "" || strings.TrimSpace(c.PlatformEnvironmentCode) == "" {
+		return fmt.Errorf("PLATFORM_APPLICATION_CODE and PLATFORM_ENVIRONMENT_CODE are required for OIDC authorization binding")
 	}
 	if c.AppPathPrefix == "/" || !strings.HasPrefix(c.AppPathPrefix, "/") ||
 		(c.AppPathPrefix != "" && strings.HasSuffix(c.AppPathPrefix, "/")) {
