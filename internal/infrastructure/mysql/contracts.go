@@ -31,6 +31,23 @@ func (r *Repository) ListApprovedContracts(ctx context.Context, tenantID string,
 	return result, nil
 }
 
+func (r *Repository) ListApprovedContractsScoped(ctx context.Context, filter contract.ScopeFilter, limit int) ([]contract.Contract, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var records []contractRecord
+	if err := applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter).
+		Where("status IN ?", contract.ApprovalPassedStatuses()).Omit("rendered_document", "template_values_json").
+		Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]contract.Contract, 0, len(records))
+	for _, record := range records {
+		result = append(result, contractFromRecord(record))
+	}
+	return result, nil
+}
+
 func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, document contract.StampedDocument) error {
 	digest := fmt.Sprintf("%x", sha256.Sum256(document.Document))
 	record := stampedDocumentRecord{ContractID: document.ContractID, TenantID: tenantID, OriginalFilename: document.OriginalFilename, ContentSHA256: digest, Document: document.Document, UploadedAt: document.UploadedAt, UploadedBy: document.UploadedBy}
@@ -90,6 +107,42 @@ func (r *Repository) ListSigningRecords(ctx context.Context, tenantID string, li
 	return result, nil
 }
 
+func (r *Repository) ListSigningRecordsScoped(ctx context.Context, filter contract.ScopeFilter, limit int) ([]contract.SigningRecord, error) {
+	contracts, err := r.ListApprovedContractsScoped(ctx, filter, limit)
+	if err != nil || len(contracts) == 0 {
+		return nil, err
+	}
+	return r.signingRecordsForContracts(ctx, filter.TenantID, contracts)
+}
+
+func (r *Repository) signingRecordsForContracts(ctx context.Context, tenantID string, contracts []contract.Contract) ([]contract.SigningRecord, error) {
+	ids := make([]string, 0, len(contracts))
+	for _, item := range contracts {
+		ids = append(ids, item.ID)
+	}
+	var signingRows []signingRecord
+	if err := r.db.WithContext(ctx).Where("tenant_id = ? AND contract_id IN ?", tenantID, ids).Find(&signingRows).Error; err != nil {
+		return nil, err
+	}
+	var documents []stampedDocumentRecord
+	if err := r.db.WithContext(ctx).Select("contract_id", "original_filename", "uploaded_at").Where("tenant_id = ? AND contract_id IN ?", tenantID, ids).Find(&documents).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[string]signingRecord, len(signingRows))
+	for _, row := range signingRows {
+		byID[row.ContractID] = row
+	}
+	docByID := make(map[string]stampedDocumentRecord, len(documents))
+	for _, row := range documents {
+		docByID[row.ContractID] = row
+	}
+	result := make([]contract.SigningRecord, 0, len(contracts))
+	for _, item := range contracts {
+		result = append(result, signingFromRecords(item, byID[item.ID], docByID[item.ID]))
+	}
+	return result, nil
+}
+
 func (r *Repository) GetSigningRecord(ctx context.Context, tenantID, contractID string) (contract.SigningRecord, error) {
 	item, err := r.GetContract(ctx, tenantID, contractID)
 	if err != nil {
@@ -102,6 +155,24 @@ func (r *Repository) GetSigningRecord(ctx context.Context, tenantID, contractID 
 	}
 	var document stampedDocumentRecord
 	err = r.db.WithContext(ctx).Select("contract_id", "original_filename", "uploaded_at").Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Take(&document).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.SigningRecord{}, err
+	}
+	return signingFromRecords(item, signing, document), nil
+}
+
+func (r *Repository) GetSigningRecordScoped(ctx context.Context, filter contract.ScopeFilter, contractID string) (contract.SigningRecord, error) {
+	item, err := r.GetContractScoped(ctx, filter, contractID)
+	if err != nil {
+		return contract.SigningRecord{}, err
+	}
+	var signing signingRecord
+	err = r.db.WithContext(ctx).Where("tenant_id = ? AND contract_id = ?", filter.TenantID, contractID).Take(&signing).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.SigningRecord{}, err
+	}
+	var document stampedDocumentRecord
+	err = r.db.WithContext(ctx).Select("contract_id", "original_filename", "uploaded_at").Where("tenant_id = ? AND contract_id = ?", filter.TenantID, contractID).Take(&document).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return contract.SigningRecord{}, err
 	}
@@ -219,7 +290,7 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 	record := contractRecord{
 		ID: c.ID, TenantID: c.TenantID, ContractNumber: stringPtr(c.Number), ContractNumberFormat: c.NumberFormat, Title: c.Title,
 		ContractType: c.Type, ServiceType: c.ServiceType, CustomerCreditLevel: stringPtr(c.CustomerCreditLevel),
-		OpportunityID: stringPtr(c.OpportunityID), OpportunityName: stringPtr(c.OpportunityName), CRMCustomerID: uintPtr(c.CRMCustomerID), CustomerName: stringPtr(c.CustomerName), CustomerAddress: stringPtr(c.CustomerAddress), CustomerContact: stringPtr(c.CustomerContact), CustomerPhone: stringPtr(c.CustomerPhone), SystemsJSON: systems, ServiceItemsJSON: serviceItems,
+		OpportunityID: stringPtr(c.OpportunityID), OpportunityName: stringPtr(c.OpportunityName), CRMCustomerID: uintPtr(c.CRMCustomerID), CustomerName: stringPtr(c.CustomerName), CustomerAddress: stringPtr(c.CustomerAddress), CustomerContact: stringPtr(c.CustomerContact), CustomerPhone: stringPtr(c.CustomerPhone), OwnerIdentityID: stringPtr(c.OwnerIdentityID), OwnerOrgID: stringPtr(c.OwnerOrgID), ProjectID: stringPtr(c.ProjectID), SystemsJSON: systems, ServiceItemsJSON: serviceItems,
 		OwnerUserID: c.OwnerUserID, OwnerDisplayName: c.OwnerDisplayName, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
 		TemplateID: stringPtr(c.TemplateID), TemplateValuesJSON: templateValues, RenderedDocument: c.Document,
 		Status: string(c.Status), StartDate: c.StartDate, EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,

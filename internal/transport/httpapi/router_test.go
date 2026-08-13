@@ -63,11 +63,11 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
 		return application.Principal{
 			TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六", UserName: "zhangliu", Email: "zhangliu@example.com", Roles: []string{"sales"},
-			Permissions:    map[string]bool{"contract.create": true, "contract.read": true},
-			RoleConfigHash: "hash-1", AuthzRevision: 9,
-			UserDirectory: []application.UserReference{
-				{UserID: "user-1", DisplayName: "章六"},
-				{UserID: "user-2", DisplayName: "蔡总"},
+			Permissions:           map[string]bool{"contract.create": true, "contract.read": true},
+			AuthorizationRevision: 9,
+			CatalogVersion:        "catalog-v1",
+			DataScopes: []application.DataScope{
+				{RoleCode: "sales", ScopeType: "SELF"},
 			},
 		}, nil
 	})
@@ -81,16 +81,16 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	}
 	var body struct {
 		Data struct {
-			TenantID       string                      `json:"tenant_id"`
-			UserID         string                      `json:"user_id"`
-			DisplayName    string                      `json:"display_name"`
-			UserName       string                      `json:"user_name"`
-			Email          string                      `json:"email"`
-			Role           map[string]string           `json:"role"`
-			Permissions    []string                    `json:"permissions"`
-			RoleConfigHash string                      `json:"role_config_hash"`
-			AuthzRevision  uint64                      `json:"authz_revision"`
-			UserDirectory  []application.UserReference `json:"user_directory"`
+			TenantID       string                  `json:"tenant_id"`
+			UserID         string                  `json:"user_id"`
+			DisplayName    string                  `json:"display_name"`
+			UserName       string                  `json:"user_name"`
+			Email          string                  `json:"email"`
+			Role           map[string]string       `json:"role"`
+			Permissions    []string                `json:"permissions"`
+			AuthzRevision  uint64                  `json:"authorization_revision"`
+			CatalogVersion string                  `json:"catalog_version"`
+			DataScopes     []application.DataScope `json:"data_scopes"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
@@ -98,9 +98,8 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	}
 	if body.Data.TenantID != "tenant-1" || body.Data.UserID != "user-1" || body.Data.DisplayName != "章六" || body.Data.UserName != "zhangliu" || body.Data.Email != "zhangliu@example.com" ||
 		body.Data.Role["code"] != "sales" || body.Data.AuthzRevision != 9 ||
-		body.Data.RoleConfigHash != "hash-1" || len(body.Data.Permissions) != 2 ||
-		len(body.Data.UserDirectory) != 2 || body.Data.UserDirectory[0].DisplayName != "章六" ||
-		body.Data.UserDirectory[1].DisplayName != "蔡总" {
+		body.Data.CatalogVersion != "catalog-v1" || len(body.Data.Permissions) != 2 ||
+		len(body.Data.DataScopes) != 1 || body.Data.DataScopes[0].RoleCode != "sales" {
 		t.Fatalf("data = %#v", body.Data)
 	}
 }

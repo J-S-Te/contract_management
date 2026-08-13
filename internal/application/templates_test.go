@@ -154,6 +154,9 @@ func TestCreateContractRendersAndFreezesTemplateDocument(t *testing.T) {
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "sales-1", DisplayName: "销售一号", Roles: []string{"sales"},
 		Permissions: map[string]bool{"contract.create": true},
+		PermissionScopes: map[string]contract.ScopeFilter{
+			"contract.create": {AllowSelf: true},
+		},
 	}
 
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{

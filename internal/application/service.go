@@ -22,18 +22,37 @@ import (
 )
 
 type Principal struct {
-	TenantID, UserID string
-	DisplayName      string
-	UserName         string
-	Email            string
-	UserDirectory    []UserReference
-	Roles            []string
-	Permissions      map[string]bool
-	RoleConfigHash   string
-	AuthzRevision    uint64
+	TenantID, UserID, IdentityID, PersonID string
+	DisplayName, UserName, Email           string
+	Roles                                  []string
+	Permissions                            map[string]bool
+	DataScopes                             []DataScope
+	PermissionScopes                       map[string]contract.ScopeFilter
+	AuthorizationRevision                  uint64
+	CatalogVersion                         string
 }
 
 func (p Principal) Has(permission string) bool { return p.Permissions[permission] }
+
+type DataScope struct {
+	RoleCode        string `json:"role_code"`
+	ScopeType       string `json:"scope_type"`
+	ScopeID         string `json:"scope_id"`
+	EnvironmentCode string `json:"environment_code"`
+}
+
+func (p Principal) Scope(permission string) (contract.ScopeFilter, bool) {
+	if !p.Has(permission) {
+		return contract.ScopeFilter{}, false
+	}
+	filter, ok := p.PermissionScopes[permission]
+	if !ok {
+		return contract.ScopeFilter{}, false
+	}
+	filter.TenantID = p.TenantID
+	filter.IdentityID = p.IdentityID
+	return filter, filter.AllowAll || filter.AllowSelf || len(filter.OrganizationIDs) > 0 || len(filter.ProjectIDs) > 0
+}
 
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
@@ -62,6 +81,19 @@ type Repository interface {
 	ListTasks(context.Context, string, string, int) ([]approval.Task, error)
 }
 
+type PersonnelDirectory interface {
+	ListEligibleUsers(context.Context, Principal, []string) ([]UserReference, error)
+}
+
+type ScopedRepository interface {
+	GetContractScoped(context.Context, contract.ScopeFilter, string) (contract.Contract, error)
+	ListContractsScoped(context.Context, contract.ScopeFilter, string, int) ([]contract.Contract, error)
+	ListApprovedContractsScoped(context.Context, contract.ScopeFilter, int) ([]contract.Contract, error)
+	ListSigningRecordsScoped(context.Context, contract.ScopeFilter, int) ([]contract.SigningRecord, error)
+	GetSigningRecordScoped(context.Context, contract.ScopeFilter, string) (contract.SigningRecord, error)
+	ContractDashboardScoped(context.Context, contract.ScopeFilter, time.Time, int) (contract.Dashboard, error)
+}
+
 type Service struct {
 	Repo             Repository
 	Templates        TemplateRepository
@@ -69,20 +101,27 @@ type Service struct {
 	TaskQueue        string
 	NodeTimeout      time.Duration
 	ReminderInterval time.Duration
+	Personnel        PersonnelDirectory
 }
 
 func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, limit int) ([]contract.Contract, error) {
-	if !actor.Has("contract.approved.read") {
+	filter, ok := actor.Scope("contract.approved.read")
+	if !ok {
 		return nil, ErrForbidden
 	}
-	return s.Repo.ListApprovedContracts(ctx, actor.TenantID, limit)
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		return scoped.ListApprovedContractsScoped(ctx, filter, limit)
+	}
+	items, err := s.Repo.ListApprovedContracts(ctx, actor.TenantID, limit)
+	return filterContracts(items, filter), err
 }
 
 func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, permission string) (contract.Contract, error) {
-	if !actor.Has(permission) {
+	filter, ok := actor.Scope(permission)
+	if !ok {
 		return contract.Contract{}, ErrForbidden
 	}
-	found, err := s.Repo.GetContract(ctx, actor.TenantID, id)
+	found, err := s.getContractScoped(ctx, filter, id)
 	if err != nil {
 		return found, err
 	}
@@ -107,17 +146,36 @@ func (s *Service) GetStampedDocument(ctx context.Context, actor Principal, id st
 }
 
 func (s *Service) ListSigningRecords(ctx context.Context, actor Principal, limit int) ([]contract.SigningRecord, error) {
-	if !actor.Has("contract.approved.read") {
+	filter, ok := actor.Scope("contract.approved.read")
+	if !ok {
 		return nil, ErrForbidden
 	}
-	return s.Repo.ListSigningRecords(ctx, actor.TenantID, limit)
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		return scoped.ListSigningRecordsScoped(ctx, filter, limit)
+	}
+	items, err := s.Repo.ListSigningRecords(ctx, actor.TenantID, limit)
+	result := make([]contract.SigningRecord, 0, len(items))
+	for _, item := range items {
+		if canAccessContract(filter, item.Contract) {
+			result = append(result, item)
+		}
+	}
+	return result, err
 }
 
 func (s *Service) GetSigningRecord(ctx context.Context, actor Principal, id string) (contract.SigningRecord, error) {
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.approved.read"); err != nil {
 		return contract.SigningRecord{}, err
 	}
-	return s.Repo.GetSigningRecord(ctx, actor.TenantID, id)
+	filter, _ := actor.Scope("contract.approved.read")
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		return scoped.GetSigningRecordScoped(ctx, filter, id)
+	}
+	item, err := s.Repo.GetSigningRecord(ctx, actor.TenantID, id)
+	if err == nil && !canAccessContract(filter, item.Contract) {
+		return contract.SigningRecord{}, ErrForbidden
+	}
+	return item, err
 }
 
 func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id string, shipment contract.SigningShipment) error {
@@ -178,7 +236,20 @@ type ApprovalDetail struct {
 }
 
 func (s *Service) CreateContract(ctx context.Context, actor Principal, c contract.Contract) (contract.Contract, error) {
-	if !actor.Has("contract.create") {
+	filter, ok := actor.Scope("contract.create")
+	if !ok {
+		return c, ErrForbidden
+	}
+	if filter.AllowSelf {
+		c.OwnerIdentityID = actor.IdentityID
+	}
+	if !filter.AllowAll && !filter.AllowSelf && !containsString(filter.OrganizationIDs, c.OwnerOrgID) && !containsString(filter.ProjectIDs, c.ProjectID) {
+		return c, ErrForbidden
+	}
+	if c.OwnerOrgID != "" && !filter.AllowAll && !containsString(filter.OrganizationIDs, c.OwnerOrgID) {
+		return c, ErrForbidden
+	}
+	if c.ProjectID != "" && !filter.AllowAll && !containsString(filter.ProjectIDs, c.ProjectID) {
 		return c, ErrForbidden
 	}
 	if c.TemplateID != "" {
@@ -213,6 +284,9 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		c.NumberFormat = contracttemplate.DefaultNumberFormat
 	}
 	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.DisplayName, contract.StatusDraft
+	if c.OwnerIdentityID == "" && filter.AllowAll {
+		c.OwnerIdentityID = actor.IdentityID
+	}
 	hashSource := []byte(c.Content)
 	if len(c.Document) > 0 {
 		hashSource = c.Document
@@ -261,15 +335,13 @@ func flattenedSystems(items []contract.ServiceItem) []contract.SystemInfo {
 }
 
 func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractID string, termsIdentical bool) (StartResult, error) {
-	if !actor.Has("contract.create") {
+	filter, ok := actor.Scope("contract.create")
+	if !ok {
 		return StartResult{}, ErrForbidden
 	}
-	c, err := s.Repo.GetContract(ctx, actor.TenantID, contractID)
+	c, err := s.getContractScoped(ctx, filter, contractID)
 	if err != nil {
 		return StartResult{}, err
-	}
-	if c.OwnerUserID != actor.UserID {
-		return StartResult{}, ErrForbidden
 	}
 	if c.Status != contract.StatusDraft {
 		return StartResult{}, apperrors.ErrStateConflict
@@ -288,7 +360,7 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	if matched != nil {
 		nodes, ruleID, ruleVersion = matched.Nodes, matched.ID, matched.Version
 	}
-	if err := s.resolveNodes(actor, nodes); err != nil {
+	if err := s.resolveNodes(ctx, actor, nodes); err != nil {
 		return StartResult{}, err
 	}
 	approvalID := ulid.Make().String()
@@ -306,18 +378,16 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 }
 
 func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID string, version uint64, target contract.Status, reason string) (StartResult, error) {
-	if !actor.Has("contract.edit") {
+	filter, ok := actor.Scope("contract.edit")
+	if !ok {
 		return StartResult{}, ErrForbidden
 	}
 	if reason == "" {
 		return StartResult{}, ErrValidation
 	}
-	c, err := s.Repo.GetContract(ctx, actor.TenantID, contractID)
+	c, err := s.getContractScoped(ctx, filter, contractID)
 	if err != nil {
 		return StartResult{}, err
-	}
-	if c.OwnerUserID != actor.UserID {
-		return StartResult{}, ErrForbidden
 	}
 	if c.Version != version {
 		return StartResult{}, apperrors.ErrVersionConflict
@@ -329,7 +399,11 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 		key := ulid.Make().String()
 		return StartResult{}, s.Repo.TransitionDirect(ctx, actor.TenantID, contractID, version, target, actor.UserID, reason, key)
 	}
-	admins := approversForRole(actor.UserDirectory, "admin")
+	directory, directoryErr := s.loadPersonnel(ctx, actor, []string{"admin"})
+	if directoryErr != nil {
+		return StartResult{}, directoryErr
+	}
+	admins := approversForRole(directory, "admin")
 	if len(admins) == 0 {
 		return StartResult{}, fmt.Errorf("no active platform user has role admin")
 	}
@@ -374,7 +448,11 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 		}
 	}
 	if command.Action == workflows.ActionAddSign {
-		if err := validateApprovalProcessTargets(actor.UserDirectory, command.TargetUserIDs); err != nil {
+		directory, directoryErr := s.loadPersonnel(ctx, actor, []string{"admin", "sales_director", "tech_director", "finance_director"})
+		if directoryErr != nil {
+			return "", directoryErr
+		}
+		if err := validateApprovalProcessTargets(directory, command.TargetUserIDs); err != nil {
 			return "", err
 		}
 	}
@@ -447,17 +525,11 @@ func (s *Service) ListMyApprovals(ctx context.Context, actor Principal, limit in
 }
 
 func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (contract.Contract, error) {
-	if !actor.Has("contract.read") {
+	filter, ok := actor.Scope("contract.read")
+	if !ok {
 		return contract.Contract{}, ErrForbidden
 	}
-	c, err := s.Repo.GetContract(ctx, actor.TenantID, id)
-	if err != nil {
-		return c, err
-	}
-	if c.OwnerUserID != actor.UserID && !hasRole(actor, "admin") {
-		return contract.Contract{}, ErrForbidden
-	}
-	return c, nil
+	return s.getContractScoped(ctx, filter, id)
 }
 
 func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id string) ([]contract.LifecycleEvent, error) {
@@ -468,21 +540,30 @@ func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id
 }
 
 func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, status string, limit int) ([]contract.Contract, error) {
-	if !actor.Has("contract.read") {
+	filter, ok := actor.Scope("contract.read")
+	if !ok {
 		return nil, ErrForbidden
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	ownerUserID := actor.UserID
-	if hasRole(actor, "admin") {
-		ownerUserID = ""
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		return scoped.ListContractsScoped(ctx, filter, status, limit)
 	}
-	return s.Repo.ListContracts(ctx, actor.TenantID, ownerUserID, status, limit)
+	if !filter.AllowAll && !filter.AllowSelf && len(filter.OrganizationIDs) == 0 && len(filter.ProjectIDs) == 0 {
+		return nil, ErrForbidden
+	}
+	ownerUserID := ""
+	if filter.AllowSelf {
+		ownerUserID = actor.UserID
+	}
+	items, err := s.Repo.ListContracts(ctx, actor.TenantID, ownerUserID, status, limit)
+	return filterContracts(items, filter), err
 }
 
 func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contract.Dashboard, error) {
-	if !actor.Has("contract.read") {
+	filter, ok := actor.Scope("contract.read")
+	if !ok {
 		return contract.Dashboard{}, ErrForbidden
 	}
 	if s.Repo == nil {
@@ -490,11 +571,16 @@ func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contr
 	}
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	ownerUserID := actor.UserID
-	if hasRole(actor, "admin") {
-		ownerUserID = ""
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		return scoped.ContractDashboardScoped(ctx, filter, today, 200)
 	}
-	return s.Repo.ContractDashboard(ctx, actor.TenantID, ownerUserID, today, 200)
+	if filter.AllowAll {
+		return s.Repo.ContractDashboard(ctx, actor.TenantID, "", today, 200)
+	}
+	if filter.AllowSelf {
+		return s.Repo.ContractDashboard(ctx, actor.TenantID, actor.UserID, today, 200)
+	}
+	return contract.Dashboard{}, ErrForbidden
 }
 
 func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Rule, error) {
@@ -566,12 +652,20 @@ func validateRule(rule approval.Rule) error {
 	return nil
 }
 
-func (s *Service) resolveNodes(actor Principal, nodes []approval.Node) error {
+func (s *Service) resolveNodes(ctx context.Context, actor Principal, nodes []approval.Node) error {
+	roleCodes := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		roleCodes = append(roleCodes, node.RoleCode)
+	}
+	directory, err := s.loadPersonnel(ctx, actor, unique(roleCodes))
+	if err != nil {
+		return err
+	}
 	for i := range nodes {
 		// Assignees are always rebuilt from the platform's current effective roles. Persisted
 		// rule assignee IDs are intentionally ignored so personnel changes do not require
 		// editing approval rules.
-		nodes[i].AssigneeIDs = approversForRole(actor.UserDirectory, nodes[i].RoleCode)
+		nodes[i].AssigneeIDs = approversForRole(directory, nodes[i].RoleCode)
 		nodes[i].AssigneeIDs = unique(nodes[i].AssigneeIDs)
 		nodes[i].Countersign = approval.CountersignAny
 		if nodes[i].ID == "" {
@@ -582,6 +676,17 @@ func (s *Service) resolveNodes(actor Principal, nodes []approval.Node) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) loadPersonnel(ctx context.Context, actor Principal, roleCodes []string) ([]UserReference, error) {
+	if s.Personnel == nil {
+		return nil, ErrPersonnelDirectoryUnavailable
+	}
+	directory, err := s.Personnel.ListEligibleUsers(ctx, actor, roleCodes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPersonnelDirectoryUnavailable, err)
+	}
+	return directory, nil
 }
 
 func defaultNodes() []approval.Node {
@@ -642,6 +747,54 @@ func (s *Service) taskQueue() string {
 	}
 	return s.TaskQueue
 }
+
+func (s *Service) getContractScoped(ctx context.Context, filter contract.ScopeFilter, id string) (contract.Contract, error) {
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		return scoped.GetContractScoped(ctx, filter, id)
+	}
+	item, err := s.Repo.GetContract(ctx, filter.TenantID, id)
+	if err != nil {
+		return item, err
+	}
+	if !canAccessContract(filter, item) {
+		return contract.Contract{}, ErrForbidden
+	}
+	return item, nil
+}
+
+func canAccessContract(filter contract.ScopeFilter, item contract.Contract) bool {
+	if item.TenantID != filter.TenantID {
+		return false
+	}
+	if filter.AllowAll {
+		return true
+	}
+	return filter.AllowSelf && item.OwnerIdentityID != "" && item.OwnerIdentityID == filter.IdentityID ||
+		item.OwnerOrgID != "" && containsString(filter.OrganizationIDs, item.OwnerOrgID) ||
+		item.ProjectID != "" && containsString(filter.ProjectIDs, item.ProjectID)
+}
+
+func filterContracts(items []contract.Contract, filter contract.ScopeFilter) []contract.Contract {
+	result := make([]contract.Contract, 0, len(items))
+	for _, item := range items {
+		if canAccessContract(filter, item) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func containsString(values []string, expected string) bool {
+	if expected == "" {
+		return false
+	}
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
 func unique(values []string) []string {
 	seen, result := map[string]bool{}, []string{}
 	for _, value := range values {
@@ -654,7 +807,8 @@ func unique(values []string) []string {
 }
 
 var (
-	ErrForbidden               = errors.New("forbidden")
-	ErrValidation              = errors.New("validation failed")
-	ErrApprovalTargetForbidden = errors.New("approval target cannot process contract approvals")
+	ErrForbidden                     = errors.New("forbidden")
+	ErrValidation                    = errors.New("validation failed")
+	ErrApprovalTargetForbidden       = errors.New("approval target cannot process contract approvals")
+	ErrPersonnelDirectoryUnavailable = errors.New("approval personnel directory is unavailable")
 )

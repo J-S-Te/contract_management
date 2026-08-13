@@ -14,6 +14,22 @@ import (
 	temporalmocks "go.temporal.io/sdk/mocks"
 )
 
+func allowAllScope(permission string) map[string]contract.ScopeFilter {
+	return map[string]contract.ScopeFilter{permission: {AllowAll: true}}
+}
+
+func allowSelfScope(permission string) map[string]contract.ScopeFilter {
+	return map[string]contract.ScopeFilter{permission: {AllowSelf: true}}
+}
+
+func allowAllScopes(permissions ...string) map[string]contract.ScopeFilter {
+	result := make(map[string]contract.ScopeFilter, len(permissions))
+	for _, permission := range permissions {
+		result[permission] = contract.ScopeFilter{AllowAll: true}
+	}
+	return result
+}
+
 type recordingRepository struct {
 	ownerUserID          string
 	contract             contract.Contract
@@ -24,6 +40,15 @@ type recordingRepository struct {
 	dashboard            contract.Dashboard
 	dashboardTenantID    string
 	dashboardOwnerUserID string
+}
+
+type personnelStub struct {
+	users []UserReference
+	err   error
+}
+
+func (s personnelStub) ListEligibleUsers(context.Context, Principal, []string) ([]UserReference, error) {
+	return s.users, s.err
 }
 
 func (r *recordingRepository) GetContract(context.Context, string, string) (contract.Contract, error) {
@@ -121,9 +146,10 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	repository := &recordingRepository{}
 	service := &Service{Repo: repository}
 	actor := Principal{
-		TenantID:    "tenant-1",
-		UserID:      "user-1",
-		Permissions: map[string]bool{"contract.read": true},
+		TenantID:         "tenant-1",
+		UserID:           "user-1",
+		Permissions:      map[string]bool{"contract.read": true},
+		PermissionScopes: allowSelfScope("contract.read"),
 	}
 
 	if _, err := service.ListContracts(context.Background(), actor, "another-user", "", 50); err != nil {
@@ -137,7 +163,13 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 func TestAdminListContractsUsesTenantScopeAndCanReadTenantContract(t *testing.T) {
 	repository := &recordingRepository{contract: contract.Contract{ID: "contract-2", TenantID: "tenant-1", OwnerUserID: "user-2"}}
 	service := &Service{Repo: repository}
-	actor := Principal{TenantID: "tenant-1", UserID: "admin-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "admin-1",
+		Roles:            []string{"admin"},
+		Permissions:      map[string]bool{"contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
 
 	if _, err := service.ListContracts(context.Background(), actor, "", "", 50); err != nil {
 		t.Fatalf("ListContracts() error = %v", err)
@@ -157,7 +189,13 @@ func TestAdminCanListTenantContractLifecycle(t *testing.T) {
 		lifecycle: want,
 	}
 	service := &Service{Repo: repository}
-	actor := Principal{TenantID: "tenant-1", UserID: "admin-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "admin-1",
+		Roles:            []string{"admin"},
+		Permissions:      map[string]bool{"contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
 
 	got, err := service.ListContractLifecycle(context.Background(), actor, "contract-2")
 	if err != nil {
@@ -172,7 +210,12 @@ func TestContractDashboardScopesAdminToTenantAndOtherUsersToSelf(t *testing.T) {
 	want := contract.Dashboard{TotalContracts: 8, TotalAmountMinor: 9000, ApprovalContracts: 2, ActiveContracts: 3, ExpiredContracts: 1}
 	repository := &recordingRepository{dashboard: want}
 	service := &Service{Repo: repository}
-	admin := Principal{TenantID: "tenant-1", Roles: []string{"admin"}, Permissions: map[string]bool{"contract.read": true}}
+	admin := Principal{
+		TenantID:         "tenant-1",
+		Roles:            []string{"admin"},
+		Permissions:      map[string]bool{"contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
 
 	got, err := service.ContractDashboard(context.Background(), admin)
 	if err != nil || got.TotalContracts != want.TotalContracts || got.ApprovalContracts != want.ApprovalContracts {
@@ -181,7 +224,13 @@ func TestContractDashboardScopesAdminToTenantAndOtherUsersToSelf(t *testing.T) {
 	if repository.dashboardTenantID != "tenant-1" || repository.dashboardOwnerUserID != "" {
 		t.Fatalf("admin dashboard scope = tenant %q, owner %q", repository.dashboardTenantID, repository.dashboardOwnerUserID)
 	}
-	user := Principal{TenantID: "tenant-2", UserID: "sales-1", Roles: []string{"sales"}, Permissions: map[string]bool{"contract.read": true}}
+	user := Principal{
+		TenantID:         "tenant-2",
+		UserID:           "sales-1",
+		Roles:            []string{"sales"},
+		Permissions:      map[string]bool{"contract.read": true},
+		PermissionScopes: allowSelfScope("contract.read"),
+	}
 	if _, err := service.ContractDashboard(context.Background(), user); err != nil {
 		t.Fatalf("ContractDashboard() user error = %v", err)
 	}
@@ -197,8 +246,11 @@ func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 	repository := &recordingRepository{}
 	service := serviceWithContractTemplate(t, repository)
 	actor := Principal{
-		TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六",
-		Permissions: map[string]bool{"contract.create": true},
+		TenantID:         "tenant-1",
+		UserID:           "user-1",
+		DisplayName:      "章六",
+		Permissions:      map[string]bool{"contract.create": true},
+		PermissionScopes: allowAllScope("contract.create"),
 	}
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
 		Number: "CON-001", Title: "合同", Type: "service", TemplateID: "template-1",
@@ -216,7 +268,12 @@ func TestCreateContractStoresChineseDisplayNameSnapshot(t *testing.T) {
 func TestCreateContractAllowsNumberToBeAssignedAfterApproval(t *testing.T) {
 	repository := &recordingRepository{}
 	service := serviceWithContractTemplate(t, repository)
-	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "user-1",
+		Permissions:      map[string]bool{"contract.create": true},
+		PermissionScopes: allowAllScope("contract.create"),
+	}
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{
 		Title: "测评合同", Type: "直签", TemplateID: "template-1", CustomerName: "示例客户",
 		ServiceItems: []contract.ServiceItem{{ServiceType: "等保测评", Systems: []contract.SystemInfo{{Name: "业务系统", Level: "三级"}}}},
@@ -230,7 +287,12 @@ func TestCreateContractAllowsNumberToBeAssignedAfterApproval(t *testing.T) {
 }
 
 func TestCreateContractRequiresTemplateAndServiceItems(t *testing.T) {
-	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "user-1",
+		Permissions:      map[string]bool{"contract.create": true},
+		PermissionScopes: allowAllScope("contract.create"),
+	}
 	withoutTemplate := &Service{Repo: &recordingRepository{}}
 	_, err := withoutTemplate.CreateContract(context.Background(), actor, contract.Contract{
 		Title: "测评合同", Type: "直签", Content: "手工正文",
@@ -253,7 +315,12 @@ func TestCreateContractRejectsStartDateAfterEndDate(t *testing.T) {
 	start := time.Date(2026, time.February, 2, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, -1)
 	service := serviceWithContractTemplate(t, &recordingRepository{})
-	actor := Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.create": true}}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "user-1",
+		Permissions:      map[string]bool{"contract.create": true},
+		PermissionScopes: allowAllScope("contract.create"),
+	}
 	_, err := service.CreateContract(context.Background(), actor, contract.Contract{
 		Number: "CON-001", Title: "合同", Type: "service", TemplateID: "template-1",
 		ServiceItems: []contract.ServiceItem{{ServiceType: "consulting"}},
@@ -283,10 +350,12 @@ func TestListContractsIgnoresRequestedOwnerEvenWithLegacyManagerPermission(t *te
 	actor := Principal{
 		TenantID: "tenant-1",
 		UserID:   "manager-1",
+		// Keep legacy manager permission while enforcing scope-based checks.
 		Permissions: map[string]bool{
 			"contract.read":   true,
 			"contract.manage": true,
 		},
+		PermissionScopes: allowSelfScope("contract.read"),
 	}
 
 	if _, err := service.ListContracts(context.Background(), actor, "user-2", "", 50); err != nil {
@@ -313,18 +382,19 @@ func TestDefaultApprovalNodesUseManifestRoleCodes(t *testing.T) {
 }
 
 func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) {
-	service := &Service{}
-	actor := Principal{UserDirectory: []UserReference{
+	directory := []UserReference{
 		{UserID: "director-2", Roles: []string{"sales_director"}},
 		{UserID: "director-1", Roles: []string{"sales_director", "tech_director"}},
 		{UserID: "ordinary-user", Roles: []string{"sales"}},
-	}}
+	}
+	service := &Service{Personnel: personnelStub{users: directory}}
+	actor := Principal{}
 	nodes := []approval.Node{{
 		ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director",
 		Countersign: approval.CountersignAll, AssigneeIDs: []string{"stale-configured-user"},
 	}}
 
-	if err := service.resolveNodes(actor, nodes); err != nil {
+	if err := service.resolveNodes(context.Background(), actor, nodes); err != nil {
 		t.Fatalf("resolveNodes() error = %v", err)
 	}
 	if nodes[0].Countersign != approval.CountersignAny {
@@ -336,9 +406,9 @@ func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) 
 }
 
 func TestResolveNodesRejectsRoleWithoutActivePlatformHolder(t *testing.T) {
-	service := &Service{}
+	service := &Service{Personnel: personnelStub{}}
 	nodes := []approval.Node{{ID: "finance", RoleCode: "finance_director"}}
-	if err := service.resolveNodes(Principal{}, nodes); err == nil {
+	if err := service.resolveNodes(context.Background(), Principal{}, nodes); err == nil {
 		t.Fatal("resolveNodes() error = nil")
 	}
 }
@@ -437,13 +507,12 @@ func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
 		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
 		WorkflowID: "workflow-1", RunID: "run-1",
 	}}
-	service := &Service{Repo: repository, Temporal: temporal}
+	service := &Service{Repo: repository, Temporal: temporal, Personnel: personnelStub{users: []UserReference{
+		{UserID: "sales-1", Roles: []string{"sales"}},
+		{UserID: "specialist-1", Roles: []string{"contract_specialist"}},
+	}}}
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
-		UserDirectory: []UserReference{
-			{UserID: "sales-1", Roles: []string{"sales"}},
-			{UserID: "specialist-1", Roles: []string{"contract_specialist"}},
-		},
 	}
 
 	for _, target := range []string{"sales-1", "specialist-1", "unknown-user"} {
@@ -462,10 +531,9 @@ func TestCommandAllowsAddSignTargetWithApprovalProcessRole(t *testing.T) {
 		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
 		WorkflowID: "workflow-1", RunID: "run-1",
 	}}
-	service := &Service{Repo: repository, Temporal: temporal}
+	service := &Service{Repo: repository, Temporal: temporal, Personnel: personnelStub{users: []UserReference{{UserID: "finance-1", Roles: []string{"finance_director"}}}}}
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true},
-		UserDirectory: []UserReference{{UserID: "finance-1", Roles: []string{"finance_director"}}},
 	}
 
 	if commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{"finance-1"}}); err != nil || commandID == "" {

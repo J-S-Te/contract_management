@@ -49,6 +49,11 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
+	oidcStore, err := platform.NewGORMOIDCStore(db)
+	if err != nil {
+		logger.Error("OIDC session store failed", "error", err)
+		os.Exit(1)
+	}
 	if cfg.ProjectIntegrationEnabled {
 		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger}
 		go dispatcher.Run(ctx)
@@ -68,6 +73,13 @@ func main() {
 		Scopes: cfg.OIDCScopes, TenantID: cfg.OIDCTenantID, SessionCookieName: cfg.OIDCSessionCookieName,
 		SessionTTL: cfg.OIDCSessionTTL, SessionSecure: cfg.OIDCSessionSecure,
 		AuthorizationRefreshInterval: cfg.OIDCAuthorizationRefresh,
+		AuthorizationTimeout:         cfg.OIDCAuthorizationTimeout,
+		AuthorizationMaxStale:        cfg.OIDCAuthorizationMaxStale,
+		PlatformBaseURL:              cfg.PlatformBaseURL,
+		ApplicationCode:              cfg.PlatformApplicationCode,
+		EnvironmentCode:              cfg.PlatformEnvironmentCode,
+		SessionEncryptionKey:         cfg.OIDCSessionEncryptionKey,
+		Store:                        oidcStore,
 		PathPrefix:                   cfg.AppPathPrefix,
 	})
 	if err != nil {

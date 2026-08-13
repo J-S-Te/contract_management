@@ -2,375 +2,151 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/application"
-	"golang.org/x/oauth2"
+	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
-func TestNewOIDCAuthenticatorUsesDiscoveredKeycloakEndpoints(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/realms/basic-platform/.well-known/openid-configuration" {
-			http.NotFound(writer, request)
-			return
+func TestValidateCompactIDTokenClaimsAcceptsStableIdentityOnly(t *testing.T) {
+	identity, err := validateCompactIDTokenClaims(oidcIDTokenClaims{Subject: "identity-1", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "id_token"}, "nonce-1", "tenant-1")
+	if err != nil {
+		t.Fatalf("validateCompactIDTokenClaims() error = %v", err)
+	}
+	if identity.Subject != "identity-1" || identity.IdentityID != identity.Subject {
+		t.Fatalf("identity = %#v", identity)
+	}
+}
+
+func TestValidateCompactIDTokenClaimsRejectsBoundaryMismatch(t *testing.T) {
+	tests := []oidcIDTokenClaims{
+		{Subject: "identity-1", IdentityID: "identity-2", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "id_token"},
+		{Subject: "identity-1", TenantID: "tenant-2", Nonce: "nonce-1", TokenUse: "id_token"},
+		{Subject: "identity-1", TenantID: "tenant-1", Nonce: "wrong", TokenUse: "id_token"},
+		{Subject: "identity-1", TenantID: "tenant-1", Nonce: "nonce-1", TokenUse: "access_token"},
+	}
+	for _, claims := range tests {
+		if _, err := validateCompactIDTokenClaims(claims, "nonce-1", "tenant-1"); err == nil {
+			t.Fatalf("claims %#v accepted", claims)
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(writer, `{
-			"issuer": %q,
-			"authorization_endpoint": %q,
-			"token_endpoint": %q,
-			"userinfo_endpoint": %q,
-			"jwks_uri": %q,
-			"end_session_endpoint": %q
-		}`,
-			server.URL+"/realms/basic-platform",
-			server.URL+"/realms/basic-platform/protocol/openid-connect/auth",
-			server.URL+"/realms/basic-platform/protocol/openid-connect/token",
-			server.URL+"/realms/basic-platform/protocol/openid-connect/userinfo",
-			server.URL+"/realms/basic-platform/protocol/openid-connect/certs",
-			server.URL+"/realms/basic-platform/protocol/openid-connect/logout",
-		)
-	}))
+	}
+}
+
+func TestPrincipalFromAuthorizationContextAllowsApplicationEmptyScopeID(t *testing.T) {
+	catalog := testCatalog()
+	principal, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, AuthorizationContext{
+		Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "contract_management-prod-web", ApplicationCode: "contract_management", EnvironmentCode: "prod",
+		Roles: []string{"sales"}, Permissions: []string{"contract.read"}, AuthorizationRevision: 2,
+		DataScopes: []AuthorizationDataScope{{RoleCode: "sales", ScopeType: "APPLICATION"}},
+	}, catalog, "contract_management-prod-web", "contract_management", "prod")
+	if err != nil {
+		t.Fatalf("principalFromAuthorizationContext() error = %v", err)
+	}
+	filter, ok := principal.Scope("contract.read")
+	if !ok || !filter.AllowAll {
+		t.Fatalf("scope = %#v, %v", filter, ok)
+	}
+}
+
+func TestPrincipalFromAuthorizationContextTreatsMatchingEnvironmentAsAll(t *testing.T) {
+	principal, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, AuthorizationContext{
+		Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "client-1", ApplicationCode: "contract_management", EnvironmentCode: "prod",
+		Roles: []string{"sales"}, Permissions: []string{"contract.read"}, AuthorizationRevision: 1,
+		DataScopes: []AuthorizationDataScope{{RoleCode: "sales", ScopeType: "ENVIRONMENT", ScopeID: "env-internal-1", EnvironmentCode: "prod"}},
+	}, testCatalog(), "client-1", "contract_management", "prod")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	filter, ok := principal.Scope("contract.read")
+	if !ok || !filter.AllowAll {
+		t.Fatalf("scope = %#v", filter)
+	}
+}
+
+func TestPrincipalFromAuthorizationContextRejectsUnknownAndMalformedScopes(t *testing.T) {
+	tests := []AuthorizationDataScope{
+		{RoleCode: "sales", ScopeType: "APPLICATION", EnvironmentCode: "prod"},
+		{RoleCode: "sales", ScopeType: "ENVIRONMENT", ScopeID: "env-1", EnvironmentCode: "dev"},
+		{RoleCode: "sales", ScopeType: "SELF", ScopeID: "other"},
+		{RoleCode: "sales", ScopeType: "ORG"},
+		{RoleCode: "sales", ScopeType: "UNKNOWN", ScopeID: "x"},
+	}
+	for _, scope := range tests {
+		_, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, AuthorizationContext{
+			Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "client-1", ApplicationCode: "contract_management", EnvironmentCode: "prod",
+			Roles: []string{"sales"}, Permissions: []string{"contract.read"}, AuthorizationRevision: 1, DataScopes: []AuthorizationDataScope{scope},
+		}, testCatalog(), "client-1", "contract_management", "prod")
+		if err == nil {
+			t.Fatalf("scope %#v accepted", scope)
+		}
+	}
+}
+
+func TestPrincipalFromAuthorizationContextRejectsClientApplicationEnvironmentMismatch(t *testing.T) {
+	base := AuthorizationContext{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "wrong", ApplicationCode: "contract_management", EnvironmentCode: "prod", Roles: []string{"sales"}, Permissions: []string{"contract.read"}, AuthorizationRevision: 1, DataScopes: []AuthorizationDataScope{{RoleCode: "sales", ScopeType: "APPLICATION"}}}
+	_, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, base, testCatalog(), "client-1", "contract_management", "prod")
+	if !errors.Is(err, ErrAuthorizationInvalid) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSecretCodecEncryptsAndAuthenticatesValues(t *testing.T) {
+	codec, err := newSecretCodec(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := codec.encrypt("access-token-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ciphertext) == "access-token-value" {
+		t.Fatal("ciphertext contains plaintext")
+	}
+	got, err := codec.decrypt(ciphertext)
+	if err != nil || got != "access-token-value" {
+		t.Fatalf("decrypt = %q, %v", got, err)
+	}
+	ciphertext[len(ciphertext)-1] ^= 1
+	if _, err := codec.decrypt(ciphertext); err == nil {
+		t.Fatal("tampered ciphertext accepted")
+	}
+}
+
+func TestHTTPAuthorizationContextClientClassifiesStatuses(t *testing.T) {
+	for status, expected := range map[int]error{http.StatusUnauthorized: ErrAuthorizationUnauthorized, http.StatusForbidden: ErrAuthorizationForbidden, http.StatusInternalServerError: ErrAuthorizationUnavailable} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
+		client, _ := NewHTTPAuthorizationContextClient(server.URL, time.Second, nil)
+		_, err := client.Resolve(context.Background(), "token")
+		server.Close()
+		if !errors.Is(err, expected) {
+			t.Fatalf("status %d error = %v", status, err)
+		}
+	}
+}
+
+func TestHTTPAuthorizationContextClientRequiresSingleJSONObject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"sub":"one"}{"sub":"two"}`)) }))
 	defer server.Close()
-
-	authenticator, err := NewOIDCAuthenticator(context.Background(), OIDCOptions{
-		Issuer:       server.URL + "/realms/basic-platform",
-		ClientID:     "contract_management-prod-web",
-		ClientSecret: "secret",
-		RedirectURI:  "http://contract.example.com/contract_management/auth/callback",
-		Scopes:       []string{"openid", "profile"},
-	})
-	if err != nil {
-		t.Fatalf("NewOIDCAuthenticator() error = %v", err)
-	}
-	if authenticator.oauth2Config.Endpoint.AuthURL != server.URL+"/realms/basic-platform/protocol/openid-connect/auth" ||
-		authenticator.oauth2Config.Endpoint.TokenURL != server.URL+"/realms/basic-platform/protocol/openid-connect/token" ||
-		authenticator.endSessionEndpoint != server.URL+"/realms/basic-platform/protocol/openid-connect/logout" {
-		t.Fatalf("discovered endpoints = %#v, logout = %q", authenticator.oauth2Config.Endpoint, authenticator.endSessionEndpoint)
+	client, _ := NewHTTPAuthorizationContextClient(server.URL, time.Second, nil)
+	if _, err := client.Resolve(context.Background(), "token"); !errors.Is(err, ErrAuthorizationInvalid) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestOIDCLocalSessionUsesIndependentCookie(t *testing.T) {
-	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
-	authenticator := &OIDCAuthenticator{
-		options: OIDCOptions{
-			SessionCookieName:            "contract_management_session",
-			SessionTTL:                   time.Hour,
-			AuthorizationRefreshInterval: time.Minute,
-			PathPrefix:                   "/contract_management",
-		},
-		now:          func() time.Time { return now },
-		transactions: make(map[string]loginTransaction),
-		sessions: map[string]*localSession{
-			"local-session": {
-				Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
-				RefreshedAt:    now,
-				TokenExpiresAt: now.Add(time.Hour),
-				ExpiresAt:      now.Add(time.Hour),
-			},
-		},
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/contracts", nil)
-	request.AddCookie(&http.Cookie{Name: "bp_session", Value: "platform-session"})
-	if _, err := authenticator.Authenticate(context.Background(), request); err != ErrUnauthenticated {
-		t.Fatalf("Authenticate() with platform cookie error = %v, want ErrUnauthenticated", err)
-	}
-	request.AddCookie(&http.Cookie{Name: "contract_management_session", Value: "local-session"})
-	principal, err := authenticator.Authenticate(context.Background(), request)
-	if err != nil {
-		t.Fatalf("Authenticate() error = %v", err)
-	}
-	if principal.TenantID != "tenant-1" || principal.UserID != "user-1" {
-		t.Fatalf("principal = %#v", principal)
+func TestSessionPrincipalRoundTripIncludesDataScopes(t *testing.T) {
+	want := application.Principal{TenantID: "tenant-1", UserID: "identity-1", IdentityID: "identity-1", AuthorizationRevision: 3, Permissions: map[string]bool{"contract.read": true}, PermissionScopes: map[string]contract.ScopeFilter{"contract.read": {AllowAll: true}}}
+	raw, _ := json.Marshal(want)
+	got, err := principalFromJSON(raw)
+	if err != nil || !got.PermissionScopes["contract.read"].AllowAll {
+		t.Fatalf("round trip = %#v, %v", got, err)
 	}
 }
 
-func TestOIDCSessionKeepsValidTokenAndBacksOffAfterTransientRefreshFailure(t *testing.T) {
-	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
-	session := &localSession{
-		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
-		RefreshedAt:    now.Add(-time.Minute),
-		TokenExpiresAt: now.Add(time.Minute),
-		ExpiresAt:      now.Add(time.Hour),
-	}
-	refreshCalls := 0
-	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
-		refreshCalls++
-		return errors.New("platform temporarily unavailable")
-	})
-
-	request := refreshTestRequest()
-	principal, err := authenticator.Authenticate(context.Background(), request)
-	if err != nil || principal.UserID != "user-1" {
-		t.Fatalf("first Authenticate() principal = %#v, error = %v", principal, err)
-	}
-	if refreshCalls != 1 || session.RefreshRetryAt != now.Add(authorizationRefreshRetryInterval) {
-		t.Fatalf("refresh calls = %d, retry at = %v", refreshCalls, session.RefreshRetryAt)
-	}
-	if _, exists := authenticator.sessions["local-session"]; !exists {
-		t.Fatal("valid session was deleted after transient refresh failure")
-	}
-
-	principal, err = authenticator.Authenticate(context.Background(), request)
-	if err != nil || principal.UserID != "user-1" || refreshCalls != 1 {
-		t.Fatalf("backoff Authenticate() principal = %#v, error = %v, refresh calls = %d", principal, err, refreshCalls)
-	}
-}
-
-func TestOIDCSessionRetriesTransientRefreshFailureAfterBackoff(t *testing.T) {
-	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
-	session := &localSession{
-		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
-		RefreshedAt:    now.Add(-time.Minute),
-		RefreshRetryAt: now,
-		TokenExpiresAt: now.Add(time.Minute),
-		ExpiresAt:      now.Add(time.Hour),
-	}
-	refreshCalls := 0
-	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
-		refreshCalls++
-		return errors.New("temporary network error")
-	})
-
-	if _, err := authenticator.Authenticate(context.Background(), refreshTestRequest()); err != nil {
-		t.Fatalf("Authenticate() error = %v", err)
-	}
-	if refreshCalls != 1 {
-		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
-	}
-}
-
-func TestOIDCSessionDeletesExpiredTokenWhenRefreshFails(t *testing.T) {
-	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
-	session := &localSession{
-		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
-		RefreshedAt:    now.Add(-time.Minute),
-		TokenExpiresAt: now,
-		ExpiresAt:      now.Add(time.Hour),
-	}
-	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
-		return errors.New("temporary network error")
-	})
-
-	if _, err := authenticator.Authenticate(context.Background(), refreshTestRequest()); !errors.Is(err, ErrUnauthenticated) {
-		t.Fatalf("Authenticate() error = %v, want ErrUnauthenticated", err)
-	}
-	if _, exists := authenticator.sessions["local-session"]; exists {
-		t.Fatal("expired session still exists after refresh failure")
-	}
-}
-
-func TestOIDCSessionDeletesValidTokenWhenRefreshTokenIsRejected(t *testing.T) {
-	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
-	session := &localSession{
-		Principal:      application.Principal{TenantID: "tenant-1", UserID: "user-1"},
-		RefreshedAt:    now.Add(-time.Minute),
-		TokenExpiresAt: now.Add(time.Minute),
-		ExpiresAt:      now.Add(time.Hour),
-	}
-	authenticator := newRefreshTestAuthenticator(now, session, func(context.Context, *localSession, time.Time) error {
-		return &oauth2.RetrieveError{
-			Response:  &http.Response{StatusCode: http.StatusBadRequest},
-			ErrorCode: "invalid_grant",
-		}
-	})
-
-	if _, err := authenticator.Authenticate(context.Background(), refreshTestRequest()); !errors.Is(err, ErrUnauthenticated) {
-		t.Fatalf("Authenticate() error = %v, want ErrUnauthenticated", err)
-	}
-	if _, exists := authenticator.sessions["local-session"]; exists {
-		t.Fatal("session still exists after refresh token rejection")
-	}
-}
-
-func newRefreshTestAuthenticator(now time.Time, session *localSession, refresh func(context.Context, *localSession, time.Time) error) *OIDCAuthenticator {
-	return &OIDCAuthenticator{
-		options: OIDCOptions{
-			SessionCookieName:            "contract_management_session",
-			SessionTTL:                   time.Hour,
-			AuthorizationRefreshInterval: time.Minute,
-		},
-		now:      func() time.Time { return now },
-		refresh:  refresh,
-		sessions: map[string]*localSession{"local-session": session},
-	}
-}
-
-func refreshTestRequest() *http.Request {
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/contracts", nil)
-	request.AddCookie(&http.Cookie{Name: "contract_management_session", Value: "local-session"})
-	return request
-}
-
-func TestOIDCSessionCookieIsScopedToSubsystem(t *testing.T) {
-	authenticator := &OIDCAuthenticator{options: OIDCOptions{
-		SessionCookieName: "contract_management_session", PathPrefix: "/contract_management",
-		SessionSecure: true,
-	}}
-	cookie := authenticator.sessionCookie("session", time.Now().Add(time.Hour))
-	if cookie.Path != "/contract_management" || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("cookie = %#v", cookie)
-	}
-}
-
-func TestOIDCLocalLogoutClearsOnlySubsystemSessionWithoutRedirect(t *testing.T) {
-	authenticator := &OIDCAuthenticator{
-		options: OIDCOptions{SessionCookieName: "contract_management_session", PathPrefix: "/contract_management"},
-		sessions: map[string]*localSession{
-			"old-user-session": {IDToken: "old-id-token"},
-		},
-	}
-	request := httptest.NewRequest(http.MethodPost, "/auth/local-logout", nil)
-	request.AddCookie(&http.Cookie{Name: "contract_management_session", Value: "old-user-session"})
-	response := httptest.NewRecorder()
-
-	authenticator.LogoutLocal(response, request)
-
-	if response.Code != http.StatusNoContent || response.Header().Get("Location") != "" {
-		t.Fatalf("status = %d, location = %q", response.Code, response.Header().Get("Location"))
-	}
-	if _, exists := authenticator.sessions["old-user-session"]; exists {
-		t.Fatal("old subsystem session still exists")
-	}
-	cookies := response.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "contract_management_session" || cookies[0].MaxAge != -1 || cookies[0].Path != "/contract_management" {
-		t.Fatalf("expired cookies = %#v", cookies)
-	}
-}
-
-func TestOIDCBackchannelTransportRewritesOnlyIssuerOrigin(t *testing.T) {
-	publicURL, _ := url.Parse("http://localhost:8081")
-	backchannelURL, _ := url.Parse("http://api:8080")
-	transport := &backchannelTransport{
-		public: publicURL, backchannel: backchannelURL,
-		base: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-			if request.URL.String() != "http://api:8080/oauth2/jwks" {
-				t.Fatalf("rewritten URL = %q", request.URL.String())
-			}
-			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
-		}),
-	}
-	request := httptest.NewRequest(http.MethodGet, "http://localhost:8081/oauth2/jwks", nil)
-	if _, err := transport.RoundTrip(request); err != nil {
-		t.Fatalf("RoundTrip() error = %v", err)
-	}
-	if request.URL.String() != "http://localhost:8081/oauth2/jwks" {
-		t.Fatalf("original request was mutated: %q", request.URL.String())
-	}
-}
-
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	return function(request)
-}
-
-func TestOIDCPublicPathUsesConfiguredPortalPrefix(t *testing.T) {
-	authenticator := &OIDCAuthenticator{options: OIDCOptions{PathPrefix: "/contract_management"}}
-	if got := authenticator.PublicPath("/auth/login"); got != "/contract_management/auth/login" {
-		t.Fatalf("PublicPath() = %q, want %q", got, "/contract_management/auth/login")
-	}
-}
-
-func TestPrincipalFromOIDCClaimsUsesMappedAuthorization(t *testing.T) {
-	principal, err := principalFromOIDCClaims(oidcIDTokenClaims{
-		Subject: "user-1", TenantID: "tenant-1", Roles: []string{"sales"},
-		Permissions:    []string{"contract.read", "contract.create"},
-		RoleConfigHash: "hash-1", AuthzRevision: 7,
-	}, "tenant-1")
-	if err != nil {
-		t.Fatalf("principalFromOIDCClaims() error = %v", err)
-	}
-	if principal.UserID != "user-1" || principal.TenantID != "tenant-1" ||
-		!principal.Has("contract.read") || principal.Has("approval.process") ||
-		principal.AuthzRevision != 7 || principal.RoleConfigHash != "hash-1" {
-		t.Fatalf("principal = %#v", principal)
-	}
-}
-
-func TestPrincipalFromOIDCClaimsRejectsTenantMismatch(t *testing.T) {
-	_, err := principalFromOIDCClaims(oidcIDTokenClaims{
-		Subject: "user-1", TenantID: "tenant-2", Roles: []string{"sales"},
-		Permissions: []string{"contract.read"}, RoleConfigHash: "hash-1", AuthzRevision: 1,
-	}, "tenant-1")
-	if err == nil {
-		t.Fatal("principalFromOIDCClaims() error = nil, want tenant mismatch")
-	}
-}
-
-func TestPrincipalFromOIDCClaimsRejectsWildcardPermission(t *testing.T) {
-	_, err := principalFromOIDCClaims(oidcIDTokenClaims{
-		Subject: "admin-1", TenantID: "tenant-1", Roles: []string{"admin"},
-		Permissions: []string{"all"}, RoleConfigHash: "hash-1", AuthzRevision: 2,
-	}, "tenant-1")
-	if err == nil {
-		t.Fatal("principalFromOIDCClaims() error = nil, want wildcard rejection")
-	}
-}
-
-func TestOIDCLogoutUsesDiscoveredKeycloakEndSessionEndpoint(t *testing.T) {
-	authenticator := &OIDCAuthenticator{
-		options: OIDCOptions{
-			ClientID:              "contract_management-prod-web",
-			PostLogoutRedirectURI: "http://47.111.20.119/contract_management/logged-out",
-			SessionCookieName:     "contract_management_session",
-			PathPrefix:            "/contract_management",
-		},
-		endSessionEndpoint: "http://47.111.20.119:18090/realms/basic-platform/protocol/openid-connect/logout",
-		sessions:           make(map[string]*localSession),
-	}
-	request := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
-	response := httptest.NewRecorder()
-
-	authenticator.Logout(response, request)
-
-	location, err := url.Parse(response.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse logout redirect: %v", err)
-	}
-	if response.Code != http.StatusFound || location.Path != "/realms/basic-platform/protocol/openid-connect/logout" {
-		t.Fatalf("status = %d, location = %q", response.Code, location.String())
-	}
-	if location.Query().Get("client_id") != "contract_management-prod-web" ||
-		location.Query().Get("post_logout_redirect_uri") != "http://47.111.20.119/contract_management/logged-out" ||
-		location.Query().Get("state") == "" {
-		t.Fatalf("logout query = %v", location.Query())
-	}
-}
-
-func TestOIDCLogoutFallsBackToLocalRedirectWithoutDiscoveredEndpoint(t *testing.T) {
-	authenticator := &OIDCAuthenticator{
-		options:  OIDCOptions{SessionCookieName: "contract_management_session", PathPrefix: "/contract_management"},
-		sessions: make(map[string]*localSession),
-	}
-	request := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
-	response := httptest.NewRecorder()
-
-	authenticator.Logout(response, request)
-
-	if response.Code != http.StatusFound || response.Header().Get("Location") != "/contract_management/logged-out" {
-		t.Fatalf("status = %d, location = %q", response.Code, response.Header().Get("Location"))
-	}
-}
-
-func TestNormalizePersonnelDirectoryKeepsOnlyUniqueNamedPlatformUsers(t *testing.T) {
-	got := normalizePersonnelDirectory([]application.UserReference{
-		{UserID: " user-1 ", DisplayName: " 章六 ", Roles: []string{" tech_director ", "sales_director", "tech_director", ""}},
-		{UserID: "user-1", DisplayName: "重复姓名"},
-		{UserID: "user-2", DisplayName: ""},
-		{UserID: "user-3", DisplayName: "蔡总", Roles: []string{"finance_director"}},
-	})
-	if len(got) != 2 || got[0].UserID != "user-1" || got[0].DisplayName != "章六" ||
-		len(got[0].Roles) != 2 || got[0].Roles[0] != "sales_director" || got[0].Roles[1] != "tech_director" ||
-		got[1].UserID != "user-3" || got[1].DisplayName != "蔡总" ||
-		len(got[1].Roles) != 1 || got[1].Roles[0] != "finance_director" {
-		t.Fatalf("normalizePersonnelDirectory() = %#v", got)
-	}
+func testCatalog() AuthorizationCatalog {
+	return AuthorizationCatalog{Version: "test", Roles: map[string]struct{}{"sales": {}}, Permissions: map[string]struct{}{"contract.read": {}}, RolePermissions: map[string]map[string]struct{}{"sales": {"contract.read": {}}}}
 }

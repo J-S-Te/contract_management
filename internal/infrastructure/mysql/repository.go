@@ -34,6 +34,63 @@ func (r *Repository) GetContract(ctx context.Context, tenantID, id string) (cont
 	return contractFromRecord(record), nil
 }
 
+func (r *Repository) GetContractScoped(ctx context.Context, filter contract.ScopeFilter, id string) (contract.Contract, error) {
+	var record contractRecord
+	query := applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter).Where("id = ?", id)
+	err := query.Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.Contract{}, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return contract.Contract{}, err
+	}
+	return contractFromRecord(record), nil
+}
+
+func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.ScopeFilter, status string, limit int) ([]contract.Contract, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter)
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	var records []contractRecord
+	if err := query.Omit("rendered_document", "template_values_json").Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]contract.Contract, 0, len(records))
+	for _, record := range records {
+		result = append(result, contractFromRecord(record))
+	}
+	return result, nil
+}
+
+func applyContractScope(query *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
+	query = query.Where("tenant_id = ?", filter.TenantID)
+	if filter.AllowAll {
+		return query
+	}
+	var predicates []string
+	var values []any
+	if filter.AllowSelf && filter.IdentityID != "" {
+		predicates = append(predicates, "owner_identity_id = ?")
+		values = append(values, filter.IdentityID)
+	}
+	if len(filter.OrganizationIDs) > 0 {
+		predicates = append(predicates, "owner_org_id IN ?")
+		values = append(values, filter.OrganizationIDs)
+	}
+	if len(filter.ProjectIDs) > 0 {
+		predicates = append(predicates, "project_id IN ?")
+		values = append(values, filter.ProjectIDs)
+	}
+	if len(predicates) == 0 {
+		return query.Where("1 = 0")
+	}
+	return query.Where("("+strings.Join(predicates, " OR ")+")", values...)
+}
+
 func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, status string, limit int) ([]contract.Contract, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -134,6 +191,60 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 		ApprovalContracts: int64(len(approvalContractIDs)), ActiveContracts: activeCount, ExpiredContracts: expiredCount,
 		Contracts: items, ContractDetailLimited: aggregate.TotalContracts > int64(limit),
 	}, nil
+}
+
+func (r *Repository) ContractDashboardScoped(ctx context.Context, filter contract.ScopeFilter, today time.Time, limit int) (contract.Dashboard, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	contractScope := func() *gorm.DB { return applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter) }
+	var aggregate struct {
+		TotalContracts   int64
+		TotalAmountMinor int64
+	}
+	if err := contractScope().Select("COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").Scan(&aggregate).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	ownedContracts := contractScope().Select("id")
+	var approvalContractIDs []string
+	if err := r.db.WithContext(ctx).Model(&approvalInstanceRecord{}).Distinct("contract_id").
+		Where("tenant_id = ? AND contract_id IN (?) AND status = ?", filter.TenantID, ownedContracts, approval.StatusRunning).
+		Pluck("contract_id", &approvalContractIDs).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	activeStatuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
+	var activeCount, expiredCount int64
+	if err := contractScope().Where("status IN ?", activeStatuses).Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	if err := contractScope().Where("status IN ? AND end_date IS NOT NULL AND end_date < ?", activeStatuses, today).Count(&expiredCount).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	var records []contractRecord
+	if err := contractScope().Select("id", "contract_number", "title", "contract_type", "service_type", "customer_credit_level", "owner_display_name", "amount_minor", "currency", "content", "status", "start_date", "end_date", "created_at", "updated_at").Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+		return contract.Dashboard{}, err
+	}
+	inApproval := make(map[string]bool, len(approvalContractIDs))
+	for _, id := range approvalContractIDs {
+		inApproval[id] = true
+	}
+	items := make([]contract.DashboardContract, 0, len(records))
+	for _, record := range records {
+		statusIsActive := false
+		for _, status := range activeStatuses {
+			if contract.Status(record.Status) == status {
+				statusIsActive = true
+				break
+			}
+		}
+		expired := statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
+		item := contract.DashboardContract{ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, InApproval: inApproval[record.ID], ActiveUnexpired: statusIsActive && !expired, Expired: expired}
+		if record.CustomerCreditLevel != nil {
+			item.CustomerCreditLevel = *record.CustomerCreditLevel
+		}
+		items = append(items, item)
+	}
+	return contract.Dashboard{TotalAmountMinor: aggregate.TotalAmountMinor, TotalContracts: aggregate.TotalContracts, ApprovalContracts: int64(len(approvalContractIDs)), ActiveContracts: activeCount, ExpiredContracts: expiredCount, Contracts: items, ContractDetailLimited: aggregate.TotalContracts > int64(limit)}, nil
 }
 
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
@@ -534,7 +645,7 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 }
 
 func contractFromRecord(record contractRecord) contract.Contract {
-	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CRMCustomerID: uintValueOrZero(record.CRMCustomerID), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CRMCustomerID: uintValueOrZero(record.CRMCustomerID), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerIdentityID: valueOrEmpty(record.OwnerIdentityID), OwnerOrgID: valueOrEmpty(record.OwnerOrgID), ProjectID: valueOrEmpty(record.ProjectID), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel
 	}

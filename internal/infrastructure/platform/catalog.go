@@ -63,6 +63,55 @@ type catalogRole struct {
 	Permissions []string `json:"permissions"`
 }
 
+type AuthorizationCatalog struct {
+	Version         string
+	Roles           map[string]struct{}
+	Permissions     map[string]struct{}
+	RolePermissions map[string]map[string]struct{}
+}
+
+func LoadAuthorizationCatalog() (AuthorizationCatalog, error) {
+	var manifest permissionManifest
+	if err := yaml.Unmarshal(authz.PermissionManifest, &manifest); err != nil {
+		return AuthorizationCatalog{}, fmt.Errorf("decode authorization manifest: %w", err)
+	}
+	if manifest.Metadata.Version <= 0 || len(manifest.Permissions) == 0 || len(manifest.Roles) == 0 {
+		return AuthorizationCatalog{}, fmt.Errorf("authorization manifest is incomplete")
+	}
+	result := AuthorizationCatalog{
+		Version: strconv.Itoa(manifest.Metadata.Version), Roles: map[string]struct{}{},
+		Permissions: map[string]struct{}{}, RolePermissions: map[string]map[string]struct{}{},
+	}
+	for _, permission := range manifest.Permissions {
+		code := strings.TrimSpace(permission.Code)
+		if code == "" || code == "all" {
+			return AuthorizationCatalog{}, fmt.Errorf("authorization manifest contains an invalid permission")
+		}
+		if _, duplicate := result.Permissions[code]; duplicate {
+			return AuthorizationCatalog{}, fmt.Errorf("authorization manifest contains duplicate permission %q", code)
+		}
+		result.Permissions[code] = struct{}{}
+	}
+	for _, role := range manifest.Roles {
+		code := strings.TrimSpace(role.Code)
+		if code == "" {
+			return AuthorizationCatalog{}, fmt.Errorf("authorization manifest contains an empty role")
+		}
+		if _, duplicate := result.Roles[code]; duplicate {
+			return AuthorizationCatalog{}, fmt.Errorf("authorization manifest contains duplicate role %q", code)
+		}
+		result.Roles[code] = struct{}{}
+		result.RolePermissions[code] = map[string]struct{}{}
+		for _, permission := range role.Permissions {
+			if _, known := result.Permissions[permission]; !known {
+				return AuthorizationCatalog{}, fmt.Errorf("role %q references unknown permission %q", code, permission)
+			}
+			result.RolePermissions[code][permission] = struct{}{}
+		}
+	}
+	return result, nil
+}
+
 // SyncAuthorizationCatalog publishes the embedded application-owned manifest to the platform.
 // Enabling synchronization makes a failed publication a startup error so the API never runs with
 // a role catalog that differs from its own authorization checks.
