@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -57,6 +58,36 @@ func TestDispatcherPostsActivationPayloadOverInternalNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if store.delivered != store.delivery.ID || store.failed != "" {
+		t.Fatalf("store=%+v", store)
+	}
+}
+
+func TestDispatcherCarriesMachineBearerWhenTokenSourceConfigured(t *testing.T) {
+	store := &memoryStore{delivery: Delivery{ID: "01KDELIVERY0000000000000000", TenantID: "01KTENANT00000000000000000", Payload: []byte(`{"contract_id":"C-1"}`), Attempts: 1}}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Authorization") != "Bearer machine-token-1" {
+			t.Fatalf("authorization=%q, want Bearer machine-token-1", request.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+	})}
+	dispatcher := &Dispatcher{Store: store, BaseURL: "http://project-api:8082", MaxAttempts: 3, Poll: time.Second, Client: client,
+		TokenSource: func(context.Context) (string, error) { return "machine-token-1", nil }}
+	if err := dispatcher.dispatchOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.delivered != store.delivery.ID {
+		t.Fatalf("store=%+v", store)
+	}
+}
+
+func TestDispatcherRetriesWhenTokenFetchFails(t *testing.T) {
+	store := &memoryStore{delivery: Delivery{ID: "01KDELIVERY0000000000000000", TenantID: "01KTENANT00000000000000000", Payload: []byte(`{"contract_id":"C-1"}`), Attempts: 1}}
+	dispatcher := &Dispatcher{Store: store, BaseURL: "http://project-api:8082", MaxAttempts: 3, Poll: time.Second,
+		TokenSource: func(context.Context) (string, error) { return "", errors.New("token endpoint down") }}
+	if err := dispatcher.dispatchOne(context.Background()); err == nil {
+		t.Fatal("dispatchOne() succeeded although the token fetch failed")
+	}
+	if store.delivered != "" || store.failed != store.delivery.ID {
 		t.Fatalf("store=%+v", store)
 	}
 }
