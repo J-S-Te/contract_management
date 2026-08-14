@@ -54,6 +54,11 @@ type Config struct {
 	ProjectAPIBaseURL         string
 	ProjectIntegrationPoll    time.Duration
 	ProjectIntegrationRetries uint
+	// H4：内部投递机器令牌（项目侧来源校验强制开启后必配）。
+	ProjectIntegrationTokenURL    string
+	ProjectIntegrationClientID    string
+	ProjectIntegrationClientSecret string
+	ProjectIntegrationAudience    string
 }
 
 func Load() (Config, error) {
@@ -128,6 +133,10 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("PROJECT_INTEGRATION_MAX_ATTEMPTS must be a positive integer")
 	}
 	c.ProjectIntegrationRetries = uint(retries)
+	c.ProjectIntegrationTokenURL = os.Getenv("PROJECT_INTEGRATION_TOKEN_URL")
+	c.ProjectIntegrationClientID = os.Getenv("PROJECT_INTEGRATION_CLIENT_ID")
+	c.ProjectIntegrationClientSecret = os.Getenv("PROJECT_INTEGRATION_CLIENT_SECRET")
+	c.ProjectIntegrationAudience = os.Getenv("PROJECT_INTEGRATION_AUDIENCE")
 	if err := c.validate(); err != nil {
 		return c, err
 	}
@@ -141,6 +150,20 @@ func (c Config) validate() error {
 	if c.ProjectIntegrationEnabled {
 		if !validHTTPOrigin(c.ProjectAPIBaseURL) {
 			return fmt.Errorf("PROJECT_API_BASE_URL must be an HTTP(S) origin")
+		}
+		// H4：项目侧来源校验强制开启，机器令牌为必配；audience 可空（依赖项目侧配置）。
+		for name, value := range map[string]string{
+			"PROJECT_INTEGRATION_TOKEN_URL": c.ProjectIntegrationTokenURL, "PROJECT_INTEGRATION_CLIENT_ID": c.ProjectIntegrationClientID,
+			"PROJECT_INTEGRATION_CLIENT_SECRET": c.ProjectIntegrationClientSecret,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when PROJECT_INTEGRATION_ENABLED=true", name)
+			}
+		}
+		tokenURL, tokenErr := url.ParseRequestURI(c.ProjectIntegrationTokenURL)
+		if tokenErr != nil || (tokenURL.Scheme != "http" && tokenURL.Scheme != "https") || tokenURL.Host == "" ||
+			tokenURL.User != nil || tokenURL.RawQuery != "" || tokenURL.Fragment != "" {
+			return fmt.Errorf("PROJECT_INTEGRATION_TOKEN_URL must be a valid HTTP(S) URL without credentials, query or fragment")
 		}
 	}
 	if c.ProjectIntegrationPoll <= 0 {
