@@ -20,6 +20,7 @@ type Config struct {
 	OIDCClientSecret          string
 	OIDCRedirectURI           string
 	OIDCPostLogoutRedirectURI string
+	OIDCIDPHint               string
 	OIDCScopes                []string
 	OIDCTenantID              string
 	OIDCSessionCookieName     string
@@ -62,6 +63,7 @@ func Load() (Config, error) {
 		OIDCBackchannelBaseURL: os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
+		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
 		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
 		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),

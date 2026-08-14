@@ -16,6 +16,7 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("OIDC_CLIENT_ID", "contract_management-dev-web")
 	t.Setenv("OIDC_CLIENT_SECRET", "test-client-secret")
 	t.Setenv("OIDC_REDIRECT_URI", "http://localhost:8081/contract_management/auth/callback")
+	t.Setenv("OIDC_IDP_HINT", "basic-platform")
 	t.Setenv("OIDC_TENANT_ID", "01J00000000000000000000000")
 	t.Setenv("OIDC_SESSION_COOKIE_NAME", "contract_management_session")
 	t.Setenv("OIDC_SESSION_COOKIE_SECURE", "false")
@@ -95,6 +96,9 @@ func TestLoadAllowsRegisteredApplicationWithoutAuditCredentials(t *testing.T) {
 	}
 	if config.PlatformApplicationCode != "contract_management" {
 		t.Fatalf("PlatformApplicationCode = %q", config.PlatformApplicationCode)
+	}
+	if config.OIDCIDPHint != "basic-platform" {
+		t.Fatalf("OIDCIDPHint = %q", config.OIDCIDPHint)
 	}
 }
 

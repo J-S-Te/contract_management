@@ -29,6 +29,7 @@ var (
 type OIDCOptions struct {
 	Issuer, BackchannelBaseURL, PlatformBaseURL                     string
 	ClientID, ClientSecret, RedirectURI, PostLogoutRedirectURI      string
+	IdentityProviderHint                                            string
 	ApplicationCode, EnvironmentCode, TenantID                      string
 	Scopes                                                          []string
 	SessionCookieName, PathPrefix                                   string
@@ -208,8 +209,16 @@ func (a *OIDCAuthenticator) Login(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "cannot start login", http.StatusServiceUnavailable)
 		return
 	}
-	target := a.oauth2Config.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
+	target := a.authorizationURL(state, nonce, verifier)
 	http.Redirect(writer, request, target, http.StatusFound)
+}
+
+func (a *OIDCAuthenticator) authorizationURL(state, nonce, verifier string) string {
+	options := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if hint := strings.TrimSpace(a.options.IdentityProviderHint); hint != "" {
+		options = append(options, oauth2.SetAuthURLParam("kc_idp_hint", hint))
+	}
+	return a.oauth2Config.AuthCodeURL(state, options...)
 }
 
 func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.Request) {
@@ -271,7 +280,7 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		a.writeCallbackError(writer, request, "local_authorization", status, err)
 		return
 	}
-	principal.DisplayName, principal.UserName, principal.Email, err = a.loadCurrentUserInfo(oidcContext, token, principal.UserID)
+	principal.DisplayName, principal.UserName, principal.Email, err = a.loadCurrentUserInfo(oidcContext, token, principal.Subject)
 	if err != nil {
 		a.writeCallbackError(writer, request, "userinfo", http.StatusServiceUnavailable, err)
 		return
