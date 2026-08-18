@@ -91,6 +91,7 @@ type SigningRecord struct {
 	Status               SigningStatus `json:"status"`
 	CourierNumber        string        `json:"courier_number,omitempty"`
 	RecipientName        string        `json:"recipient_name,omitempty"`
+	RecipientPhone       string        `json:"recipient_phone,omitempty"`
 	RecipientAddress     string        `json:"recipient_address,omitempty"`
 	MailedAt             *time.Time    `json:"mailed_at,omitempty"`
 	CustomerReceivedAt   *time.Time    `json:"customer_received_at,omitempty"`
@@ -108,6 +109,7 @@ type SigningRecord struct {
 type SigningShipment struct {
 	CourierNumber    string
 	RecipientName    string
+	RecipientPhone   string
 	RecipientAddress string
 	MailedAt         time.Time
 }

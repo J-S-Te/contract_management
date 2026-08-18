@@ -491,6 +491,7 @@ func (h *Handler) saveSigningShipment(c *gin.Context) {
 	var body struct {
 		CourierNumber    string `json:"courier_number"`
 		RecipientName    string `json:"recipient_name"`
+		RecipientPhone   string `json:"recipient_phone"`
 		RecipientAddress string `json:"recipient_address"`
 		MailedAt         string `json:"mailed_at"`
 	}
@@ -498,11 +499,11 @@ func (h *Handler) saveSigningShipment(c *gin.Context) {
 		return
 	}
 	mailedAt, err := time.Parse("2006-01-02", body.MailedAt)
-	if err != nil || strings.TrimSpace(body.CourierNumber) == "" || strings.TrimSpace(body.RecipientName) == "" || strings.TrimSpace(body.RecipientAddress) == "" {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请完整填写快递单号、收件人、收件地址和邮寄日期", nil)
+	if err != nil || strings.TrimSpace(body.CourierNumber) == "" || strings.TrimSpace(body.RecipientName) == "" || strings.TrimSpace(body.RecipientPhone) == "" || strings.TrimSpace(body.RecipientAddress) == "" {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请完整填写快递单号、收件人、收件人联系方式、收件地址和邮寄日期", nil)
 		return
 	}
-	err = h.service.SaveSigningShipment(c.Request.Context(), principal(c), c.Param("contractID"), contract.SigningShipment{CourierNumber: strings.TrimSpace(body.CourierNumber), RecipientName: strings.TrimSpace(body.RecipientName), RecipientAddress: strings.TrimSpace(body.RecipientAddress), MailedAt: mailedAt.UTC()})
+	err = h.service.SaveSigningShipment(c.Request.Context(), principal(c), c.Param("contractID"), contract.SigningShipment{CourierNumber: strings.TrimSpace(body.CourierNumber), RecipientName: strings.TrimSpace(body.RecipientName), RecipientPhone: strings.TrimSpace(body.RecipientPhone), RecipientAddress: strings.TrimSpace(body.RecipientAddress), MailedAt: mailedAt.UTC()})
 	if err != nil {
 		writeError(c, err)
 		return

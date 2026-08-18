@@ -11,7 +11,7 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
-	if len(items) != 15 ||
+	if len(items) != 16 ||
 		items[0].version != 1 || items[0].name != "contract_workflow" ||
 		items[1].version != 2 || items[1].name != "single_active_status_change" ||
 		items[2].version != 3 || items[2].name != "username_snapshots" ||
@@ -26,7 +26,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 		items[11].version != 12 || items[11].name != "contract_crm_customer" ||
 		items[12].version != 13 || items[12].name != "project_delivery_outbox" ||
 		items[13].version != 14 || items[13].name != "oidc_sessions" ||
-		items[14].version != 15 || items[14].name != "contract_data_scope" {
+		items[14].version != 15 || items[14].name != "contract_data_scope" ||
+		items[15].version != 16 || items[15].name != "signing_recipient_phone" {
 		t.Fatalf("items = %#v", items)
 	}
 }
