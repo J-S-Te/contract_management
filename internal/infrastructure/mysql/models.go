@@ -3,8 +3,51 @@ package mysql
 import (
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/application"
+
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 )
+
+type opportunityIntakeRecord struct {
+	IntakeID                                      string `gorm:"primaryKey"`
+	TenantID, EventID                             string
+	OpportunityID, EventVersion, CustomerID       uint64
+	OpportunityNo, ContractRef                    string
+	ContractID, ContractNumber                    *string
+	ExpectedAmount                                string
+	OccurredAt                                    time.Time
+	SourceRequestID                               *string
+	Status                                        string
+	Version                                       uint64
+	ReviewedBy, ReviewerDisplayName, ReviewReason *string
+	ReviewedAt                                    *time.Time
+	CreatedAt, UpdatedAt                          time.Time
+}
+
+func (opportunityIntakeRecord) TableName() string { return "con_opportunity_intake" }
+
+type opportunityIntakeReviewRecord struct {
+	ReviewID                                                          string `gorm:"primaryKey"`
+	TenantID, IntakeID, IdempotencyKey, RequestHash, Decision, Reason string
+	Version                                                           uint64
+	ReviewerID                                                        string
+	ReviewerDisplayName                                               *string
+	ResponseJSON                                                      []byte `gorm:"type:json"`
+	CreatedAt                                                         time.Time
+}
+
+func (opportunityIntakeReviewRecord) TableName() string { return "con_opportunity_intake_review" }
+
+func opportunityIntakeFromRecord(r opportunityIntakeRecord) application.OpportunityIntake {
+	return application.OpportunityIntake{IntakeID: r.IntakeID, TenantID: r.TenantID, EventID: r.EventID, OpportunityID: r.OpportunityID, EventVersion: r.EventVersion, OpportunityNo: r.OpportunityNo, CustomerID: r.CustomerID, ContractRef: r.ContractRef, ContractID: stringValue(r.ContractID), ContractNumber: stringValue(r.ContractNumber), ExpectedAmount: r.ExpectedAmount, OccurredAt: r.OccurredAt, SourceRequestID: stringValue(r.SourceRequestID), Status: r.Status, Version: r.Version, ReviewedBy: stringValue(r.ReviewedBy), ReviewerDisplayName: stringValue(r.ReviewerDisplayName), ReviewedAt: r.ReviewedAt, ReviewReason: stringValue(r.ReviewReason), CreatedAt: r.CreatedAt}
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
 
 type contractRecord struct {
 	ID                   string `gorm:"primaryKey"`
@@ -223,6 +266,23 @@ type projectDeliveryOutboxRecord struct {
 }
 
 func (projectDeliveryOutboxRecord) TableName() string { return "con_project_delivery_outbox" }
+
+type opportunityLinkOutboxRecord struct {
+	ID             string `gorm:"primaryKey"`
+	TenantID       string
+	IntakeID       string
+	EventID        string
+	PayloadJSON    []byte `gorm:"type:json"`
+	DeliveryStatus string
+	Attempts       uint
+	NextAttemptAt  time.Time
+	LockedAt       *time.Time
+	DeliveredAt    *time.Time
+	LastError      *string
+	CreatedAt      time.Time
+}
+
+func (opportunityLinkOutboxRecord) TableName() string { return "con_opportunity_link_outbox" }
 
 func stringPtr(value string) *string {
 	if value == "" {

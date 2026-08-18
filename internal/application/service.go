@@ -60,7 +60,7 @@ func (p Principal) Scope(permission string) (contract.ScopeFilter, bool) {
 
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
-	ListContracts(context.Context, string, string, string, int) ([]contract.Contract, error)
+	ListContracts(context.Context, string, string, string, string, int) ([]contract.Contract, error)
 	ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error)
 	SaveStampedDocument(context.Context, string, contract.StampedDocument) error
 	GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error)
@@ -91,7 +91,7 @@ type PersonnelDirectory interface {
 
 type ScopedRepository interface {
 	GetContractScoped(context.Context, contract.ScopeFilter, string) (contract.Contract, error)
-	ListContractsScoped(context.Context, contract.ScopeFilter, string, int) ([]contract.Contract, error)
+	ListContractsScoped(context.Context, contract.ScopeFilter, string, string, int) ([]contract.Contract, error)
 	ListApprovedContractsScoped(context.Context, contract.ScopeFilter, int) ([]contract.Contract, error)
 	ListSigningRecordsScoped(context.Context, contract.ScopeFilter, int) ([]contract.SigningRecord, error)
 	GetSigningRecordScoped(context.Context, contract.ScopeFilter, string) (contract.SigningRecord, error)
@@ -99,13 +99,18 @@ type ScopedRepository interface {
 }
 
 type Service struct {
-	Repo             Repository
-	Templates        TemplateRepository
-	Temporal         client.Client
-	TaskQueue        string
-	NodeTimeout      time.Duration
-	ReminderInterval time.Duration
-	Personnel        PersonnelDirectory
+	Repo                    Repository
+	Templates               TemplateRepository
+	Temporal                client.Client
+	TaskQueue               string
+	NodeTimeout             time.Duration
+	ReminderInterval        time.Duration
+	Personnel               PersonnelDirectory
+	OpportunityLinkNotifier OpportunityLinkNotifier
+}
+
+type OpportunityLinkNotifier interface {
+	NotifyOpportunityLink(context.Context, OpportunityIntake) error
 }
 
 func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, limit int) ([]contract.Contract, error) {
@@ -554,7 +559,7 @@ func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id
 	return s.Repo.ListContractLifecycle(ctx, actor.TenantID, id)
 }
 
-func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, status string, limit int) ([]contract.Contract, error) {
+func (s *Service) ListContracts(ctx context.Context, actor Principal, keyword string, status string, limit int) ([]contract.Contract, error) {
 	filter, ok := actor.Scope("contract.read")
 	if !ok {
 		return nil, ErrForbidden
@@ -563,7 +568,7 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, 
 		limit = 50
 	}
 	if scoped, ok := s.Repo.(ScopedRepository); ok {
-		return scoped.ListContractsScoped(ctx, filter, status, limit)
+		return scoped.ListContractsScoped(ctx, filter, keyword, status, limit)
 	}
 	if !filter.AllowAll && !filter.AllowSelf && len(filter.OrganizationIDs) == 0 && len(filter.ProjectIDs) == 0 {
 		return nil, ErrForbidden
@@ -572,7 +577,7 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, _ string, 
 	if filter.AllowSelf {
 		ownerUserID = actor.UserID
 	}
-	items, err := s.Repo.ListContracts(ctx, actor.TenantID, ownerUserID, status, limit)
+	items, err := s.Repo.ListContracts(ctx, actor.TenantID, keyword, ownerUserID, status, limit)
 	return filterContracts(items, filter), err
 }
 

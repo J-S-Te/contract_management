@@ -2,13 +2,16 @@ package mysql
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
+	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
@@ -17,6 +20,152 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+func (r *Repository) AcceptOpportunityIntake(ctx context.Context, in application.OpportunityIntake) (application.OpportunityIntake, error) {
+	var row opportunityIntakeRecord
+	err := r.db.WithContext(ctx).Where("tenant_id=? AND event_id=?", in.TenantID, in.EventID).First(&row).Error
+	if err == nil {
+		return opportunityIntakeFromRecord(row), nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return application.OpportunityIntake{}, err
+	}
+	now := time.Now().UTC()
+	row = opportunityIntakeRecord{IntakeID: in.IntakeID, TenantID: in.TenantID, EventID: in.EventID, OpportunityID: in.OpportunityID, EventVersion: in.EventVersion, OpportunityNo: in.OpportunityNo, CustomerID: in.CustomerID, ContractRef: in.ContractRef, ExpectedAmount: in.ExpectedAmount, OccurredAt: in.OccurredAt, Status: application.OpportunityIntakeAccepted, Version: 1, CreatedAt: now, UpdatedAt: now}
+	if in.SourceRequestID != "" {
+		row.SourceRequestID = &in.SourceRequestID
+	}
+	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			if e := r.db.WithContext(ctx).Where("tenant_id=? AND event_id=?", in.TenantID, in.EventID).First(&row).Error; e == nil {
+				return opportunityIntakeFromRecord(row), nil
+			}
+		}
+		return application.OpportunityIntake{}, err
+	}
+	return opportunityIntakeFromRecord(row), nil
+}
+
+func (r *Repository) ListOpportunityIntakes(ctx context.Context, tenant, status, cursor string, limit int) (application.OpportunityIntakePage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	q := r.db.WithContext(ctx).Where("tenant_id=?", tenant)
+	if status != "" {
+		q = q.Where("status=?", status)
+	}
+	if cursor != "" {
+		raw, e := base64.RawURLEncoding.DecodeString(cursor)
+		if e != nil {
+			return application.OpportunityIntakePage{}, application.ErrValidation
+		}
+		parts := strings.Split(string(raw), "|")
+		if len(parts) != 2 {
+			return application.OpportunityIntakePage{}, application.ErrValidation
+		}
+		q = q.Where("(created_at < ? OR (created_at = ? AND intake_id < ?))", parts[0], parts[0], parts[1])
+	}
+	var rows []opportunityIntakeRecord
+	if err := q.Order("created_at DESC, intake_id DESC").Limit(limit + 1).Find(&rows).Error; err != nil {
+		return application.OpportunityIntakePage{}, err
+	}
+	more := len(rows) > limit
+	if more {
+		rows = rows[:limit]
+	}
+	out := make([]application.OpportunityIntake, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, opportunityIntakeFromRecord(row))
+	}
+	next := ""
+	if more && len(rows) > 0 {
+		next = base64.RawURLEncoding.EncodeToString([]byte(rows[len(rows)-1].CreatedAt.UTC().Format("2006-01-02 15:04:05.000") + "|" + rows[len(rows)-1].IntakeID))
+	}
+	return application.OpportunityIntakePage{Items: out, PageSize: len(out), NextCursor: next, HasMore: more}, nil
+}
+
+func (r *Repository) GetOpportunityIntake(ctx context.Context, tenant, id string) (application.OpportunityIntake, error) {
+	var row opportunityIntakeRecord
+	e := r.db.WithContext(ctx).Where("tenant_id=? AND intake_id=?", tenant, id).First(&row).Error
+	if errors.Is(e, gorm.ErrRecordNotFound) {
+		return application.OpportunityIntake{}, apperrors.ErrNotFound
+	}
+	if e != nil {
+		return application.OpportunityIntake{}, e
+	}
+	return opportunityIntakeFromRecord(row), nil
+}
+
+func (r *Repository) ReviewOpportunityIntake(ctx context.Context, tenant, id, reviewer string, review application.OpportunityIntakeReview, key, hash, display string) (application.OpportunityIntake, error) {
+	var out application.OpportunityIntake
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row opportunityIntakeRecord
+		if e := tx.Where("tenant_id=? AND intake_id=?", tenant, id).First(&row).Error; e != nil {
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				return apperrors.ErrNotFound
+			}
+			return e
+		}
+		var prior opportunityIntakeReviewRecord
+		if e := tx.Where("tenant_id=? AND intake_id=? AND idempotency_key=?", tenant, id, key).First(&prior).Error; e == nil {
+			if prior.RequestHash != hash {
+				return apperrors.ErrStateConflict
+			}
+			return json.Unmarshal(prior.ResponseJSON, &out)
+		} else if !errors.Is(e, gorm.ErrRecordNotFound) {
+			return e
+		}
+		if row.Version != review.Version {
+			return apperrors.ErrVersionConflict
+		}
+		if row.Status != application.OpportunityIntakeAccepted {
+			return apperrors.ErrStateConflict
+		}
+		now := time.Now().UTC()
+		row.Status = review.Decision
+		row.Version++
+		row.ReviewedBy = &reviewer
+		row.ReviewerDisplayName = &display
+		row.ReviewedAt = &now
+		row.ReviewReason = &review.Reason
+		row.UpdatedAt = now
+		if review.Decision == application.OpportunityIntakeLinkConfirmed {
+			var linked contractRecord
+			if e := tx.Where("tenant_id=? AND (id=? OR contract_number=?)", tenant, reviewContractRef(row), row.ContractRef).First(&linked).Error; e != nil {
+				return apperrors.ErrNotFound
+			}
+			updated := tx.Model(&contractRecord{}).Where("tenant_id=? AND id=?", tenant, linked.ID).Updates(map[string]any{"opportunity_id": strconv.FormatUint(row.OpportunityID, 10), "crm_customer_id": row.CustomerID})
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected == 0 {
+				return apperrors.ErrNotFound
+			}
+			out.ContractID = linked.ID
+			out.ContractNumber = stringValue(linked.ContractNumber)
+			row.ContractID = &linked.ID
+			if linked.ContractNumber != nil {
+				row.ContractNumber = linked.ContractNumber
+			}
+		}
+		if e := tx.Save(&row).Error; e != nil {
+			return e
+		}
+		linkedID, linkedNumber := out.ContractID, out.ContractNumber
+		out = opportunityIntakeFromRecord(row)
+		out.ContractID, out.ContractNumber = linkedID, linkedNumber
+		data, _ := json.Marshal(out)
+		if review.Decision == application.OpportunityIntakeLinkConfirmed {
+			if e := enqueueOpportunityLink(tx, out, data); e != nil {
+				return e
+			}
+		}
+		rec := opportunityIntakeReviewRecord{ReviewID: ulid.Make().String(), TenantID: tenant, IntakeID: id, IdempotencyKey: key, RequestHash: hash, Decision: review.Decision, Reason: review.Reason, Version: review.Version, ReviewerID: reviewer, ReviewerDisplayName: &display, ResponseJSON: data, CreatedAt: now}
+		return tx.Create(&rec).Error
+	})
+	return out, err
+}
+func reviewContractRef(row opportunityIntakeRecord) string { return row.ContractRef }
 
 type Repository struct{ db *gorm.DB }
 
@@ -47,11 +196,15 @@ func (r *Repository) GetContractScoped(ctx context.Context, filter contract.Scop
 	return contractFromRecord(record), nil
 }
 
-func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.ScopeFilter, status string, limit int) ([]contract.Contract, error) {
+func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.ScopeFilter, keyword, status string, limit int) ([]contract.Contract, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	query := applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter)
+	if keyword != "" {
+		pattern := "%" + keyword + "%"
+		query = query.Where("(contract_number LIKE ? OR title LIKE ? OR customer_name LIKE ?)", pattern, pattern, pattern)
+	}
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -91,11 +244,15 @@ func applyContractScope(query *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
 	return query.Where("("+strings.Join(predicates, " OR ")+")", values...)
 }
 
-func (r *Repository) ListContracts(ctx context.Context, tenantID, ownerUserID, status string, limit int) ([]contract.Contract, error) {
+func (r *Repository) ListContracts(ctx context.Context, tenantID, keyword, ownerUserID, status string, limit int) ([]contract.Contract, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	query := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID)
+	if keyword != "" {
+		pattern := "%" + keyword + "%"
+		query = query.Where("(contract_number LIKE ? OR title LIKE ? OR customer_name LIKE ?)", pattern, pattern, pattern)
+	}
 	if ownerUserID != "" {
 		query = query.Where("owner_user_id = ?", ownerUserID)
 	}

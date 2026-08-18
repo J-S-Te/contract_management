@@ -1,0 +1,42 @@
+CREATE TABLE con_opportunity_intake (
+  intake_id VARCHAR(26) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  tenant_id VARCHAR(128) NOT NULL,
+  event_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  opportunity_id BIGINT UNSIGNED NOT NULL,
+  event_version BIGINT UNSIGNED NOT NULL,
+  opportunity_no VARCHAR(128) NOT NULL,
+  customer_id BIGINT UNSIGNED NOT NULL,
+  contract_ref VARCHAR(128) NOT NULL,
+  expected_amount DECIMAL(20,2) NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+  source_request_id VARCHAR(128) NULL,
+  status VARCHAR(32) NOT NULL,
+  version BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  reviewed_by VARCHAR(128) NULL,
+  reviewer_display_name VARCHAR(255) NULL,
+  reviewed_at DATETIME(3) NULL,
+  review_reason VARCHAR(500) NULL,
+  created_at DATETIME(3) NOT NULL,
+  updated_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (intake_id),
+  UNIQUE KEY uq_con_intake_event (tenant_id, event_id),
+  KEY idx_con_intake_queue (tenant_id, status, created_at, intake_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE con_opportunity_intake_review (
+  review_id VARCHAR(26) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  tenant_id VARCHAR(128) NOT NULL,
+  intake_id VARCHAR(26) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  decision VARCHAR(32) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  version BIGINT UNSIGNED NOT NULL,
+  reviewer_id VARCHAR(128) NOT NULL,
+  reviewer_display_name VARCHAR(255) NULL,
+  response_json JSON NOT NULL,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (review_id),
+  UNIQUE KEY uq_con_intake_review_key (tenant_id, intake_id, idempotency_key),
+  CONSTRAINT fk_con_intake_review_intake FOREIGN KEY (intake_id) REFERENCES con_opportunity_intake(intake_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

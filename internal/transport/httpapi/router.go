@@ -87,6 +87,10 @@ func NewRouter(service *application.Service, identity Identity, dashboardOptions
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
 	api.GET("/dashboard", h.dashboard)
+	api.POST("/opportunity-intakes", h.acceptOpportunityIntake)
+	api.GET("/opportunity-intakes", h.listOpportunityIntakes)
+	api.GET("/opportunity-intakes/:intakeID", h.getOpportunityIntake)
+	api.POST("/opportunity-intakes/:intakeID/reviews", h.reviewOpportunityIntake)
 	api.POST("/contracts", h.createContract)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/approved-contracts", h.listApprovedContracts)
@@ -123,6 +127,62 @@ func NewRouter(service *application.Service, identity Identity, dashboardOptions
 		api.POST("/approvals/:approvalID/"+action, h.command(action))
 	}
 	return r
+}
+
+func (h *Handler) acceptOpportunityIntake(c *gin.Context) {
+	if !principal(c).Has("opportunity_intake.receive") {
+		writeError(c, application.ErrForbidden)
+		return
+	}
+	var input application.OpportunityIntake
+	if !decode(c, &input) {
+		return
+	}
+	if input.TenantID == "" {
+		input.TenantID = principal(c).TenantID
+	} else if principal(c).TenantID != "" && input.TenantID != principal(c).TenantID {
+		writeError(c, application.ErrForbidden)
+		return
+	}
+	if input.IntakeID == "" {
+		input.IntakeID = ulid.Make().String()
+	}
+	result, err := h.service.AcceptOpportunityIntake(c.Request.Context(), input)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusAccepted, map[string]any{"intake_id": result.IntakeID, "event_id": result.EventID, "status": result.Status})
+}
+
+func (h *Handler) listOpportunityIntakes(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("page_size"))
+	page, err := h.service.ListOpportunityIntakes(c.Request.Context(), principal(c), c.Query("status"), c.Query("cursor"), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, page)
+}
+func (h *Handler) getOpportunityIntake(c *gin.Context) {
+	item, err := h.service.GetOpportunityIntake(c.Request.Context(), principal(c), c.Param("intakeID"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, item)
+}
+func (h *Handler) reviewOpportunityIntake(c *gin.Context) {
+	var input application.OpportunityIntakeReview
+	if !decode(c, &input) {
+		return
+	}
+	item, err := h.service.ReviewOpportunityIntake(c.Request.Context(), principal(c), c.Param("intakeID"), input, c.GetHeader("Idempotency-Key"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, item)
 }
 
 func (h *Handler) me(c *gin.Context) {
@@ -589,9 +649,9 @@ func (h *Handler) previewContract(c *gin.Context) {
 
 func (h *Handler) listContracts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	ownerUserID := c.Query("owner_user_id")
+	keyword := strings.TrimSpace(c.Query("keyword"))
 	status := c.Query("status")
-	contracts, err := h.service.ListContracts(c.Request.Context(), principal(c), ownerUserID, status, limit)
+	contracts, err := h.service.ListContracts(c.Request.Context(), principal(c), keyword, status, limit)
 	if err != nil {
 		writeError(c, err)
 		return
