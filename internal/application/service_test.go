@@ -55,7 +55,7 @@ func (r *recordingRepository) GetContract(context.Context, string, string) (cont
 	return r.contract, nil
 }
 
-func (r *recordingRepository) ListContracts(_ context.Context, _, ownerUserID, _ string, _ int) ([]contract.Contract, error) {
+func (r *recordingRepository) ListContracts(_ context.Context, _, _, ownerUserID, _ string, _ int) ([]contract.Contract, error) {
 	r.ownerUserID = ownerUserID
 	return nil, nil
 }

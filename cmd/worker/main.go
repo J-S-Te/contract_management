@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/j-s-te/contract-management/internal/bootstrap"
 	"github.com/j-s-te/contract-management/internal/config"
 	store "github.com/j-s-te/contract-management/internal/infrastructure/mysql"
+	"github.com/j-s-te/contract-management/internal/integration/crm"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"go.temporal.io/api/serviceerror"
@@ -41,6 +43,7 @@ func main() {
 	defer temporalClient.Close()
 	w := worker.New(temporalClient, cfg.TemporalTaskQueue, worker.Options{DisableRegistrationAliasing: true})
 	repository := store.NewRepository(db)
+	go (&crm.Dispatcher{Store: repository, BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
 	workflows.Register(w, &workflows.Activities{Store: repository})
 	if cfg.ProjectIntegrationEnabled {
 		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,

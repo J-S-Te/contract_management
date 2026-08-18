@@ -21,6 +21,31 @@ semantics:
     - 企业合同仪表盘 GET /api/v1/dashboard 同时要求 admin 角色与 contract.read，并始终限制当前 tenant_id。
 
 permissions:
+  - code: opportunity_intake.receive
+    name: 接收 CRM 商机签单事件
+    resource: opportunity_intake
+    action: receive
+    risk_level: MEDIUM
+    enforced_by:
+      - POST /api/v1/opportunity-intakes
+    constraints: [仅允许受信任的合同接入机器身份使用]
+  - code: opportunity_intake.read
+    name: 查看签单关联核对队列
+    resource: opportunity_intake
+    action: read
+    risk_level: LOW
+    enforced_by:
+      - GET /api/v1/opportunity-intakes
+      - GET /api/v1/opportunity-intakes/{intake_id}
+    constraints: [仅返回当前租户记录]
+  - code: opportunity_intake.process
+    name: 处理签单关联核对队列
+    resource: opportunity_intake
+    action: review
+    risk_level: HIGH
+    enforced_by:
+      - POST /api/v1/opportunity-intakes/{intake_id}/reviews
+    constraints: [必须使用版本和幂等键，核对结论可审计]
   - code: contract.approved.read
     name: 查看已通过合同
     resource: approved_contract
@@ -181,6 +206,8 @@ roles:
       - contract.stamped_pdf.upload
       - contract.signing.manage
       - contract.template.manage
+      - opportunity_intake.read
+      - opportunity_intake.process
 
   - code: contract_specialist
     name: 合同专员
@@ -223,6 +250,7 @@ roles:
     permissions:
       - contract.read
       - approval.view
+      - opportunity_intake.read
 
 data_scopes:
   - code: SELF
