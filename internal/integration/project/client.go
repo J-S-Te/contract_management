@@ -35,6 +35,9 @@ type Dispatcher struct {
 	Poll        time.Duration
 	Client      *http.Client
 	Logger      *slog.Logger
+	// TokenSource 为内部投递提供机器访问令牌（H4：项目侧来源校验强制开启后必配）。
+	// 为空时不携带 Authorization（仅限未启用投递或本地测试）。
+	TokenSource func(context.Context) (string, error)
 }
 
 func (d *Dispatcher) Run(ctx context.Context) {
@@ -80,19 +83,30 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Contract-Delivery-ID", delivery.ID)
 		req.Header.Set("X-Contract-Tenant-ID", delivery.TenantID)
-		client := d.Client
-		if client == nil {
-			client = &http.Client{Timeout: 15 * time.Second}
-		}
-		var response *http.Response
-		response, err = client.Do(req)
-		if err == nil {
-			defer response.Body.Close()
-			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			if response.StatusCode >= 200 && response.StatusCode < 300 {
-				return d.Store.MarkProjectDeliveryDelivered(ctx, delivery.ID)
+		if d.TokenSource != nil {
+			// 令牌获取失败必须走与 HTTP 失败相同的重试/死信持久化路径，避免投递被静默丢失。
+			token, tokenErr := d.TokenSource(ctx)
+			if tokenErr != nil {
+				err = fmt.Errorf("fetch project integration token: %w", tokenErr)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+token)
 			}
-			err = fmt.Errorf("project API returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		}
+		if err == nil {
+			client := d.Client
+			if client == nil {
+				client = &http.Client{Timeout: 15 * time.Second}
+			}
+			var response *http.Response
+			response, err = client.Do(req)
+			if err == nil {
+				defer response.Body.Close()
+				body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+				if response.StatusCode >= 200 && response.StatusCode < 300 {
+					return d.Store.MarkProjectDeliveryDelivered(ctx, delivery.ID)
+				}
+				err = fmt.Errorf("project API returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+			}
 		}
 	}
 	dead := delivery.Attempts >= d.MaxAttempts

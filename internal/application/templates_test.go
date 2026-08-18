@@ -68,6 +68,20 @@ func TestCreateTemplateRequiresAdminRole(t *testing.T) {
 	}
 }
 
+func TestCreateTemplateRequiresTemplateManagePermission(t *testing.T) {
+	service := &Service{Templates: &memoryTemplateRepository{}}
+	content := applicationTestDOCX(t, "{{customer_name}}")
+
+	_, err := service.CreateTemplate(context.Background(), Principal{
+		TenantID: "tenant-1", UserID: "sales-1", Roles: []string{"sales"},
+		Permissions: map[string]bool{"contract.create": true},
+	}, "标准合同", "standard.docx", content)
+
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("CreateTemplate() error = %v, want ErrForbidden", err)
+	}
+}
+
 func TestCreateTemplateAllowsAdminWithoutPermissions(t *testing.T) {
 	templates := &memoryTemplateRepository{}
 	service := &Service{Templates: templates}
@@ -82,6 +96,38 @@ func TestCreateTemplateAllowsAdminWithoutPermissions(t *testing.T) {
 	}
 	if created.Name != "标准合同" || templates.items[created.ID].CreatedBy != "admin-1" {
 		t.Fatalf("created = %#v, stored = %#v", created, templates.items[created.ID])
+	}
+}
+
+func TestCreateTemplateAllowsTemplateManagePermission(t *testing.T) {
+	templates := &memoryTemplateRepository{}
+	service := &Service{Templates: templates}
+
+	created, err := service.CreateTemplate(context.Background(), Principal{
+		TenantID: "tenant-1", UserID: "manager-1",
+		Permissions: map[string]bool{"contract.template.manage": true},
+	}, "标准合同", "standard.docx", applicationTestDOCX(t, "{{customer_name}}"))
+
+	if err != nil {
+		t.Fatalf("CreateTemplate() error = %v", err)
+	}
+	if created.Name != "标准合同" || templates.items[created.ID].CreatedBy != "manager-1" {
+		t.Fatalf("created = %#v, stored = %#v", created, templates.items[created.ID])
+	}
+}
+
+func TestDeleteTemplateRequiresPermissionOrAdmin(t *testing.T) {
+	templates := &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "标准合同"},
+	}}
+	service := &Service{Templates: templates}
+
+	if err := service.DeleteTemplate(context.Background(), Principal{TenantID: "tenant-1", UserID: "sales-1"}, "template-1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("DeleteTemplate() error = %v, want ErrForbidden", err)
+	}
+
+	if err := service.DeleteTemplate(context.Background(), Principal{TenantID: "tenant-1", UserID: "manager-1", Permissions: map[string]bool{"contract.template.manage": true}}, "template-1"); err != nil {
+		t.Fatalf("DeleteTemplate() error = %v", err)
 	}
 }
 
@@ -129,6 +175,23 @@ func TestUpdateTemplateRejectsNumberFormatWithoutUniqueID(t *testing.T) {
 	}
 }
 
+func TestUpdateTemplateRequiresPermissionOrAdmin(t *testing.T) {
+	templates := &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "旧名称", Fields: []contracttemplate.Field{{Name: "party_a", Label: "甲方", Default: "公司", Locked: true}}},
+	}}
+	service := &Service{Templates: templates}
+
+	_, err := service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", UserID: "sales-1"}, "template-1", "标准合同", contracttemplate.DefaultNumberFormat, []contracttemplate.Field{{Name: "party_a", Label: "甲方", Default: "公司", Locked: true}})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("UpdateTemplate() error = %v, want ErrForbidden", err)
+	}
+
+	_, err = service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", UserID: "user-1", Permissions: map[string]bool{"contract.template.manage": true}}, "template-1", "标准合同", contracttemplate.DefaultNumberFormat, []contracttemplate.Field{{Name: "party_a", Label: "甲方", Default: "公司", Locked: true}})
+	if err != nil {
+		t.Fatalf("UpdateTemplate() error = %v", err)
+	}
+}
+
 func TestLockedTemplateFieldCannotBeOverriddenByNonAdmin(t *testing.T) {
 	fields := []contracttemplate.Field{{Name: "party_a", Label: "甲方", Default: "管理员公司", Locked: true}}
 	values, err := normalizeTemplateValues(fields, map[string]string{"party_a": "其他公司"}, false)
@@ -154,6 +217,9 @@ func TestCreateContractRendersAndFreezesTemplateDocument(t *testing.T) {
 	actor := Principal{
 		TenantID: "tenant-1", UserID: "sales-1", DisplayName: "销售一号", Roles: []string{"sales"},
 		Permissions: map[string]bool{"contract.create": true},
+		PermissionScopes: map[string]contract.ScopeFilter{
+			"contract.create": {AllowSelf: true},
+		},
 	}
 
 	created, err := service.CreateContract(context.Background(), actor, contract.Contract{

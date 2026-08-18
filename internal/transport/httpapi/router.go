@@ -127,11 +127,11 @@ func (h *Handler) me(c *gin.Context) {
 	if len(roles) > 0 {
 		role["code"] = roles[0]
 	}
-	userDirectory := append([]application.UserReference(nil), p.UserDirectory...)
 	writeData(c, http.StatusOK, map[string]any{
-		"tenant_id": p.TenantID, "user_id": p.UserID, "display_name": p.DisplayName, "user_name": p.UserName, "email": p.Email, "role": role, "roles": roles,
-		"permissions": permissions, "role_config_hash": p.RoleConfigHash, "authz_revision": p.AuthzRevision,
-		"user_directory": userDirectory,
+		"tenant_id": p.TenantID, "user_id": p.UserID, "identity_id": p.IdentityID, "person_id": p.PersonID,
+		"display_name": p.DisplayName, "user_name": p.UserName, "email": p.Email, "role": role, "roles": roles,
+		"permissions": permissions, "data_scopes": p.DataScopes, "authorization_revision": p.AuthorizationRevision,
+		"catalog_version": p.CatalogVersion,
 	})
 }
 
@@ -744,6 +744,8 @@ func writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, platform.ErrUnauthenticated):
 		writeEnvelopeError(c, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
+	case errors.Is(err, platform.ErrAuthorizationServiceUnavailable), errors.Is(err, application.ErrPersonnelDirectoryUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "AUTH_DEPENDENCY_UNAVAILABLE", "身份或授权服务暂时不可用", nil)
 	case errors.Is(err, application.ErrForbidden):
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, application.ErrApprovalTargetForbidden):

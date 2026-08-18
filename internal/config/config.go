@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -19,11 +20,15 @@ type Config struct {
 	OIDCClientSecret          string
 	OIDCRedirectURI           string
 	OIDCPostLogoutRedirectURI string
+	OIDCIDPHint               string
 	OIDCScopes                []string
 	OIDCTenantID              string
 	OIDCSessionCookieName     string
 	OIDCSessionTTL            time.Duration
 	OIDCAuthorizationRefresh  time.Duration
+	OIDCAuthorizationTimeout  time.Duration
+	OIDCAuthorizationMaxStale time.Duration
+	OIDCSessionEncryptionKey  []byte
 	OIDCSessionSecure         bool
 	AppPublicURL              string
 	AppPathPrefix             string
@@ -35,6 +40,8 @@ type Config struct {
 	PlatformCatalogSync       bool
 	PlatformCatalogClientID   string
 	PlatformCatalogSecret     string
+	PlatformPersonnelClientID string
+	PlatformPersonnelSecret   string
 	TemporalAddress           string
 	TemporalNamespace         string
 	TemporalTaskQueue         string
@@ -47,23 +54,31 @@ type Config struct {
 	ProjectAPIBaseURL         string
 	ProjectIntegrationPoll    time.Duration
 	ProjectIntegrationRetries uint
+	// H4：内部投递机器令牌（项目侧来源校验强制开启后必配）。
+	ProjectIntegrationTokenURL    string
+	ProjectIntegrationClientID    string
+	ProjectIntegrationClientSecret string
+	ProjectIntegrationAudience    string
 }
 
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
-		OIDCIssuer: env("OIDC_ISSUER", "http://47.111.20.119:18090/realms/basic-platform"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
+		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
 		OIDCBackchannelBaseURL: os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
+		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
 		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
 		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
 		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
-		PlatformApplicationID:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
-		PlatformCatalogClientID: os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
-		PlatformCatalogSecret:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
-		TemporalAddress:         env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
+		PlatformApplicationID:     os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
+		PlatformCatalogClientID:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
+		PlatformCatalogSecret:     os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
+		PlatformPersonnelClientID: os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID"),
+		PlatformPersonnelSecret:   os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET"),
+		TemporalAddress:           env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
 		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 		ProjectAPIBaseURL: env("PROJECT_API_BASE_URL", "http://localhost:8082"),
 	}
@@ -79,6 +94,20 @@ func Load() (Config, error) {
 	}
 	if c.OIDCAuthorizationRefresh, err = duration("OIDC_AUTHORIZATION_REFRESH_INTERVAL", time.Minute); err != nil {
 		return c, err
+	}
+	if c.OIDCAuthorizationTimeout, err = duration("OIDC_AUTHORIZATION_CONTEXT_TIMEOUT", 10*time.Second); err != nil {
+		return c, err
+	}
+	if c.OIDCAuthorizationMaxStale, err = duration("OIDC_AUTHORIZATION_MAX_STALE", 2*time.Minute); err != nil {
+		return c, err
+	}
+	encodedKey := strings.TrimSpace(os.Getenv("OIDC_SESSION_ENCRYPTION_KEY_BASE64"))
+	if encodedKey == "" {
+		return c, fmt.Errorf("OIDC_SESSION_ENCRYPTION_KEY_BASE64 is required")
+	}
+	c.OIDCSessionEncryptionKey, err = base64.StdEncoding.DecodeString(encodedKey)
+	if err != nil || len(c.OIDCSessionEncryptionKey) != 32 {
+		return c, fmt.Errorf("OIDC_SESSION_ENCRYPTION_KEY_BASE64 must decode to exactly 32 bytes")
 	}
 	if c.OIDCSessionSecure, err = strconv.ParseBool(env("OIDC_SESSION_COOKIE_SECURE", "true")); err != nil {
 		return c, fmt.Errorf("OIDC_SESSION_COOKIE_SECURE: %w", err)
@@ -104,6 +133,10 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("PROJECT_INTEGRATION_MAX_ATTEMPTS must be a positive integer")
 	}
 	c.ProjectIntegrationRetries = uint(retries)
+	c.ProjectIntegrationTokenURL = os.Getenv("PROJECT_INTEGRATION_TOKEN_URL")
+	c.ProjectIntegrationClientID = os.Getenv("PROJECT_INTEGRATION_CLIENT_ID")
+	c.ProjectIntegrationClientSecret = os.Getenv("PROJECT_INTEGRATION_CLIENT_SECRET")
+	c.ProjectIntegrationAudience = os.Getenv("PROJECT_INTEGRATION_AUDIENCE")
 	if err := c.validate(); err != nil {
 		return c, err
 	}
@@ -117,6 +150,20 @@ func (c Config) validate() error {
 	if c.ProjectIntegrationEnabled {
 		if !validHTTPOrigin(c.ProjectAPIBaseURL) {
 			return fmt.Errorf("PROJECT_API_BASE_URL must be an HTTP(S) origin")
+		}
+		// H4：项目侧来源校验强制开启，机器令牌为必配；audience 可空（依赖项目侧配置）。
+		for name, value := range map[string]string{
+			"PROJECT_INTEGRATION_TOKEN_URL": c.ProjectIntegrationTokenURL, "PROJECT_INTEGRATION_CLIENT_ID": c.ProjectIntegrationClientID,
+			"PROJECT_INTEGRATION_CLIENT_SECRET": c.ProjectIntegrationClientSecret,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when PROJECT_INTEGRATION_ENABLED=true", name)
+			}
+		}
+		tokenURL, tokenErr := url.ParseRequestURI(c.ProjectIntegrationTokenURL)
+		if tokenErr != nil || (tokenURL.Scheme != "http" && tokenURL.Scheme != "https") || tokenURL.Host == "" ||
+			tokenURL.User != nil || tokenURL.RawQuery != "" || tokenURL.Fragment != "" {
+			return fmt.Errorf("PROJECT_INTEGRATION_TOKEN_URL must be a valid HTTP(S) URL without credentials, query or fragment")
 		}
 	}
 	if c.ProjectIntegrationPoll <= 0 {
@@ -149,8 +196,12 @@ func (c Config) validate() error {
 		return fmt.Errorf("OIDC_SCOPES must include openid")
 	}
 	if strings.TrimSpace(c.OIDCSessionCookieName) == "" || c.OIDCSessionTTL <= 0 ||
-		c.OIDCAuthorizationRefresh <= 0 || c.OIDCAuthorizationRefresh >= c.OIDCSessionTTL {
+		c.OIDCAuthorizationRefresh <= 0 || c.OIDCAuthorizationRefresh >= c.OIDCSessionTTL ||
+		c.OIDCAuthorizationTimeout <= 0 || c.OIDCAuthorizationMaxStale < 0 || c.OIDCAuthorizationMaxStale >= c.OIDCSessionTTL {
 		return fmt.Errorf("OIDC session cookie name, positive TTL and a shorter positive authorization refresh interval are required")
+	}
+	if strings.TrimSpace(c.PlatformApplicationCode) == "" || strings.TrimSpace(c.PlatformEnvironmentCode) == "" {
+		return fmt.Errorf("PLATFORM_APPLICATION_CODE and PLATFORM_ENVIRONMENT_CODE are required for OIDC authorization binding")
 	}
 	if c.AppPathPrefix == "/" || !strings.HasPrefix(c.AppPathPrefix, "/") ||
 		(c.AppPathPrefix != "" && strings.HasSuffix(c.AppPathPrefix, "/")) {
@@ -176,6 +227,9 @@ func (c Config) validate() error {
 	if c.PlatformCatalogSync && (strings.TrimSpace(c.PlatformApplicationID) == "" ||
 		strings.TrimSpace(c.PlatformCatalogClientID) == "" || strings.TrimSpace(c.PlatformCatalogSecret) == "") {
 		return fmt.Errorf("platform authorization catalog synchronization requires application ID, client ID and client secret")
+	}
+	if (strings.TrimSpace(c.PlatformPersonnelClientID) == "") != (strings.TrimSpace(c.PlatformPersonnelSecret) == "") {
+		return fmt.Errorf("platform personnel directory configuration must provide client ID and secret together")
 	}
 	return nil
 }

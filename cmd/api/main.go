@@ -49,8 +49,14 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
+	oidcStore, err := platform.NewGORMOIDCStore(db)
+	if err != nil {
+		logger.Error("OIDC session store failed", "error", err)
+		os.Exit(1)
+	}
 	if cfg.ProjectIntegrationEnabled {
-		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger}
+		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
+			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)}
 		go dispatcher.Run(ctx)
 	}
 	service := &application.Service{
@@ -60,14 +66,23 @@ func main() {
 		TaskQueue:        cfg.TemporalTaskQueue,
 		NodeTimeout:      cfg.NodeTimeout,
 		ReminderInterval: cfg.ReminderInterval,
+		Personnel:        platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout),
 	}
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
 		RedirectURI: cfg.OIDCRedirectURI, PostLogoutRedirectURI: cfg.OIDCPostLogoutRedirectURI,
-		Scopes: cfg.OIDCScopes, TenantID: cfg.OIDCTenantID, SessionCookieName: cfg.OIDCSessionCookieName,
+		IdentityProviderHint: cfg.OIDCIDPHint,
+		Scopes:               cfg.OIDCScopes, TenantID: cfg.OIDCTenantID, SessionCookieName: cfg.OIDCSessionCookieName,
 		SessionTTL: cfg.OIDCSessionTTL, SessionSecure: cfg.OIDCSessionSecure,
 		AuthorizationRefreshInterval: cfg.OIDCAuthorizationRefresh,
+		AuthorizationTimeout:         cfg.OIDCAuthorizationTimeout,
+		AuthorizationMaxStale:        cfg.OIDCAuthorizationMaxStale,
+		PlatformBaseURL:              cfg.PlatformBaseURL,
+		ApplicationCode:              cfg.PlatformApplicationCode,
+		EnvironmentCode:              cfg.PlatformEnvironmentCode,
+		SessionEncryptionKey:         cfg.OIDCSessionEncryptionKey,
+		Store:                        oidcStore,
 		PathPrefix:                   cfg.AppPathPrefix,
 	})
 	if err != nil {

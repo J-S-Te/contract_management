@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -15,11 +16,15 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("OIDC_CLIENT_ID", "contract_management-dev-web")
 	t.Setenv("OIDC_CLIENT_SECRET", "test-client-secret")
 	t.Setenv("OIDC_REDIRECT_URI", "http://localhost:8081/contract_management/auth/callback")
+	t.Setenv("OIDC_IDP_HINT", "basic-platform")
 	t.Setenv("OIDC_TENANT_ID", "01J00000000000000000000000")
 	t.Setenv("OIDC_SESSION_COOKIE_NAME", "contract_management_session")
 	t.Setenv("OIDC_SESSION_COOKIE_SECURE", "false")
 	t.Setenv("OIDC_SESSION_TTL", "8h")
 	t.Setenv("OIDC_AUTHORIZATION_REFRESH_INTERVAL", "1m")
+	t.Setenv("OIDC_AUTHORIZATION_CONTEXT_TIMEOUT", "10s")
+	t.Setenv("OIDC_AUTHORIZATION_MAX_STALE", "2m")
+	t.Setenv("OIDC_SESSION_ENCRYPTION_KEY_BASE64", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("APP_PUBLIC_URL", "http://localhost:8081/contract_management/")
 	t.Setenv("APP_PATH_PREFIX", "/contract_management")
 	t.Setenv("TEMPORAL_ADDRESS", "localhost:7233")
@@ -30,8 +35,8 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("APPROVAL_REMINDER_INTERVAL", "24h")
 	t.Setenv("PLATFORM_AUDIT_CLIENT_ID", "")
 	t.Setenv("PLATFORM_AUDIT_CLIENT_SECRET", "")
-	t.Setenv("PLATFORM_APPLICATION_CODE", "")
-	t.Setenv("PLATFORM_ENVIRONMENT_CODE", "")
+	t.Setenv("PLATFORM_APPLICATION_CODE", "contract_management")
+	t.Setenv("PLATFORM_ENVIRONMENT_CODE", "dev")
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID", "")
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID", "")
@@ -92,18 +97,27 @@ func TestLoadAllowsRegisteredApplicationWithoutAuditCredentials(t *testing.T) {
 	if config.PlatformApplicationCode != "contract_management" {
 		t.Fatalf("PlatformApplicationCode = %q", config.PlatformApplicationCode)
 	}
+	if config.OIDCIDPHint != "basic-platform" {
+		t.Fatalf("OIDCIDPHint = %q", config.OIDCIDPHint)
+	}
 }
 
-func TestLoadDefaultsToKeycloakRealmIssuer(t *testing.T) {
+func TestLoadRequiresExplicitKeycloakRealmIssuer(t *testing.T) {
 	validEnvironment(t)
 	t.Setenv("OIDC_ISSUER", "")
 
-	config, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "OIDC_ISSUER") {
+		t.Fatalf("Load() error = %v, want explicit issuer error", err)
 	}
-	if config.OIDCIssuer != "http://47.111.20.119:18090/realms/basic-platform" {
-		t.Fatalf("OIDCIssuer = %q", config.OIDCIssuer)
+}
+
+func TestLoadRejectsInvalidSessionEncryptionKey(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("OIDC_SESSION_ENCRYPTION_KEY_BASE64", base64.StdEncoding.EncodeToString([]byte("too-short")))
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "OIDC_SESSION_ENCRYPTION_KEY_BASE64") {
+		t.Fatalf("Load() error = %v, want encryption key error", err)
 	}
 }
 
