@@ -218,7 +218,7 @@ func TestContractDashboardScopesAdminToTenantAndOtherUsersToSelf(t *testing.T) {
 	}
 
 	got, err := service.ContractDashboard(context.Background(), admin)
-	if err != nil || got.TotalContracts != want.TotalContracts || got.ApprovalContracts != want.ApprovalContracts {
+	if err != nil || got.TenantID != "tenant-1" || got.TotalContracts != want.TotalContracts || got.ApprovalContracts != want.ApprovalContracts {
 		t.Fatalf("ContractDashboard() = %#v, %v", got, err)
 	}
 	if repository.dashboardTenantID != "tenant-1" || repository.dashboardOwnerUserID != "" {
@@ -231,8 +231,12 @@ func TestContractDashboardScopesAdminToTenantAndOtherUsersToSelf(t *testing.T) {
 		Permissions:      map[string]bool{"contract.read": true},
 		PermissionScopes: allowSelfScope("contract.read"),
 	}
-	if _, err := service.ContractDashboard(context.Background(), user); err != nil {
+	userDashboard, err := service.ContractDashboard(context.Background(), user)
+	if err != nil {
 		t.Fatalf("ContractDashboard() user error = %v", err)
+	}
+	if userDashboard.TenantID != "tenant-2" {
+		t.Fatalf("ContractDashboard() user tenant = %q, want tenant-2", userDashboard.TenantID)
 	}
 	if repository.dashboardTenantID != "tenant-2" || repository.dashboardOwnerUserID != "sales-1" {
 		t.Fatalf("user dashboard scope = tenant %q, owner %q", repository.dashboardTenantID, repository.dashboardOwnerUserID)
@@ -593,7 +597,7 @@ func TestGetApprovalDetailRejectsUnrelatedUser(t *testing.T) {
 
 func TestGetApprovalDetailRejectsDifferentContractScope(t *testing.T) {
 	repository := &recordingRepository{
-		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+		contract:     contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
 		approvalMeta: approval.Meta{ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", WorkflowID: "workflow-1", RunID: "run-1", ApplicantUserID: "applicant-1", Status: approval.StatusRunning},
 	}
 	service := &Service{Repo: repository}

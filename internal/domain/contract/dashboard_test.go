@@ -30,3 +30,14 @@ func TestDashboardContractJSONUsesBusinessFieldAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardJSONIncludesVerifiedTenantBoundary(t *testing.T) {
+	encoded, err := json.Marshal(Dashboard{TenantID: "tenant-1", TotalContracts: 3})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	body := string(encoded)
+	if !strings.Contains(body, `"tenant_id":"tenant-1"`) {
+		t.Fatalf("dashboard JSON does not expose its verified tenant boundary: %s", body)
+	}
+}
