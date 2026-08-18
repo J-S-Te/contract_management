@@ -177,19 +177,7 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 	switch command.Action {
 	case ActionApprove:
 		node.ApprovedBy[command.ActorUserID] = true
-		// Rule nodes are role-based or-sign nodes: when a role has multiple directors,
-		// any one director may approve and advance the workflow. Requiring every
-		// assignee is reserved for an explicit add-sign all-sign operation.
-		passed := node.Node.Countersign == approval.CountersignAny || (command.RoleNodeOrSign && len(node.AddedSignerIDs) == 0)
-		if !passed {
-			passed = true
-			for _, id := range node.Node.AssigneeIDs {
-				if !node.ApprovedBy[id] {
-					passed = false
-					break
-				}
-			}
-		}
+		passed := approvalNodePassed(node, command.RoleNodeOrSign)
 		if passed {
 			node.Status, node.CompletedAt = approval.NodeApproved, command.OccurredAt
 			state.CurrentNodeIndex++
@@ -214,6 +202,9 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 				node.AddedSignerIDs = append(node.AddedSignerIDs, target)
 			}
 		}
+		// 发起加签代表当前审批人已确认本节点，后续只等待被加签人处理；否则
+		// 被加签人批准后还会要求原审批人重复点击批准，流程会表现为无法流转。
+		node.ApprovedBy[command.ActorUserID] = true
 		node.Node.Countersign = command.Countersign
 		return true, false, nil
 	case ActionTransfer:
@@ -257,4 +248,45 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 	default:
 		return false, false, fmt.Errorf("unsupported action %q", command.Action)
 	}
+}
+
+func approvalNodePassed(node *RuntimeNode, roleNodeOrSign bool) bool {
+	if len(node.AddedSignerIDs) == 0 {
+		if node.Node.Countersign == approval.CountersignAny || roleNodeOrSign {
+			return true
+		}
+		for _, id := range node.Node.AssigneeIDs {
+			if !node.ApprovedBy[id] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// 角色节点始终保持“任一原审批人即可”；加签人员按发起时选择的
+	// 会签模式处理。前端默认 all，因此所有被加签人批准后进入下一节点。
+	originalApproved := false
+	for _, id := range node.Node.AssigneeIDs {
+		if !contains(node.AddedSignerIDs, id) && node.ApprovedBy[id] {
+			originalApproved = true
+			break
+		}
+	}
+	if !originalApproved {
+		return false
+	}
+	if node.Node.Countersign == approval.CountersignAny {
+		for _, id := range node.AddedSignerIDs {
+			if node.ApprovedBy[id] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, id := range node.AddedSignerIDs {
+		if !node.ApprovedBy[id] {
+			return false
+		}
+	}
+	return true
 }

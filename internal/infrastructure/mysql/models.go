@@ -139,15 +139,15 @@ type stampedDocumentRecord struct {
 func (stampedDocumentRecord) TableName() string { return "con_contract_stamped_document" }
 
 type signingRecord struct {
-	ContractID, TenantID, Method, Status                string
-	CourierNumber, RecipientName, RecipientAddress      *string
-	MailedAt, CustomerReceivedAt, SignedAt, ConfirmedAt *time.Time
-	SealVerified, SignatureVerified                     bool
-	ReminderCount                                       uint
-	LastRemindedAt                                      *time.Time
-	Version                                             uint64
-	UpdatedAt                                           time.Time
-	UpdatedBy                                           string
+	ContractID, TenantID, Method, Status                           string
+	CourierNumber, RecipientName, RecipientPhone, RecipientAddress *string
+	MailedAt, CustomerReceivedAt, SignedAt, ConfirmedAt            *time.Time
+	SealVerified, SignatureVerified                                bool
+	ReminderCount                                                  uint
+	LastRemindedAt                                                 *time.Time
+	Version                                                        uint64
+	UpdatedAt                                                      time.Time
+	UpdatedBy                                                      string
 }
 
 func (signingRecord) TableName() string { return "con_contract_signing" }

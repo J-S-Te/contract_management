@@ -6,6 +6,7 @@ x-contract-environment: &contract-environment
   environment:
     MYSQL_DSN: contract:${CONTRACT_MYSQL_PASSWORD}@tcp(contract-mysql:3306)/contract_management?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
     PLATFORM_BASE_URL: http://platform-api:8080
+    OIDC_BACKCHANNEL_BASE_URL: ${CONTRACT_KEYCLOAK_BACKCHANNEL_BASE_URL:-http://keycloak:8080}
     TEMPORAL_ADDRESS: temporal:7233
     PROJECT_API_BASE_URL: http://project-api:8082
     CONTRACT_RUN_WORKER_WITH_API: "true"
