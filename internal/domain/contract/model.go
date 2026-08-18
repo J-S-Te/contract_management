@@ -142,6 +142,7 @@ type DashboardContract struct {
 }
 
 type Dashboard struct {
+	TenantID              string              `json:"tenant_id"`
 	TotalAmountMinor      int64               `json:"total_amount_minor"`
 	TotalContracts        int64               `json:"total_contracts"`
 	ApprovalContracts     int64               `json:"approval_contracts"`

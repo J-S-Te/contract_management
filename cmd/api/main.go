@@ -68,6 +68,18 @@ func main() {
 		ReminderInterval: cfg.ReminderInterval,
 		Personnel:        platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout),
 	}
+	var dashboardBearer platform.ClientCredentialsTokenVerifier
+	if cfg.DashboardMachineEnabled && cfg.DashboardMachineRequireBearer {
+		dashboardBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
+			Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
+			ClientID: cfg.DashboardMachineClientID, Audience: cfg.DashboardMachineAudience,
+			Timeout: cfg.OIDCAuthorizationTimeout,
+		})
+		if err != nil {
+			logger.Error("initialize dashboard machine bearer verifier", "error", err)
+			os.Exit(1)
+		}
+	}
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
@@ -91,7 +103,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(service, identity, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)),
+		Handler:           httpapi.NewRouter(service, identity, &httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer}, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

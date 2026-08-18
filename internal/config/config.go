@@ -17,6 +17,11 @@ type Config struct {
 	OIDCIssuer                string
 	OIDCBackchannelBaseURL    string
 	OIDCClientID              string
+	// DashboardMachine* 数据看板系统机器接入（internal/v1/dashboard）
+	DashboardMachineEnabled        bool
+	DashboardMachineRequireBearer  bool
+	DashboardMachineClientID       string
+	DashboardMachineAudience       string
 	OIDCClientSecret          string
 	OIDCRedirectURI           string
 	OIDCPostLogoutRedirectURI string
@@ -66,6 +71,10 @@ func Load() (Config, error) {
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
 		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
 		OIDCBackchannelBaseURL: os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
+		DashboardMachineEnabled: envBool("DASHBOARD_MACHINE_ENABLED", false),
+		DashboardMachineRequireBearer: envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
+		DashboardMachineClientID: os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
+		DashboardMachineAudience: os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
 		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
@@ -250,6 +259,18 @@ func contains(values []string, expected string) bool {
 func validHTTPOrigin(value string) bool {
 	parsed, err := url.ParseRequestURI(value)
 	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" && (parsed.Path == "" || parsed.Path == "/")
+}
+
+func envBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func env(key, fallback string) string {

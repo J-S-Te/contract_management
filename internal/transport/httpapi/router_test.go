@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/oklog/ulid/v2"
@@ -24,7 +25,7 @@ func TestRequestIDReplacesInvalidClientValue(t *testing.T) {
 	request.Header.Set("X-Request-ID", "untrusted request id")
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, nil).ServeHTTP(response, request)
+	NewRouter(nil, nil, nil).ServeHTTP(response, request)
 
 	id := response.Header().Get("X-Request-ID")
 	if _, err := ulid.ParseStrict(id); err != nil {
@@ -38,7 +39,7 @@ func TestRequestIDPreservesValidClientULID(t *testing.T) {
 	request.Header.Set("X-Request-ID", id)
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, nil).ServeHTTP(response, request)
+	NewRouter(nil, nil, nil).ServeHTTP(response, request)
 
 	if got := response.Header().Get("X-Request-ID"); got != id {
 		t.Fatalf("X-Request-ID = %q, want %q", got, id)
@@ -52,7 +53,7 @@ func TestAuthenticationFailureAbortsGinHandlerChain(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/contracts", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, identity).ServeHTTP(response, request)
+	NewRouter(nil, identity, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnauthorized, response.Body.String())
@@ -74,7 +75,7 @@ func TestAuthMeReturnsPlatformAuthorizationSnapshot(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, identity).ServeHTTP(response, request)
+	NewRouter(nil, identity, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
@@ -112,10 +113,48 @@ func TestInvalidJSONDoesNotReachService(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, identity).ServeHTTP(response, request)
+	NewRouter(nil, identity, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnprocessableEntity, response.Body.String())
+	}
+}
+
+func TestDashboardIntegrationRequiresExplicitTenantBoundary(t *testing.T) {
+	handler := &Handler{}
+	router := gin.New()
+	router.GET(
+		"/internal/v1/dashboard",
+		handler.authenticateDashboardIntegration(DashboardIntegrationOptions{Enabled: true}),
+		func(c *gin.Context) {
+			writeData(c, http.StatusOK, map[string]string{"tenant_id": principal(c).TenantID})
+		},
+	)
+
+	missingTenantRequest := httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
+	missingTenantResponse := httptest.NewRecorder()
+	router.ServeHTTP(missingTenantResponse, missingTenantRequest)
+	if missingTenantResponse.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"missing tenant status = %d, want %d; body = %s",
+			missingTenantResponse.Code,
+			http.StatusBadRequest,
+			missingTenantResponse.Body.String(),
+		)
+	}
+	if !strings.Contains(missingTenantResponse.Body.String(), "CON_DASHBOARD_TENANT_REQUIRED") {
+		t.Fatalf("missing tenant response = %s", missingTenantResponse.Body.String())
+	}
+
+	tenantRequest := httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
+	tenantRequest.Header.Set("X-DA-Tenant-ID", " tenant-1 ")
+	tenantResponse := httptest.NewRecorder()
+	router.ServeHTTP(tenantResponse, tenantRequest)
+	if tenantResponse.Code != http.StatusOK {
+		t.Fatalf("tenant status = %d, want %d; body = %s", tenantResponse.Code, http.StatusOK, tenantResponse.Body.String())
+	}
+	if !strings.Contains(tenantResponse.Body.String(), `"tenant_id":"tenant-1"`) {
+		t.Fatalf("tenant response = %s", tenantResponse.Body.String())
 	}
 }
 
@@ -141,7 +180,7 @@ func TestWebHomeRedirectPreservesPortalPrefix(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter(nil, identity).ServeHTTP(response, request)
+	NewRouter(nil, identity, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusFound)

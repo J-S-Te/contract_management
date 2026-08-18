@@ -586,16 +586,26 @@ func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contr
 	}
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var (
+		dashboard contract.Dashboard
+		err       error
+	)
 	if scoped, ok := s.Repo.(ScopedRepository); ok {
-		return scoped.ContractDashboardScoped(ctx, filter, today, 200)
+		dashboard, err = scoped.ContractDashboardScoped(ctx, filter, today, 200)
+	} else if filter.AllowAll {
+		dashboard, err = s.Repo.ContractDashboard(ctx, actor.TenantID, "", today, 200)
+	} else if filter.AllowSelf {
+		dashboard, err = s.Repo.ContractDashboard(ctx, actor.TenantID, actor.UserID, today, 200)
+	} else {
+		return contract.Dashboard{}, ErrForbidden
 	}
-	if filter.AllowAll {
-		return s.Repo.ContractDashboard(ctx, actor.TenantID, "", today, 200)
+	if err != nil {
+		return contract.Dashboard{}, err
 	}
-	if filter.AllowSelf {
-		return s.Repo.ContractDashboard(ctx, actor.TenantID, actor.UserID, today, 200)
-	}
-	return contract.Dashboard{}, ErrForbidden
+	// internal/dashboard 的机器消费方必须能够校验返回数据与请求租户一致，
+	// 因此租户标识由应用层基于已认证主体统一写入，不能信任仓储返回值。
+	dashboard.TenantID = actor.TenantID
+	return dashboard, nil
 }
 
 func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Rule, error) {

@@ -51,7 +51,14 @@ type Handler struct {
 	audit    platform.AuditReporter
 }
 
-func NewRouter(service *application.Service, identity Identity, audits ...platform.AuditReporter) *gin.Engine {
+// DashboardIntegrationOptions 数据看板系统（服务器到服务器）机器接入配置。
+type DashboardIntegrationOptions struct {
+	Enabled        bool
+	RequireBearer  bool
+	BearerVerifier platform.ClientCredentialsTokenVerifier
+}
+
+func NewRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
 		audit = audits[0]
@@ -72,6 +79,11 @@ func NewRouter(service *application.Service, identity Identity, audits ...platfo
 	r.GET("/healthz", func(c *gin.Context) {
 		writeJSON(c, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up"}})
 	})
+	if dashboardOptions != nil && dashboardOptions.Enabled {
+		internal := r.Group("/internal/v1")
+		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions))
+		internal.GET("/dashboard", h.dashboard)
+	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
 	api.GET("/dashboard", h.dashboard)
@@ -706,6 +718,52 @@ func (h *Handler) authenticate() gin.HandlerFunc {
 			return
 		}
 		c.Set(principalKey, p)
+		c.Next()
+	}
+}
+
+// authenticateDashboardIntegration 数据看板系统机器接入：Bearer Keycloak 机器令牌
+// + 全量合同读范围（看板为只读消费方，不对业务写操作授权）。
+func (h *Handler) authenticateDashboardIntegration(options DashboardIntegrationOptions) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !options.Enabled {
+			writeEnvelopeError(c, http.StatusNotFound, "CON_DASHBOARD_INTEGRATION_DISABLED", "接口未启用", nil)
+			c.Abort()
+			return
+		}
+		if options.RequireBearer {
+			if options.BearerVerifier == nil {
+				writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DASHBOARD_AUTH_UNAVAILABLE", "看板系统机器身份校验未配置", nil)
+				c.Abort()
+				return
+			}
+			const bearerPrefix = "Bearer "
+			authorization := strings.TrimSpace(c.GetHeader("Authorization"))
+			if !strings.HasPrefix(authorization, bearerPrefix) || strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)) == "" {
+				writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_REQUIRED", "看板系统调用必须携带机器访问令牌", nil)
+				c.Abort()
+				return
+			}
+			if err := options.BearerVerifier.VerifyClientCredentials(c.Request.Context(), strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix))); err != nil {
+				writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_INVALID", "看板系统机器访问令牌无效", nil)
+				c.Abort()
+				return
+			}
+		}
+		tenantID := strings.TrimSpace(c.GetHeader("X-DA-Tenant-ID"))
+		if tenantID == "" {
+			writeEnvelopeError(c, http.StatusBadRequest, "CON_DASHBOARD_TENANT_REQUIRED", "看板系统调用必须指定租户", nil)
+			c.Abort()
+			return
+		}
+		c.Set(principalKey, application.Principal{
+			Subject: "data_analysis", TenantID: tenantID, UserID: "data_analysis", IdentityID: "data_analysis",
+			DisplayName: "数据看板与统计分析",
+			Permissions: map[string]bool{"contract.read": true},
+			PermissionScopes: map[string]contract.ScopeFilter{
+				"contract.read": {TenantID: tenantID, IdentityID: "data_analysis", AllowAll: true},
+			},
+		})
 		c.Next()
 	}
 }
