@@ -209,12 +209,15 @@ func (a *OIDCAuthenticator) Login(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "cannot start login", http.StatusServiceUnavailable)
 		return
 	}
-	target := a.authorizationURL(state, nonce, verifier)
+	target := a.authorizationURL(state, nonce, verifier, strings.EqualFold(strings.TrimSpace(request.URL.Query().Get("prompt")), "login"))
 	http.Redirect(writer, request, target, http.StatusFound)
 }
 
-func (a *OIDCAuthenticator) authorizationURL(state, nonce, verifier string) string {
+func (a *OIDCAuthenticator) authorizationURL(state, nonce, verifier string, forceLogin bool) string {
 	options := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if forceLogin {
+		options = append(options, oauth2.SetAuthURLParam("prompt", "login"))
+	}
 	if hint := strings.TrimSpace(a.options.IdentityProviderHint); hint != "" {
 		options = append(options, oauth2.SetAuthURLParam("kc_idp_hint", hint))
 	}
