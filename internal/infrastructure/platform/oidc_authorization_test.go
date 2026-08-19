@@ -17,7 +17,7 @@ func TestAuthorizationURLRoutesDirectlyToConfiguredBroker(t *testing.T) {
 			Scopes:      []string{"openid", "profile"},
 		},
 	}
-	target, err := url.Parse(authenticator.authorizationURL("state", "nonce", "verifier"))
+	target, err := url.Parse(authenticator.authorizationURL("state", "nonce", "verifier", false))
 	if err != nil {
 		t.Fatalf("parse authorization URL: %v", err)
 	}
