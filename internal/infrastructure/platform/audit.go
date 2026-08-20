@@ -22,6 +22,9 @@ import (
 type AuditEvent struct {
 	ActorID, ActorName, Action, ResourceType, ResourceID string
 	RequestID, CorrelationID, Result, ReasonCode         string
+	// UserLoginIP 是被审计用户的原始客户端地址；缺少该字段时，平台只能记录
+	// 合同服务投递请求的容器地址。
+	UserLoginIP string
 }
 
 type AuditReporter interface {
@@ -78,6 +81,9 @@ func (c *AuditClient) Report(ctx context.Context, event AuditEvent) error {
 	}
 	if event.ReasonCode != "" {
 		payload["reason_code"] = event.ReasonCode
+	}
+	if event.UserLoginIP != "" {
+		payload["user_login_ip"] = event.UserLoginIP
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
