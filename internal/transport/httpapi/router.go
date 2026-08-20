@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -239,8 +240,32 @@ func (h *Handler) auditWrites() gin.HandlerFunc {
 		}
 		resourceType, resourceID := auditResource(c)
 		requestID := requestIDFrom(c.Request.Context())
-		_ = h.audit.Report(c.Request.Context(), platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: result, ReasonCode: strconv.Itoa(c.Writer.Status())})
+		_ = h.audit.Report(c.Request.Context(), platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: result, ReasonCode: strconv.Itoa(c.Writer.Status()), UserLoginIP: requestClientIP(c.Request)})
 	}
+}
+
+// requestClientIP 提取前端反向代理传入的首个客户端地址，并在未经过代理时回退到对端地址。
+// 生产服务端口只绑定本机，X-Forwarded-For 只能由受控前端容器写入；平台接收端仍会校验该值必须是 IP 字面量。
+func requestClientIP(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	for _, value := range strings.Split(request.Header.Get("X-Forwarded-For"), ",") {
+		if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil {
+			return ip.String()
+		}
+	}
+	if ip := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Real-IP"))); ip != nil {
+		return ip.String()
+	}
+	remote := strings.TrimSpace(request.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		remote = host
+	}
+	if ip := net.ParseIP(remote); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 func auditAction(r *http.Request) string {
