@@ -97,6 +97,26 @@ func TestContractApprovalWorkflowWithdraws(t *testing.T) {
 	require.Equal(t, contract.StatusDraft, store.completed[0].TargetStatus)
 }
 
+func TestContractApprovalWorkflowNotifiesAssignedUser(t *testing.T) {
+	store := &memoryStore{}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{Store: store})
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(CommandSignalName, ApprovalCommand{CommandID: "add-sign-1", Action: ActionAddSign, ActorUserID: "tech", TargetUserIDs: []string{"legal"}, Countersign: approval.CountersignAll, Comment: "需要法务会签", OccurredAt: time.Now().UTC()})
+	}, time.Minute)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(CommandSignalName, ApprovalCommand{CommandID: "legal-approve", Action: ActionApprove, ActorUserID: "legal", OccurredAt: time.Now().UTC()})
+	}, 2*time.Minute)
+	env.ExecuteWorkflow(ContractApprovalWorkflow, ContractApprovalInput{ApprovalID: "approval", TenantID: "tenant", ContractID: "contract", ContractVersion: 1, ApplicantUserID: "owner", ContentHash: "hash", Nodes: []approval.Node{{ID: "tech", AssigneeIDs: []string{"tech"}, Countersign: approval.CountersignAll}}})
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, store.notifications, 4)
+	require.Equal(t, []string{"tech"}, store.notifications[0].Recipients)
+	require.Equal(t, []string{"legal"}, store.notifications[1].Recipients)
+	require.Equal(t, "approval_assigned", store.notifications[1].Type)
+	require.Equal(t, "approval:assigned:add-sign-1", store.notifications[1].DedupeKey)
+}
+
 func TestStatusChangeWorkflowAppliesApprovedTarget(t *testing.T) {
 	store := &memoryStore{}
 	var suite testsuite.WorkflowTestSuite
