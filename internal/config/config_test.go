@@ -139,3 +139,37 @@ func TestProjectIntegrationRequiresHTTPOrigin(t *testing.T) {
 		t.Fatalf("URL error = %v", err)
 	}
 }
+
+func TestLoadRejectsDashboardMachineWithoutBearer(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("DASHBOARD_MACHINE_ENABLED", "true")
+	t.Setenv("DASHBOARD_MACHINE_REQUIRE_BEARER", "false")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "DASHBOARD_MACHINE_REQUIRE_BEARER") {
+		t.Fatalf("Load() error = %v, want dashboard bearer enforcement error", err)
+	}
+}
+
+func TestLoadRejectsDashboardMachineBearerMissingCredentials(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("DASHBOARD_MACHINE_ENABLED", "true")
+	t.Setenv("DASHBOARD_MACHINE_REQUIRE_BEARER", "true")
+	t.Setenv("DASHBOARD_MACHINE_CLIENT_ID", "")
+	t.Setenv("DASHBOARD_MACHINE_AUDIENCE", "")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "DASHBOARD_MACHINE_CLIENT_ID") {
+		t.Fatalf("Load() error = %v, want missing dashboard client ID error", err)
+	}
+}
+
+func TestLoadAcceptsDashboardMachineWithBearer(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("DASHBOARD_MACHINE_ENABLED", "true")
+	t.Setenv("DASHBOARD_MACHINE_REQUIRE_BEARER", "true")
+	t.Setenv("DASHBOARD_MACHINE_CLIENT_ID", "data-analysis")
+	t.Setenv("DASHBOARD_MACHINE_AUDIENCE", "basic-platform-application")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}

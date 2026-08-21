@@ -76,7 +76,8 @@ func main() {
 		dashboardBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
 			Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 			ClientID: cfg.DashboardMachineClientID, Audience: cfg.DashboardMachineAudience,
-			Timeout: cfg.OIDCAuthorizationTimeout,
+			TenantID: cfg.OIDCTenantID,
+			Timeout:  cfg.OIDCAuthorizationTimeout,
 		})
 		if err != nil {
 			logger.Error("initialize dashboard machine bearer verifier", "error", err)

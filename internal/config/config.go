@@ -11,71 +11,71 @@ import (
 )
 
 type Config struct {
-	HTTPAddress               string
-	MySQLDSN                  string
-	PlatformBaseURL           string
-	OIDCIssuer                string
-	OIDCBackchannelBaseURL    string
-	OIDCClientID              string
+	HTTPAddress            string
+	MySQLDSN               string
+	PlatformBaseURL        string
+	OIDCIssuer             string
+	OIDCBackchannelBaseURL string
+	OIDCClientID           string
 	// DashboardMachine* 数据看板系统机器接入（internal/v1/dashboard）
-	DashboardMachineEnabled        bool
-	DashboardMachineRequireBearer  bool
-	DashboardMachineClientID       string
-	DashboardMachineAudience       string
-	OIDCClientSecret          string
-	OIDCRedirectURI           string
-	OIDCPostLogoutRedirectURI string
-	OIDCIDPHint               string
-	OIDCScopes                []string
-	OIDCTenantID              string
-	OIDCSessionCookieName     string
-	OIDCSessionTTL            time.Duration
-	OIDCAuthorizationRefresh  time.Duration
-	OIDCAuthorizationTimeout  time.Duration
-	OIDCAuthorizationMaxStale time.Duration
-	OIDCSessionEncryptionKey  []byte
-	OIDCSessionSecure         bool
-	AppPublicURL              string
-	AppPathPrefix             string
-	PlatformAuditClientID     string
-	PlatformAuditClientSecret string
-	PlatformApplicationCode   string
-	PlatformEnvironmentCode   string
-	PlatformApplicationID     string
-	PlatformCatalogSync       bool
-	PlatformCatalogClientID   string
-	PlatformCatalogSecret     string
-	PlatformPersonnelClientID string
-	PlatformPersonnelSecret   string
-	TemporalAddress           string
-	TemporalNamespace         string
-	TemporalTaskQueue         string
-	TemporalAPIKey            string
-	TemporalTLS               bool
-	NodeTimeout               time.Duration
-	ReminderInterval          time.Duration
-	ArchiveCron               string
-	ProjectIntegrationEnabled bool
-	ProjectAPIBaseURL         string
-	ProjectIntegrationPoll    time.Duration
-	ProjectIntegrationRetries uint
+	DashboardMachineEnabled       bool
+	DashboardMachineRequireBearer bool
+	DashboardMachineClientID      string
+	DashboardMachineAudience      string
+	OIDCClientSecret              string
+	OIDCRedirectURI               string
+	OIDCPostLogoutRedirectURI     string
+	OIDCIDPHint                   string
+	OIDCScopes                    []string
+	OIDCTenantID                  string
+	OIDCSessionCookieName         string
+	OIDCSessionTTL                time.Duration
+	OIDCAuthorizationRefresh      time.Duration
+	OIDCAuthorizationTimeout      time.Duration
+	OIDCAuthorizationMaxStale     time.Duration
+	OIDCSessionEncryptionKey      []byte
+	OIDCSessionSecure             bool
+	AppPublicURL                  string
+	AppPathPrefix                 string
+	PlatformAuditClientID         string
+	PlatformAuditClientSecret     string
+	PlatformApplicationCode       string
+	PlatformEnvironmentCode       string
+	PlatformApplicationID         string
+	PlatformCatalogSync           bool
+	PlatformCatalogClientID       string
+	PlatformCatalogSecret         string
+	PlatformPersonnelClientID     string
+	PlatformPersonnelSecret       string
+	TemporalAddress               string
+	TemporalNamespace             string
+	TemporalTaskQueue             string
+	TemporalAPIKey                string
+	TemporalTLS                   bool
+	NodeTimeout                   time.Duration
+	ReminderInterval              time.Duration
+	ArchiveCron                   string
+	ProjectIntegrationEnabled     bool
+	ProjectAPIBaseURL             string
+	ProjectIntegrationPoll        time.Duration
+	ProjectIntegrationRetries     uint
 	// H4：内部投递机器令牌（项目侧来源校验强制开启后必配）。
-	ProjectIntegrationTokenURL    string
-	ProjectIntegrationClientID    string
+	ProjectIntegrationTokenURL     string
+	ProjectIntegrationClientID     string
 	ProjectIntegrationClientSecret string
-	ProjectIntegrationAudience    string
+	ProjectIntegrationAudience     string
 }
 
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
 		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
-		OIDCBackchannelBaseURL: os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
-		DashboardMachineEnabled: envBool("DASHBOARD_MACHINE_ENABLED", false),
+		OIDCBackchannelBaseURL:        os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
+		DashboardMachineEnabled:       envBool("DASHBOARD_MACHINE_ENABLED", false),
 		DashboardMachineRequireBearer: envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
-		DashboardMachineClientID: os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
-		DashboardMachineAudience: os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
-		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
+		DashboardMachineClientID:      os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
+		DashboardMachineAudience:      os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
+		OIDCClientSecret:              os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
@@ -240,7 +240,30 @@ func (c Config) validate() error {
 	if (strings.TrimSpace(c.PlatformPersonnelClientID) == "") != (strings.TrimSpace(c.PlatformPersonnelSecret) == "") {
 		return fmt.Errorf("platform personnel directory configuration must provide client ID and secret together")
 	}
+	// 看板机器接口返回全租户合同数据，启用后必须校验调用方机器身份；租户边界必须由
+	// 验签令牌提供，不能退化为“无 Bearer + 请求头租户”的组合。与 project 侧对齐。
+	if c.DashboardMachineRequireBearer && !c.DashboardMachineEnabled {
+		return fmt.Errorf("DASHBOARD_MACHINE_REQUIRE_BEARER requires DASHBOARD_MACHINE_ENABLED")
+	}
+	if c.DashboardMachineEnabled && !c.DashboardMachineRequireBearer {
+		return fmt.Errorf("DASHBOARD_MACHINE_REQUIRE_BEARER must be true when DASHBOARD_MACHINE_ENABLED=true (internal dashboard source verification is mandatory)")
+	}
+	if c.DashboardMachineRequireBearer {
+		for name, value := range map[string]string{
+			"DASHBOARD_MACHINE_CLIENT_ID": c.DashboardMachineClientID,
+			"DASHBOARD_MACHINE_AUDIENCE":  c.DashboardMachineAudience,
+		} {
+			if strings.TrimSpace(value) == "" || placeholder(value) {
+				return fmt.Errorf("%s is required when dashboard bearer authentication is enabled", name)
+			}
+		}
+	}
 	return nil
+}
+
+func placeholder(value string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	return strings.Contains(upper, "PENDING") || strings.Contains(upper, "CHANGEME") || strings.Contains(upper, "EXAMPLE.COM")
 }
 
 func fields(value string) []string {
