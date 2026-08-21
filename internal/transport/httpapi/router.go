@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -244,28 +245,38 @@ func (h *Handler) auditWrites() gin.HandlerFunc {
 	}
 }
 
-// requestClientIP 提取前端反向代理传入的首个客户端地址，并在未经过代理时回退到对端地址。
-// 生产服务端口只绑定本机，X-Forwarded-For 只能由受控前端容器写入；平台接收端仍会校验该值必须是 IP 字面量。
+// requestClientIP extracts a public client address from the managed frontend
+// proxy. X-Real-IP is authoritative; the right-most XFF value is used as a
+// fallback so a client-supplied left-most value cannot spoof audit records.
 func requestClientIP(request *http.Request) string {
 	if request == nil {
 		return ""
 	}
-	for _, value := range strings.Split(request.Header.Get("X-Forwarded-For"), ",") {
-		if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil {
+	if ip := publicClientIP(request.Header.Get("X-Real-IP")); ip != nil {
+		return ip.String()
+	}
+	values := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
+	for i := len(values) - 1; i >= 0; i-- {
+		if ip := publicClientIP(values[i]); ip != nil {
 			return ip.String()
 		}
-	}
-	if ip := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Real-IP"))); ip != nil {
-		return ip.String()
 	}
 	remote := strings.TrimSpace(request.RemoteAddr)
 	if host, _, err := net.SplitHostPort(remote); err == nil {
 		remote = host
 	}
-	if ip := net.ParseIP(remote); ip != nil {
+	if ip := publicClientIP(remote); ip != nil {
 		return ip.String()
 	}
 	return ""
+}
+
+func publicClientIP(value string) *netip.Addr {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return nil
+	}
+	return &addr
 }
 
 func auditAction(r *http.Request) string {
@@ -816,28 +827,35 @@ func (h *Handler) authenticateDashboardIntegration(options DashboardIntegrationO
 			c.Abort()
 			return
 		}
-		if options.RequireBearer {
-			if options.BearerVerifier == nil {
-				writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DASHBOARD_AUTH_UNAVAILABLE", "看板系统机器身份校验未配置", nil)
-				c.Abort()
-				return
-			}
-			const bearerPrefix = "Bearer "
-			authorization := strings.TrimSpace(c.GetHeader("Authorization"))
-			if !strings.HasPrefix(authorization, bearerPrefix) || strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)) == "" {
-				writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_REQUIRED", "看板系统调用必须携带机器访问令牌", nil)
-				c.Abort()
-				return
-			}
-			if err := options.BearerVerifier.VerifyClientCredentials(c.Request.Context(), strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix))); err != nil {
-				writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_INVALID", "看板系统机器访问令牌无效", nil)
-				c.Abort()
-				return
-			}
+		if !options.RequireBearer {
+			// 配置层 validate() 已强制 Enabled → RequireBearer，这里作为纵深防御兜底：
+			// 无机器令牌校验时绝不构造租户级主体，避免退化为请求头租户。
+			writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DASHBOARD_AUTH_UNAVAILABLE", "看板系统机器身份校验未启用", nil)
+			c.Abort()
+			return
 		}
-		tenantID := strings.TrimSpace(c.GetHeader("X-DA-Tenant-ID"))
+		if options.BearerVerifier == nil {
+			writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DASHBOARD_AUTH_UNAVAILABLE", "看板系统机器身份校验未配置", nil)
+			c.Abort()
+			return
+		}
+		const bearerPrefix = "Bearer "
+		authorization := strings.TrimSpace(c.GetHeader("Authorization"))
+		if !strings.HasPrefix(authorization, bearerPrefix) || strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)) == "" {
+			writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_REQUIRED", "看板系统调用必须携带机器访问令牌", nil)
+			c.Abort()
+			return
+		}
+		identity, err := options.BearerVerifier.VerifyClientCredentials(c.Request.Context(), strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)))
+		if err != nil {
+			writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_INVALID", "看板系统机器访问令牌无效", nil)
+			c.Abort()
+			return
+		}
+		// 租户边界取自已验签令牌，绝不信任请求头。
+		tenantID := identity.TenantID
 		if tenantID == "" {
-			writeEnvelopeError(c, http.StatusBadRequest, "CON_DASHBOARD_TENANT_REQUIRED", "看板系统调用必须指定租户", nil)
+			writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_TENANT_INVALID", "看板系统机器令牌缺少租户", nil)
 			c.Abort()
 			return
 		}
