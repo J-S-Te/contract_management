@@ -130,6 +130,11 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 					return state, err
 				}
 			}
+			if changed && (command.Action == ActionAddSign || command.Action == ActionTransfer) {
+				if err := notifyAssignedUsers(ctx, actx, input.TenantID, state, command, command.TargetUserIDs); err != nil {
+					return state, err
+				}
+			}
 			if advancedToNextNode {
 				if err := notifyCurrentNode(ctx, actx, input.TenantID, state, "pending_approval", "合同审批待处理", "您有一项新的合同审批待办"); err != nil {
 					return state, err

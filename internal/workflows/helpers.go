@@ -78,6 +78,16 @@ func notifyRecipients(ctx, actx workflow.Context, tenantID string, state Approva
 	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
 }
 
+// notifyAssignedUsers informs only the users added by the current command. This is
+// intentionally separate from notifyCurrentNode: existing assignees should not receive
+// duplicate messages when a transfer or add-sign operation changes the same node.
+func notifyAssignedUsers(ctx, actx workflow.Context, tenantID string, state ApprovalState, command ApprovalCommand, recipients []string) error {
+	if len(unique(recipients)) == 0 {
+		return nil
+	}
+	return notifyRecipients(ctx, actx, tenantID, state, "approval_assigned", "您已被指派合同审批待办", "您已被指派参与当前合同审批，请及时处理", "assigned:"+command.CommandID, recipients)
+}
+
 func notifyRoles(ctx, actx workflow.Context, tenantID string, state ApprovalState, typ, title, content, keySuffix string, roles []string) error {
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, RoleRecipients: unique(roles), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
 	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
