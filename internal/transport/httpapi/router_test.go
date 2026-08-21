@@ -120,41 +120,80 @@ func TestInvalidJSONDoesNotReachService(t *testing.T) {
 	}
 }
 
+// stubVerifier 实现 platform.ClientCredentialsTokenVerifier，用于验证路由层只信任
+// 验签返回的租户，不信任请求头。
+type stubVerifier struct {
+	tenantID string
+	err      error
+}
+
+func (s stubVerifier) VerifyClientCredentials(_ context.Context, _ string) (platform.ServiceTokenIdentity, error) {
+	if s.err != nil {
+		return platform.ServiceTokenIdentity{}, s.err
+	}
+	return platform.ServiceTokenIdentity{TenantID: s.tenantID}, nil
+}
+
 func TestDashboardIntegrationRequiresExplicitTenantBoundary(t *testing.T) {
 	handler := &Handler{}
-	router := gin.New()
-	router.GET(
-		"/internal/v1/dashboard",
-		handler.authenticateDashboardIntegration(DashboardIntegrationOptions{Enabled: true}),
-		func(c *gin.Context) {
-			writeData(c, http.StatusOK, map[string]string{"tenant_id": principal(c).TenantID})
-		},
-	)
-
-	missingTenantRequest := httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
-	missingTenantResponse := httptest.NewRecorder()
-	router.ServeHTTP(missingTenantResponse, missingTenantRequest)
-	if missingTenantResponse.Code != http.StatusBadRequest {
-		t.Fatalf(
-			"missing tenant status = %d, want %d; body = %s",
-			missingTenantResponse.Code,
-			http.StatusBadRequest,
-			missingTenantResponse.Body.String(),
+	newRouter := func(options DashboardIntegrationOptions) *gin.Engine {
+		router := gin.New()
+		router.GET(
+			"/internal/v1/dashboard",
+			handler.authenticateDashboardIntegration(options),
+			func(c *gin.Context) {
+				writeData(c, http.StatusOK, map[string]string{"tenant_id": principal(c).TenantID})
+			},
 		)
-	}
-	if !strings.Contains(missingTenantResponse.Body.String(), "CON_DASHBOARD_TENANT_REQUIRED") {
-		t.Fatalf("missing tenant response = %s", missingTenantResponse.Body.String())
+		return router
 	}
 
-	tenantRequest := httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
-	tenantRequest.Header.Set("X-DA-Tenant-ID", " tenant-1 ")
-	tenantResponse := httptest.NewRecorder()
-	router.ServeHTTP(tenantResponse, tenantRequest)
-	if tenantResponse.Code != http.StatusOK {
-		t.Fatalf("tenant status = %d, want %d; body = %s", tenantResponse.Code, http.StatusOK, tenantResponse.Body.String())
+	// 1) 未强制 Bearer（Enabled=true 但 RequireBearer=false）必须失败关闭，绝不允许
+	//    退化为“无认证 + 请求头租户”的组合。
+	disabled := newRouter(DashboardIntegrationOptions{Enabled: true})
+	req := httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
+	req.Header.Set("X-DA-Tenant-ID", "attacker-tenant")
+	rec := httptest.NewRecorder()
+	disabled.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no-bearer status = %d, want %d; body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
 	}
-	if !strings.Contains(tenantResponse.Body.String(), `"tenant_id":"tenant-1"`) {
-		t.Fatalf("tenant response = %s", tenantResponse.Body.String())
+
+	// 2) 强制 Bearer 时，缺少令牌返回 401。
+	authd := newRouter(DashboardIntegrationOptions{
+		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{tenantID: "tenant-1"},
+	})
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
+	req.Header.Set("X-DA-Tenant-ID", "attacker-tenant")
+	rec = httptest.NewRecorder()
+	authd.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing bearer status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	// 3) 有效 Bearer 时，租户取自已验签令牌（stub 返回 tenant-1），请求头 tenant 被忽略。
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set("X-DA-Tenant-ID", "attacker-tenant")
+	rec = httptest.NewRecorder()
+	authd.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid bearer status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"tenant_id":"tenant-1"`) {
+		t.Fatalf("tenant must come from verified token, body = %s", rec.Body.String())
+	}
+
+	// 4) 无效令牌返回 401。
+	failing := newRouter(DashboardIntegrationOptions{
+		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{err: platform.ErrInvalidServiceToken},
+	})
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer bad-token")
+	rec = httptest.NewRecorder()
+	failing.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid bearer status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }
 
