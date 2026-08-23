@@ -105,18 +105,17 @@ func (v *keycloakClientCredentialsVerifier) VerifyClientCredentials(ctx context.
 	if err := v.validateClaims(claims, token.Audience); err != nil {
 		return ServiceTokenIdentity{}, err
 	}
-	return ServiceTokenIdentity{TenantID: claims.TenantID}, nil
+	return ServiceTokenIdentity{TenantID: v.tenantID}, nil
 }
 
 func (v *keycloakClientCredentialsVerifier) validateClaims(claims serviceTokenClaims, audiences []string) error {
 	if !strings.EqualFold(strings.TrimSpace(claims.Type), "bearer") {
 		return fmt.Errorf("%w: token typ is not bearer", ErrInvalidServiceToken)
 	}
-	// token_use is deliberately required in addition to typ.  The Keycloak
-	// client scope mapper for the contract integration client must emit the
-	// literal access_token value; ID tokens and tokens minted for another use
-	// therefore fail closed even when they are otherwise correctly signed.
-	if strings.TrimSpace(claims.TokenUse) != "access_token" {
+	// Keycloak service-account access tokens do not include token_use unless a
+	// custom mapper is installed. When present it must still identify an access
+	// token; typ + signature/issuer/expiry + azp/audience remain mandatory.
+	if tokenUse := strings.TrimSpace(claims.TokenUse); tokenUse != "" && tokenUse != "access_token" {
 		return fmt.Errorf("%w: token_use is not access_token", ErrInvalidServiceToken)
 	}
 	// azp is the authenticated Keycloak caller.  Do not fall back to client_id:
@@ -124,9 +123,12 @@ func (v *keycloakClientCredentialsVerifier) validateClaims(claims serviceTokenCl
 	if strings.TrimSpace(claims.AuthorizedParty) != v.clientID || !containsAudience(audiences, v.audience) {
 		return fmt.Errorf("%w: authorized party or audience", ErrInvalidServiceToken)
 	}
-	// 租户必须来自已验签令牌并与本接口的固定调用方配置比对，防止持有同 issuer 下
-	// 其他应用令牌的调用方横向切换租户。
-	if strings.TrimSpace(claims.TenantID) != v.tenantID {
+	if clientID := strings.TrimSpace(claims.ClientID); clientID != "" && clientID != v.clientID {
+		return fmt.Errorf("%w: client_id", ErrInvalidServiceToken)
+	}
+	// 租户边界由服务端配置绑定。若 Keycloak 安装了 tenant_id mapper，则额外
+	// 校验 claim；默认 service-account token 缺少该 claim 时不再错误拒绝。
+	if tenantID := strings.TrimSpace(claims.TenantID); tenantID != "" && tenantID != v.tenantID {
 		return fmt.Errorf("%w: tenant", ErrInvalidServiceToken)
 	}
 	return nil

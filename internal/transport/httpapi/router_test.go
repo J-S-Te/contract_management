@@ -46,6 +46,21 @@ func TestRequestIDPreservesValidClientULID(t *testing.T) {
 	}
 }
 
+func TestReadinessExposesRequiredAuditConfiguration(t *testing.T) {
+	t.Setenv("PLATFORM_AUDIT_REQUIRED", "true")
+	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	response := httptest.NewRecorder()
+
+	NewRouter(nil, nil, nil).ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusServiceUnavailable, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"audit":"disabled"`) {
+		t.Fatalf("readiness body does not expose disabled audit: %s", response.Body.String())
+	}
+}
+
 func TestAuthenticationFailureAbortsGinHandlerChain(t *testing.T) {
 	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
 		return application.Principal{}, platform.ErrUnauthenticated

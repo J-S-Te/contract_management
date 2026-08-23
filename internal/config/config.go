@@ -47,6 +47,8 @@ type Config struct {
 	PlatformCatalogSecret         string
 	PlatformPersonnelClientID     string
 	PlatformPersonnelSecret       string
+	PlatformNotificationClientID  string
+	PlatformNotificationSecret    string
 	TemporalAddress               string
 	TemporalNamespace             string
 	TemporalTaskQueue             string
@@ -82,12 +84,14 @@ func Load() (Config, error) {
 		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
 		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
 		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
-		PlatformApplicationID:     os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
-		PlatformCatalogClientID:   os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
-		PlatformCatalogSecret:     os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
-		PlatformPersonnelClientID: os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID"),
-		PlatformPersonnelSecret:   os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET"),
-		TemporalAddress:           env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
+		PlatformApplicationID:        os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
+		PlatformCatalogClientID:      os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
+		PlatformCatalogSecret:        os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
+		PlatformPersonnelClientID:    os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID"),
+		PlatformPersonnelSecret:      os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET"),
+		PlatformNotificationClientID: os.Getenv("PLATFORM_NOTIFICATION_CLIENT_ID"),
+		PlatformNotificationSecret:   os.Getenv("PLATFORM_NOTIFICATION_CLIENT_SECRET"),
+		TemporalAddress:              env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
 		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 		ProjectAPIBaseURL: env("PROJECT_API_BASE_URL", "http://localhost:8082"),
 	}
@@ -239,6 +243,9 @@ func (c Config) validate() error {
 	}
 	if (strings.TrimSpace(c.PlatformPersonnelClientID) == "") != (strings.TrimSpace(c.PlatformPersonnelSecret) == "") {
 		return fmt.Errorf("platform personnel directory configuration must provide client ID and secret together")
+	}
+	if (strings.TrimSpace(c.PlatformNotificationClientID) == "") != (strings.TrimSpace(c.PlatformNotificationSecret) == "") {
+		return fmt.Errorf("platform notification configuration must provide client ID and secret together")
 	}
 	// 看板机器接口返回全租户合同数据，启用后必须校验调用方机器身份；租户边界必须由
 	// 验签令牌提供，不能退化为“无 Bearer + 请求头租户”的组合。与 project 侧对齐。

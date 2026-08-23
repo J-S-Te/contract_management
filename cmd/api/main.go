@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	store "github.com/j-s-te/contract-management/internal/infrastructure/mysql"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/j-s-te/contract-management/internal/integration/crm"
+	notificationintegration "github.com/j-s-te/contract-management/internal/integration/notification"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	"github.com/j-s-te/contract-management/internal/transport/httpapi"
 )
@@ -51,6 +53,25 @@ func main() {
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
 	go (&crm.Dispatcher{Store: repository, BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
+	personnelDirectory := platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout)
+	if cfg.PlatformNotificationClientID != "" && cfg.PlatformNotificationSecret != "" {
+		notificationDispatcher := &notificationintegration.Dispatcher{
+			Store: repository, BaseURL: cfg.PlatformBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
+			TokenSource: notificationintegration.NewClientCredentialsTokenSource(ctx, strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token", cfg.PlatformNotificationClientID, cfg.PlatformNotificationSecret),
+			ResolveRoleRecipients: func(ctx context.Context, tenantID string, roleCodes []string) ([]string, error) {
+				refs, err := personnelDirectory.ListEligibleUsers(ctx, application.Principal{TenantID: tenantID}, roleCodes)
+				if err != nil {
+					return nil, err
+				}
+				ids := make([]string, 0, len(refs))
+				for _, ref := range refs {
+					ids = append(ids, ref.UserID)
+				}
+				return ids, nil
+			},
+		}
+		go notificationDispatcher.Run(ctx)
+	}
 	oidcStore, err := platform.NewGORMOIDCStore(db)
 	if err != nil {
 		logger.Error("OIDC session store failed", "error", err)
@@ -68,7 +89,7 @@ func main() {
 		TaskQueue:               cfg.TemporalTaskQueue,
 		NodeTimeout:             cfg.NodeTimeout,
 		ReminderInterval:        cfg.ReminderInterval,
-		Personnel:               platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout),
+		Personnel:               personnelDirectory,
 		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), Client: &http.Client{Timeout: 5 * time.Second}},
 	}
 	var dashboardBearer platform.ClientCredentialsTokenVerifier
@@ -84,6 +105,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	auditReporter := platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
@@ -100,6 +122,7 @@ func main() {
 		SessionEncryptionKey:         cfg.OIDCSessionEncryptionKey,
 		Store:                        oidcStore,
 		PathPrefix:                   cfg.AppPathPrefix,
+		Audit:                        auditReporter,
 	})
 	if err != nil {
 		logger.Error("OIDC discovery failed", "error", err)
@@ -107,7 +130,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(service, identity, &httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer}, platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)),
+		Handler:           httpapi.NewRouter(service, identity, &httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer}, auditReporter),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

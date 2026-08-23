@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
@@ -30,15 +29,15 @@ func (r *Repository) ClaimOpportunityLink(ctx context.Context) (crmintegration.L
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row opportunityLinkOutboxRecord
 		now := time.Now().UTC()
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where(
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where(
 			"(delivery_status = ? AND next_attempt_at <= ?) OR (delivery_status = ? AND locked_at < ?)",
 			"pending", now, "processing", now.Add(-5*time.Minute),
-		).Order("next_attempt_at ASC, created_at ASC").Take(&row).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+		).Order("next_attempt_at ASC, created_at ASC").Limit(1).Find(&row)
+		if result.Error != nil {
+			return result.Error
 		}
-		if err != nil {
-			return err
+		if result.RowsAffected == 0 {
+			return nil
 		}
 		attempts := row.Attempts + 1
 		if err := tx.Model(&opportunityLinkOutboxRecord{}).Where("id = ?", row.ID).Updates(map[string]any{
