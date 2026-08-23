@@ -22,6 +22,8 @@ import (
 type AuditEvent struct {
 	ActorID, ActorName, Action, ResourceType, ResourceID string
 	RequestID, CorrelationID, Result, ReasonCode         string
+	// RiskLevel 为 LOW/MEDIUM/HIGH/CRITICAL；为空时按 LOW 上报。
+	RiskLevel string
 	// UserLoginIP 是被审计用户的原始客户端地址；缺少该字段时，平台只能记录
 	// 合同服务投递请求的容器地址。
 	UserLoginIP string
@@ -68,7 +70,7 @@ func (c *AuditClient) Report(ctx context.Context, event AuditEvent) error {
 		"application_code": c.applicationCode, "environment_code": c.environmentCode,
 		"actor_type": actorType(event.ActorID), "action": event.Action, "resource_type": event.ResourceType,
 		"request_id": requestID, "trace_id": traceID, "correlation_id": correlationID,
-		"result": event.Result, "risk_level": "LOW", "metadata": map[string]any{"http_status": event.ReasonCode},
+		"result": event.Result, "risk_level": riskLevelOrDefault(event.RiskLevel), "metadata": map[string]any{"http_status": event.ReasonCode},
 	}
 	if event.ActorID != "" {
 		payload["actor_id"] = event.ActorID
@@ -165,6 +167,13 @@ func actorType(actorID string) string {
 		return "SYSTEM"
 	}
 	return "USER"
+}
+func riskLevelOrDefault(level string) string {
+	level = strings.ToUpper(strings.TrimSpace(level))
+	if level != "LOW" && level != "MEDIUM" && level != "HIGH" && level != "CRITICAL" {
+		return "LOW"
+	}
+	return level
 }
 func traceIDs() (string, string, error) {
 	raw := make([]byte, 24)

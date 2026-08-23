@@ -242,6 +242,7 @@ type notificationOutboxRecord struct {
 	DedupeKey         string
 	DeliveryStatus    string
 	Attempts          uint
+	LockedAt          *time.Time
 	NextAttemptAt     time.Time
 	DeliveredAt       *time.Time
 	LastError         *string
