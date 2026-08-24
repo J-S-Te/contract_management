@@ -1,4 +1,4 @@
-// Package migrations embeds the immutable contract-management SQL migration history.
+// Package migrations 嵌入合同管理系统不可变的 SQL 迁移历史。
 package migrations
 
 import "embed"
