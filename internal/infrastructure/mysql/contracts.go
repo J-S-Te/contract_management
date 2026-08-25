@@ -192,21 +192,28 @@ func signingFromRecords(item contract.Contract, row signingRecord, document stam
 func (r *Repository) SaveSigningShipment(ctx context.Context, tenantID, contractID, actor string, shipment contract.SigningShipment) error {
 	now := time.Now().UTC()
 	record := signingRecord{ContractID: contractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningInReturn), CourierNumber: stringPtr(shipment.CourierNumber), RecipientName: stringPtr(shipment.RecipientName), RecipientPhone: stringPtr(shipment.RecipientPhone), RecipientAddress: stringPtr(shipment.RecipientAddress), MailedAt: &shipment.MailedAt, Version: 1, UpdatedAt: now, UpdatedBy: actor}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningInReturn, "courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName, "recipient_phone": shipment.RecipientPhone, "recipient_address": shipment.RecipientAddress, "mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})}).Create(&record).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningInReturn, "courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName, "recipient_phone": shipment.RecipientPhone, "recipient_address": shipment.RecipientAddress, "mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})}).Create(&record).Error; err != nil {
+			return err
+		}
+		return insertSigningNotification(tx, tenantID, contractID, "signing_shipped", "合同已寄出", "合同签署文件已寄出，请关注回传进度", signingNotificationKey(contractID, "shipped"))
+	})
 }
 
 func (r *Repository) MarkSigningReceived(ctx context.Context, tenantID, contractID, actor string) error {
 	now := time.Now().UTC()
-	result := r.db.WithContext(ctx).Model(&signingRecord{}).
-		Where("tenant_id = ? AND contract_id = ? AND status = ?", tenantID, contractID, contract.SigningInReturn).
-		Updates(map[string]any{"customer_received_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return apperrors.ErrStateConflict
-	}
-	return nil
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&signingRecord{}).
+			Where("tenant_id = ? AND contract_id = ? AND status = ? AND customer_received_at IS NULL", tenantID, contractID, contract.SigningInReturn).
+			Updates(map[string]any{"customer_received_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return apperrors.ErrStateConflict
+		}
+		return insertSigningNotification(tx, tenantID, contractID, "signing_received", "合同已签收", "客户已签收合同，请继续跟进签署文件回传", signingNotificationKey(contractID, "received"))
+	})
 }
 
 func (r *Repository) RecordSigningReminder(ctx context.Context, tenantID, contractID, actor string) error {
@@ -223,14 +230,37 @@ func (r *Repository) RecordSigningReminder(ctx context.Context, tenantID, contra
 
 func (r *Repository) ConfirmSigning(ctx context.Context, tenantID, contractID, actor string, confirmation contract.SigningConfirmation) error {
 	now := time.Now().UTC()
-	result := r.db.WithContext(ctx).Model(&signingRecord{}).Where("tenant_id = ? AND contract_id = ? AND status = ?", tenantID, contractID, contract.SigningPendingReview).Updates(map[string]any{"status": contract.SigningCompleted, "seal_verified": confirmation.SealVerified, "signature_verified": confirmation.SignatureVerified, "signed_at": confirmation.SignedAt, "confirmed_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
-	if result.Error != nil {
-		return result.Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&signingRecord{}).Where("tenant_id = ? AND contract_id = ? AND status = ?", tenantID, contractID, contract.SigningPendingReview).Updates(map[string]any{"status": contract.SigningCompleted, "seal_verified": confirmation.SealVerified, "signature_verified": confirmation.SignatureVerified, "signed_at": confirmation.SignedAt, "confirmed_at": now, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return apperrors.ErrStateConflict
+		}
+		return insertSigningNotification(tx, tenantID, contractID, "signing_confirmed", "合同签署已确认", "合同签署文件已完成核验，签署流程已完成", signingNotificationKey(contractID, "confirmed"))
+	})
+}
+
+func signingNotificationKey(contractID, event string) string {
+	return contractID + ":signing:" + event
+}
+
+func insertSigningNotification(tx *gorm.DB, tenantID, contractID, notificationType, title, content, dedupeKey string) error {
+	var current contractRecord
+	if err := tx.Select("owner_user_id").Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&current).Error; err != nil {
+		return err
 	}
-	if result.RowsAffected == 0 {
-		return apperrors.ErrStateConflict
+	if current.OwnerUserID == "" {
+		return nil
 	}
-	return nil
+	now := time.Now().UTC()
+	record := notificationOutboxRecord{
+		ID: newID(), TenantID: tenantID, RecipientKey: "user:" + current.OwnerUserID, RecipientUserID: stringPtr(current.OwnerUserID),
+		NotificationType: notificationType, Title: title, Content: content, ContractID: stringPtr(contractID), DedupeKey: dedupeKey,
+		DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now,
+	}
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error
 }
 
 func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID string, expectedVersion uint64, target contract.Status, actorUserID, reason, idempotencyKey string) error {

@@ -22,45 +22,50 @@ type Config struct {
 	DashboardMachineRequireBearer bool
 	DashboardMachineClientID      string
 	DashboardMachineAudience      string
-	OIDCClientSecret              string
-	OIDCRedirectURI               string
-	OIDCPostLogoutRedirectURI     string
-	OIDCIDPHint                   string
-	OIDCScopes                    []string
-	OIDCTenantID                  string
-	OIDCSessionCookieName         string
-	OIDCSessionTTL                time.Duration
-	OIDCAuthorizationRefresh      time.Duration
-	OIDCAuthorizationTimeout      time.Duration
-	OIDCAuthorizationMaxStale     time.Duration
-	OIDCSessionEncryptionKey      []byte
-	OIDCSessionSecure             bool
-	AppPublicURL                  string
-	AppPathPrefix                 string
-	PlatformAuditClientID         string
-	PlatformAuditClientSecret     string
-	PlatformApplicationCode       string
-	PlatformEnvironmentCode       string
-	PlatformApplicationID         string
-	PlatformCatalogSync           bool
-	PlatformCatalogClientID       string
-	PlatformCatalogSecret         string
-	PlatformPersonnelClientID     string
-	PlatformPersonnelSecret       string
-	PlatformNotificationClientID  string
-	PlatformNotificationSecret    string
-	TemporalAddress               string
-	TemporalNamespace             string
-	TemporalTaskQueue             string
-	TemporalAPIKey                string
-	TemporalTLS                   bool
-	NodeTimeout                   time.Duration
-	ReminderInterval              time.Duration
-	ArchiveCron                   string
-	ProjectIntegrationEnabled     bool
-	ProjectAPIBaseURL             string
-	ProjectIntegrationPoll        time.Duration
-	ProjectIntegrationRetries     uint
+	// SettlementMachine* 结算系统读取已完成合同的机器接入配置。
+	SettlementMachineEnabled       bool
+	SettlementMachineRequireBearer bool
+	SettlementMachineClientID      string
+	SettlementMachineAudience      string
+	OIDCClientSecret               string
+	OIDCRedirectURI                string
+	OIDCPostLogoutRedirectURI      string
+	OIDCIDPHint                    string
+	OIDCScopes                     []string
+	OIDCTenantID                   string
+	OIDCSessionCookieName          string
+	OIDCSessionTTL                 time.Duration
+	OIDCAuthorizationRefresh       time.Duration
+	OIDCAuthorizationTimeout       time.Duration
+	OIDCAuthorizationMaxStale      time.Duration
+	OIDCSessionEncryptionKey       []byte
+	OIDCSessionSecure              bool
+	AppPublicURL                   string
+	AppPathPrefix                  string
+	PlatformAuditClientID          string
+	PlatformAuditClientSecret      string
+	PlatformApplicationCode        string
+	PlatformEnvironmentCode        string
+	PlatformApplicationID          string
+	PlatformCatalogSync            bool
+	PlatformCatalogClientID        string
+	PlatformCatalogSecret          string
+	PlatformPersonnelClientID      string
+	PlatformPersonnelSecret        string
+	PlatformNotificationClientID   string
+	PlatformNotificationSecret     string
+	TemporalAddress                string
+	TemporalNamespace              string
+	TemporalTaskQueue              string
+	TemporalAPIKey                 string
+	TemporalTLS                    bool
+	NodeTimeout                    time.Duration
+	ReminderInterval               time.Duration
+	ArchiveCron                    string
+	ProjectIntegrationEnabled      bool
+	ProjectAPIBaseURL              string
+	ProjectIntegrationPoll         time.Duration
+	ProjectIntegrationRetries      uint
 	// H4：内部投递机器令牌（项目侧来源校验强制开启后必配）。
 	ProjectIntegrationTokenURL     string
 	ProjectIntegrationClientID     string
@@ -72,12 +77,16 @@ func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
 		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
-		OIDCBackchannelBaseURL:        os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
-		DashboardMachineEnabled:       envBool("DASHBOARD_MACHINE_ENABLED", false),
-		DashboardMachineRequireBearer: envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
-		DashboardMachineClientID:      os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
-		DashboardMachineAudience:      os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
-		OIDCClientSecret:              os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
+		OIDCBackchannelBaseURL:         os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
+		DashboardMachineEnabled:        envBool("DASHBOARD_MACHINE_ENABLED", false),
+		DashboardMachineRequireBearer:  envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
+		DashboardMachineClientID:       os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
+		DashboardMachineAudience:       os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
+		SettlementMachineEnabled:       envBool("SETTLEMENT_MACHINE_ENABLED", false),
+		SettlementMachineRequireBearer: envBool("SETTLEMENT_MACHINE_REQUIRE_BEARER", false),
+		SettlementMachineClientID:      os.Getenv("SETTLEMENT_MACHINE_CLIENT_ID"),
+		SettlementMachineAudience:      os.Getenv("SETTLEMENT_MACHINE_AUDIENCE"),
+		OIDCClientSecret:               os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
@@ -262,6 +271,22 @@ func (c Config) validate() error {
 		} {
 			if strings.TrimSpace(value) == "" || placeholder(value) {
 				return fmt.Errorf("%s is required when dashboard bearer authentication is enabled", name)
+			}
+		}
+	}
+	if c.SettlementMachineRequireBearer && !c.SettlementMachineEnabled {
+		return fmt.Errorf("SETTLEMENT_MACHINE_REQUIRE_BEARER requires SETTLEMENT_MACHINE_ENABLED")
+	}
+	if c.SettlementMachineEnabled && !c.SettlementMachineRequireBearer {
+		return fmt.Errorf("SETTLEMENT_MACHINE_REQUIRE_BEARER must be true when SETTLEMENT_MACHINE_ENABLED=true")
+	}
+	if c.SettlementMachineRequireBearer {
+		for name, value := range map[string]string{
+			"SETTLEMENT_MACHINE_CLIENT_ID": c.SettlementMachineClientID,
+			"SETTLEMENT_MACHINE_AUDIENCE":  c.SettlementMachineAudience,
+		} {
+			if strings.TrimSpace(value) == "" || placeholder(value) {
+				return fmt.Errorf("%s is required when settlement bearer authentication is enabled", name)
 			}
 		}
 	}

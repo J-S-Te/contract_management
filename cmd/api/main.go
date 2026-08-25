@@ -105,6 +105,18 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	var settlementBearer platform.ClientCredentialsTokenVerifier
+	if cfg.SettlementMachineEnabled && cfg.SettlementMachineRequireBearer {
+		settlementBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
+			Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
+			ClientID: cfg.SettlementMachineClientID, Audience: cfg.SettlementMachineAudience,
+			TenantID: cfg.OIDCTenantID, Timeout: cfg.OIDCAuthorizationTimeout,
+		})
+		if err != nil {
+			logger.Error("initialize settlement machine bearer verifier", "error", err)
+			os.Exit(1)
+		}
+	}
 	auditReporter := platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
@@ -129,8 +141,10 @@ func main() {
 		os.Exit(1)
 	}
 	server := &http.Server{
-		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(service, identity, &httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer}, auditReporter),
+		Addr: cfg.HTTPAddress,
+		Handler: httpapi.NewRouterWithSettlement(service, identity,
+			&httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer},
+			&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer}, auditReporter),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

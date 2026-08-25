@@ -212,6 +212,18 @@ func TestDashboardIntegrationRequiresExplicitTenantBoundary(t *testing.T) {
 	}
 }
 
+func TestSettlementCompletedContractsRequiresBearer(t *testing.T) {
+	router := NewRouterWithSettlement(nil, nil, nil, &SettlementIntegrationOptions{
+		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{tenantID: "tenant-1"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/internal/v1/settlement/completed-contracts", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing settlement bearer status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
 type prefixedOIDCIdentity struct {
 	identityFunc
 	prefix string
