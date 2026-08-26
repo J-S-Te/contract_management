@@ -265,12 +265,16 @@ func (c Config) validate() error {
 		return fmt.Errorf("DASHBOARD_MACHINE_REQUIRE_BEARER must be true when DASHBOARD_MACHINE_ENABLED=true (internal dashboard source verification is mandatory)")
 	}
 	if c.DashboardMachineRequireBearer {
-		for name, value := range map[string]string{
-			"DASHBOARD_MACHINE_CLIENT_ID": c.DashboardMachineClientID,
-			"DASHBOARD_MACHINE_AUDIENCE":  c.DashboardMachineAudience,
+		// 使用有序校验，确保配置错误稳定地先指出客户端身份，再指出受众，
+		// 避免 Go map 随机遍历导致测试和运维诊断结果不确定。
+		for _, item := range []struct {
+			name, value string
+		}{
+			{"DASHBOARD_MACHINE_CLIENT_ID", c.DashboardMachineClientID},
+			{"DASHBOARD_MACHINE_AUDIENCE", c.DashboardMachineAudience},
 		} {
-			if strings.TrimSpace(value) == "" || placeholder(value) {
-				return fmt.Errorf("%s is required when dashboard bearer authentication is enabled", name)
+			if strings.TrimSpace(item.value) == "" || placeholder(item.value) {
+				return fmt.Errorf("%s is required when dashboard bearer authentication is enabled", item.name)
 			}
 		}
 	}
@@ -281,12 +285,14 @@ func (c Config) validate() error {
 		return fmt.Errorf("SETTLEMENT_MACHINE_REQUIRE_BEARER must be true when SETTLEMENT_MACHINE_ENABLED=true")
 	}
 	if c.SettlementMachineRequireBearer {
-		for name, value := range map[string]string{
-			"SETTLEMENT_MACHINE_CLIENT_ID": c.SettlementMachineClientID,
-			"SETTLEMENT_MACHINE_AUDIENCE":  c.SettlementMachineAudience,
+		for _, item := range []struct {
+			name, value string
+		}{
+			{"SETTLEMENT_MACHINE_CLIENT_ID", c.SettlementMachineClientID},
+			{"SETTLEMENT_MACHINE_AUDIENCE", c.SettlementMachineAudience},
 		} {
-			if strings.TrimSpace(value) == "" || placeholder(value) {
-				return fmt.Errorf("%s is required when settlement bearer authentication is enabled", name)
+			if strings.TrimSpace(item.value) == "" || placeholder(item.value) {
+				return fmt.Errorf("%s is required when settlement bearer authentication is enabled", item.name)
 			}
 		}
 	}
