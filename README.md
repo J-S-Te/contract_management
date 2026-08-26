@@ -12,6 +12,7 @@
 - 提交时固化规则版本、节点和合同 SHA-256；运行中规则变更不影响既有流程，审批完成前合同内容发生变化会阻断生效。
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - 合同激活事务同步写入项目投递 Outbox；API/Worker 通过受控内部网络异步投递，失败指数退避重试，项目侧按合同版本幂等建项。
+- 合同达到财务生效条件后，可向结算系统投递 `contract.financial_effective.v1` 事件；事件必须包含付款条款、租户、合同版本和稳定事件 ID。结算系统据此创建合同快照和应收计划，合同管理的 completed-contracts 查询接口只用于受保护的补偿/查询，不等于已完成自动同步。
 - Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
 - 使用 `github.com/coreos/go-oidc/v3` 对接 Keycloak OIDC Authorization Code + PKCE：通过 discovery 获取授权、Token、UserInfo、JWKS 和登出端点，独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验 Keycloak 映射的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`。
 - 本地会话通过轮换 Refresh Token 定期取得最新授权快照；角色撤销、权限变更和授权版本更新默认在一分钟内生效。

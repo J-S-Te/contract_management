@@ -61,7 +61,25 @@ type DashboardIntegrationOptions struct {
 	BearerVerifier platform.ClientCredentialsTokenVerifier
 }
 
+// SettlementIntegrationOptions 配置结算系统读取已完成合同的服务器到服务器接入。
+// 该接口只返回当前令牌绑定租户的数据，不能使用请求头覆盖租户边界。
+type SettlementIntegrationOptions struct {
+	Enabled        bool
+	RequireBearer  bool
+	BearerVerifier platform.ClientCredentialsTokenVerifier
+}
+
+// NewRouter 创建兼容现有调用方的合同管理路由。
 func NewRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+	return newRouter(service, identity, dashboardOptions, nil, audits...)
+}
+
+// NewRouterWithSettlement 创建包含结算系统内部读取接口的路由。
+func NewRouterWithSettlement(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+	return newRouter(service, identity, dashboardOptions, settlementOptions, audits...)
+}
+
+func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
 		audit = audits[0]
@@ -95,6 +113,11 @@ func NewRouter(service *application.Service, identity Identity, dashboardOptions
 		internal := r.Group("/internal/v1")
 		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions))
 		internal.GET("/dashboard", h.dashboard)
+	}
+	if settlementOptions != nil && settlementOptions.Enabled {
+		internal := r.Group("/internal/v1/settlement")
+		internal.Use(h.authenticateServiceIntegration(*settlementOptions, "结算系统"))
+		internal.GET("/completed-contracts", h.listSettlementCompletedContracts)
 	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
@@ -794,6 +817,45 @@ func (h *Handler) listContracts(c *gin.Context) {
 	writeData(c, http.StatusOK, contracts)
 }
 
+// settlementCompletedContract 是合同管理向结算系统提供的稳定读取契约。
+// 不直接暴露合同正文、模板和渲染文档，避免跨系统同步时传输无关敏感内容。
+type settlementCompletedContract struct {
+	ID             string          `json:"id"`
+	ContractNumber string          `json:"contract_number"`
+	Title          string          `json:"title"`
+	CRMCustomerID  uint64          `json:"crm_customer_id,omitempty"`
+	CustomerName   string          `json:"customer_name,omitempty"`
+	Currency       string          `json:"currency"`
+	AmountMinor    int64           `json:"amount_minor"`
+	Status         contract.Status `json:"status"`
+	Version        uint64          `json:"version"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	// 当前合同模型尚未保存可生成应收计划的付款条款，暂返回空数组。
+	// 结算侧不得据此自动生成分期应收，待合同侧补齐条款模型后再扩展。
+	PaymentTerms []any `json:"payment_terms"`
+}
+
+// listSettlementCompletedContracts 返回当前租户状态为 completed 的合同摘要。
+// limit 由服务层限制在 1~200，默认 50；keyword 支持编号、标题和客户名称检索。
+func (h *Handler) listSettlementCompletedContracts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	items, err := h.service.ListContracts(c.Request.Context(), principal(c), keyword, string(contract.StatusCompleted), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	result := make([]settlementCompletedContract, 0, len(items))
+	for _, item := range items {
+		result = append(result, settlementCompletedContract{
+			ID: item.ID, ContractNumber: item.Number, Title: item.Title, CRMCustomerID: item.CRMCustomerID,
+			CustomerName: item.CustomerName, Currency: item.Currency, AmountMinor: item.AmountMinor,
+			Status: item.Status, Version: item.Version, UpdatedAt: item.UpdatedAt, PaymentTerms: []any{},
+		})
+	}
+	writeData(c, http.StatusOK, result)
+}
+
 func (h *Handler) submitApproval(c *gin.Context) {
 	var body struct {
 		TermsIdentical bool `json:"terms_identical"`
@@ -919,47 +981,57 @@ func (h *Handler) authenticate() gin.HandlerFunc {
 // authenticateDashboardIntegration 数据看板系统机器接入：Bearer Keycloak 机器令牌
 // + 全量合同读范围（看板为只读消费方，不对业务写操作授权）。
 func (h *Handler) authenticateDashboardIntegration(options DashboardIntegrationOptions) gin.HandlerFunc {
+	return h.authenticateServiceIntegration(options, "看板系统")
+}
+
+// authenticateServiceIntegration 校验内部服务的 Bearer 令牌并建立租户级只读主体。
+// 租户只取自验签后的服务身份；任何请求头都不能扩大数据范围。
+func (h *Handler) authenticateServiceIntegration(options struct {
+	Enabled        bool
+	RequireBearer  bool
+	BearerVerifier platform.ClientCredentialsTokenVerifier
+}, serviceName string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !options.Enabled {
-			writeEnvelopeError(c, http.StatusNotFound, "CON_DASHBOARD_INTEGRATION_DISABLED", "接口未启用", nil)
+			writeEnvelopeError(c, http.StatusNotFound, "CON_SERVICE_INTEGRATION_DISABLED", serviceName+"接口未启用", nil)
 			c.Abort()
 			return
 		}
 		if !options.RequireBearer {
 			// 配置层 validate() 已强制 Enabled → RequireBearer，这里作为纵深防御兜底：
 			// 无机器令牌校验时绝不构造租户级主体，避免退化为请求头租户。
-			writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DASHBOARD_AUTH_UNAVAILABLE", "看板系统机器身份校验未启用", nil)
+			writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_SERVICE_AUTH_UNAVAILABLE", serviceName+"机器身份校验未启用", nil)
 			c.Abort()
 			return
 		}
 		if options.BearerVerifier == nil {
-			writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DASHBOARD_AUTH_UNAVAILABLE", "看板系统机器身份校验未配置", nil)
+			writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_SERVICE_AUTH_UNAVAILABLE", serviceName+"机器身份校验未配置", nil)
 			c.Abort()
 			return
 		}
 		const bearerPrefix = "Bearer "
 		authorization := strings.TrimSpace(c.GetHeader("Authorization"))
 		if !strings.HasPrefix(authorization, bearerPrefix) || strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)) == "" {
-			writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_REQUIRED", "看板系统调用必须携带机器访问令牌", nil)
+			writeEnvelopeError(c, http.StatusUnauthorized, "CON_SERVICE_BEARER_REQUIRED", serviceName+"调用必须携带机器访问令牌", nil)
 			c.Abort()
 			return
 		}
 		identity, err := options.BearerVerifier.VerifyClientCredentials(c.Request.Context(), strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)))
 		if err != nil {
-			writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_BEARER_INVALID", "看板系统机器访问令牌无效", nil)
+			writeEnvelopeError(c, http.StatusUnauthorized, "CON_SERVICE_BEARER_INVALID", serviceName+"机器访问令牌无效", nil)
 			c.Abort()
 			return
 		}
 		// 租户边界取自已验签令牌，绝不信任请求头。
 		tenantID := identity.TenantID
 		if tenantID == "" {
-			writeEnvelopeError(c, http.StatusUnauthorized, "CON_DASHBOARD_TENANT_INVALID", "看板系统机器令牌缺少租户", nil)
+			writeEnvelopeError(c, http.StatusUnauthorized, "CON_SERVICE_TENANT_INVALID", serviceName+"机器令牌缺少租户", nil)
 			c.Abort()
 			return
 		}
 		c.Set(principalKey, application.Principal{
-			Subject: "data_analysis", TenantID: tenantID, UserID: "data_analysis", IdentityID: "data_analysis",
-			DisplayName: "数据看板与统计分析",
+			Subject: serviceName, TenantID: tenantID, UserID: serviceName, IdentityID: serviceName,
+			DisplayName: serviceName,
 			Permissions: map[string]bool{"contract.read": true},
 			PermissionScopes: map[string]contract.ScopeFilter{
 				"contract.read": {TenantID: tenantID, IdentityID: "data_analysis", AllowAll: true},
