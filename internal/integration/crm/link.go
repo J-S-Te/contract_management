@@ -24,6 +24,37 @@ type LinkStore interface {
 	MarkOpportunityLinkFailed(context.Context, string, string, uint, bool) error
 }
 
+// OpportunityLinkCallback 是合同接入核对完成后回写 CRM 的稳定协议。
+// SyncVersion 使用接入记录版本，CRM 据此执行幂等和并发版本校验。
+type OpportunityLinkCallback struct {
+	EventID        string     `json:"event_id"`
+	IntakeID       string     `json:"intake_id"`
+	OpportunityID  uint64     `json:"opportunity_id"`
+	ContractID     string     `json:"contract_id,omitempty"`
+	ContractNumber string     `json:"contract_number"`
+	Status         string     `json:"status"`
+	LinkedAt       *time.Time `json:"linked_at"`
+	SyncVersion    uint64     `json:"sync_version"`
+}
+
+// EncodeOpportunityLinkCallback 将合同接入记录转换为 CRM 回调协议。
+// 确认关联时必须带确认时间；异常关联保留空时间和空正式合同 ID。
+func EncodeOpportunityLinkCallback(item application.OpportunityIntake) ([]byte, error) {
+	contractNumber := strings.TrimSpace(item.ContractNumber)
+	if contractNumber == "" {
+		contractNumber = strings.TrimSpace(item.ContractRef)
+	}
+	linkedAt := item.ReviewedAt
+	if item.Status != application.OpportunityIntakeLinkConfirmed {
+		linkedAt = nil
+	}
+	return json.Marshal(OpportunityLinkCallback{
+		EventID: item.EventID, IntakeID: item.IntakeID, OpportunityID: item.OpportunityID,
+		ContractID: item.ContractID, ContractNumber: contractNumber, Status: item.Status,
+		LinkedAt: linkedAt, SyncVersion: item.Version,
+	})
+}
+
 // Dispatcher durably delivers confirmed contract links. Claimed rows are
 // recoverable after a process crash and failed calls use exponential backoff.
 type Dispatcher struct {
@@ -117,7 +148,10 @@ func (n *LinkNotifier) NotifyOpportunityLink(ctx context.Context, item applicati
 	if strings.TrimSpace(n.BaseURL) == "" {
 		return nil
 	}
-	body, _ := json.Marshal(map[string]any{"event_id": item.EventID, "intake_id": item.IntakeID, "contract_id": item.ContractID, "contract_number": item.ContractNumber, "status": item.Status, "linked_at": time.Now().UTC(), "sync_version": item.Version})
+	body, err := EncodeOpportunityLinkCallback(item)
+	if err != nil {
+		return err
+	}
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(n.BaseURL, "/")+"/api/v1/internal/opportunities/"+fmt.Sprint(item.OpportunityID)+"/contract-link", bytes.NewReader(body))

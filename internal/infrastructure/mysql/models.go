@@ -130,10 +130,11 @@ type lifecycleEventRecord struct {
 func (lifecycleEventRecord) TableName() string { return "con_contract_lifecycle_event" }
 
 type stampedDocumentRecord struct {
-	ContractID, TenantID, OriginalFilename, ContentSHA256 string
-	Document                                              []byte `gorm:"type:longblob"`
-	UploadedAt                                            time.Time
-	UploadedBy                                            string
+	ContractID, TenantID, OriginalFilename, ContentSHA256  string
+	Document                                               []byte `gorm:"type:longblob"`
+	UploadedAt                                             time.Time
+	UploadedBy                                             string
+	PlatformFileID, FileGatewayState, FileGatewayLastError string
 }
 
 func (stampedDocumentRecord) TableName() string { return "con_contract_stamped_document" }

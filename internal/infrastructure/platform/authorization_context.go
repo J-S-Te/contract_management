@@ -26,17 +26,22 @@ type AuthorizationDataScope struct {
 }
 
 type AuthorizationContext struct {
-	Subject               string                   `json:"sub"`
-	IdentityID            string                   `json:"identity_id"`
-	TenantID              string                   `json:"tenant_id"`
-	PersonID              string                   `json:"person_id"`
-	ClientID              string                   `json:"client_id"`
-	ApplicationCode       string                   `json:"application_code"`
-	EnvironmentCode       string                   `json:"environment_code"`
-	Roles                 []string                 `json:"roles"`
-	Permissions           []string                 `json:"permissions"`
-	DataScopes            []AuthorizationDataScope `json:"data_scopes"`
-	AuthorizationRevision uint64                   `json:"authorization_revision"`
+	Subject                    string                   `json:"sub"`
+	SubjectID                  string                   `json:"subject_id"`
+	IdentityID                 string                   `json:"identity_id"`
+	TenantID                   string                   `json:"tenant_id"`
+	PersonID                   string                   `json:"person_id"`
+	ClientID                   string                   `json:"client_id"`
+	ApplicationCode            string                   `json:"application_code"`
+	EnvironmentCode            string                   `json:"environment_code"`
+	Roles                      []string                 `json:"roles"`
+	Permissions                []string                 `json:"permissions"`
+	DataScopes                 []AuthorizationDataScope `json:"data_scopes"`
+	CatalogVersion             string                   `json:"catalog_version"`
+	CompatibleCatalogVersions  []string                 `json:"compatible_catalog_versions"`
+	RoleConfigHash             string                   `json:"role_config_hash"`
+	CompatibleRoleConfigHashes []string                 `json:"compatible_role_config_hashes"`
+	AuthorizationRevision      uint64                   `json:"authorization_revision"`
 }
 
 type AuthorizationContextClient interface {

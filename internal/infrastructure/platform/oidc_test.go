@@ -37,6 +37,19 @@ func TestValidateCompactIDTokenClaimsRejectsBoundaryMismatch(t *testing.T) {
 	}
 }
 
+func TestCanonicalSubjectIDSupportsRollingCompatibility(t *testing.T) {
+	for _, input := range [][2]string{{"identity-1", "identity-1"}, {"", "identity-1"}} {
+		if got, err := canonicalSubjectID(input[0], input[1]); err != nil || got != "identity-1" {
+			t.Fatalf("canonicalSubjectID(%q, %q) = %q, %v", input[0], input[1], got, err)
+		}
+	}
+	for _, input := range [][2]string{{"subject-1", "identity-1"}, {"subject-1", ""}, {"", ""}} {
+		if _, err := canonicalSubjectID(input[0], input[1]); err == nil {
+			t.Fatalf("mismatched identifiers accepted: %#v", input)
+		}
+	}
+}
+
 func TestPrincipalFromAuthorizationContextAllowsApplicationEmptyScopeID(t *testing.T) {
 	catalog := testCatalog()
 	principal, err := principalFromAuthorizationContext(compactIdentity{Subject: "kc-user-1", IdentityID: "identity-1", TenantID: "tenant-1"}, AuthorizationContext{
@@ -92,6 +105,14 @@ func TestPrincipalFromAuthorizationContextRejectsClientApplicationEnvironmentMis
 	_, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, base, testCatalog(), "client-1", "contract_management", "prod")
 	if !errors.Is(err, ErrAuthorizationInvalid) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPrincipalFromAuthorizationContextRejectsCatalogOutsideCompatibilityWindow(t *testing.T) {
+	base := AuthorizationContext{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1", ClientID: "client-1", ApplicationCode: "contract_management", EnvironmentCode: "prod", Roles: []string{"sales"}, Permissions: []string{"contract.read"}, AuthorizationRevision: 1, DataScopes: []AuthorizationDataScope{{RoleCode: "sales", ScopeType: "APPLICATION"}}, CatalogVersion: "4", CompatibleCatalogVersions: []string{"4", "3"}}
+	_, err := principalFromAuthorizationContext(compactIdentity{Subject: "identity-1", IdentityID: "identity-1", TenantID: "tenant-1"}, base, testCatalog(), "client-1", "contract_management", "prod")
+	if !errors.Is(err, ErrAuthorizationInvalid) {
+		t.Fatalf("incompatible catalog error = %v", err)
 	}
 }
 

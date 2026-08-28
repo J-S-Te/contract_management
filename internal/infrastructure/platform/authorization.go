@@ -15,10 +15,20 @@ type compactIdentity struct {
 }
 
 func principalFromAuthorizationContext(identity compactIdentity, context AuthorizationContext, catalog AuthorizationCatalog, clientID, applicationCode, environmentCode string) (application.Principal, error) {
+	subjectID, err := canonicalSubjectID(context.SubjectID, context.IdentityID)
+	if err != nil {
+		return application.Principal{}, fmt.Errorf("%w: %v", ErrAuthorizationInvalid, err)
+	}
 	if context.Subject != identity.Subject || context.IdentityID != identity.IdentityID || context.TenantID != identity.TenantID ||
 		context.ClientID != clientID || context.ApplicationCode != applicationCode || context.EnvironmentCode != environmentCode ||
 		context.AuthorizationRevision == 0 {
 		return application.Principal{}, fmt.Errorf("%w: identity, client or environment binding mismatch", ErrAuthorizationInvalid)
+	}
+	if context.CatalogVersion == "" && len(context.CompatibleCatalogVersions) == 0 && (context.RoleConfigHash != "" || len(context.CompatibleRoleConfigHashes) != 0) {
+		return application.Principal{}, fmt.Errorf("%w: partial catalog compatibility response", ErrAuthorizationInvalid)
+	}
+	if err := validateCatalogCompatibility(catalog.Version, context.CatalogVersion, context.CompatibleCatalogVersions); err != nil {
+		return application.Principal{}, fmt.Errorf("%w: %v", ErrAuthorizationInvalid, err)
 	}
 	roles, err := validateKnownSet(context.Roles, catalog.Roles, "role")
 	if err != nil || len(roles) == 0 {
@@ -47,11 +57,52 @@ func principalFromAuthorizationContext(identity compactIdentity, context Authori
 		return application.Principal{}, fmt.Errorf("%w: %v", ErrAuthorizationForbidden, err)
 	}
 	return application.Principal{
-		Subject: identity.Subject, TenantID: identity.TenantID, UserID: identity.IdentityID, IdentityID: identity.IdentityID,
+		Subject: identity.Subject, TenantID: identity.TenantID, UserID: subjectID, IdentityID: subjectID,
 		PersonID: firstNonEmpty(context.PersonID, identity.PersonID), Roles: roles, Permissions: permissions,
 		DataScopes: scopes, PermissionScopes: permissionScopes, AuthorizationRevision: context.AuthorizationRevision,
 		CatalogVersion: catalog.Version,
 	}, nil
+}
+
+func validateCatalogCompatibility(localVersion, currentVersion string, compatible []string) error {
+	localVersion, currentVersion = strings.TrimSpace(localVersion), strings.TrimSpace(currentVersion)
+	if currentVersion == "" && len(compatible) == 0 {
+		// N-1 平台没有目录兼容字段，滚动升级窗口内保持原行为。
+		return nil
+	}
+	if localVersion == "" || currentVersion == "" || len(compatible) == 0 || len(compatible) > 2 {
+		return errors.New("catalog compatibility window is incomplete")
+	}
+	found, currentFound := false, false
+	seen := map[string]struct{}{}
+	for _, version := range compatible {
+		if version == "" || version != strings.TrimSpace(version) {
+			return errors.New("catalog compatibility version is not canonical")
+		}
+		if _, duplicate := seen[version]; duplicate {
+			return errors.New("catalog compatibility window contains duplicates")
+		}
+		seen[version] = struct{}{}
+		found = found || version == localVersion
+		currentFound = currentFound || version == currentVersion
+	}
+	if !found || !currentFound {
+		return errors.New("local authorization catalog is outside the N/N-1 compatibility window")
+	}
+	return nil
+}
+
+func canonicalSubjectID(subjectID, identityID string) (string, error) {
+	subjectID = strings.TrimSpace(subjectID)
+	identityID = strings.TrimSpace(identityID)
+	if subjectID == "" {
+		// N-1 平台在滚动升级期间只返回 identity_id。
+		subjectID = identityID
+	}
+	if subjectID == "" || identityID == "" || subjectID != identityID {
+		return "", errors.New("subject_id and identity_id must identify the same platform subject")
+	}
+	return subjectID, nil
 }
 
 func validateKnownSet(values []string, known map[string]struct{}, kind string) ([]string, error) {

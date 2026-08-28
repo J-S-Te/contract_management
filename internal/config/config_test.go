@@ -31,6 +31,11 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("TEMPORAL_NAMESPACE", "default")
 	t.Setenv("TEMPORAL_TASK_QUEUE", "contract-management")
 	t.Setenv("TEMPORAL_TLS", "false")
+	t.Setenv("TEMPORAL_WORKER_VERSIONING_ENABLED", "true")
+	t.Setenv("TEMPORAL_WORKER_DEPLOYMENT_NAME", "contract-management")
+	t.Setenv("TEMPORAL_WORKER_BUILD_ID", "contract-test-v1")
+	t.Setenv("TEMPORAL_WORKER_VERSIONING_POLICY", "PINNED")
+	t.Setenv("TEMPORAL_METRICS_ADDRESS", ":9091")
 	t.Setenv("APPROVAL_NODE_TIMEOUT", "72h")
 	t.Setenv("APPROVAL_REMINDER_INTERVAL", "24h")
 	t.Setenv("PLATFORM_AUDIT_CLIENT_ID", "")
@@ -71,6 +76,26 @@ func TestLoadRejectsInvalidTemporalTLS(t *testing.T) {
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "TEMPORAL_TLS") {
 		t.Fatalf("Load() error = %v, want invalid boolean error", err)
+	}
+}
+
+func TestLoadRejectsInvalidTemporalWorkerVersioningPolicy(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("TEMPORAL_WORKER_VERSIONING_POLICY", "LATEST")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "TEMPORAL_WORKER_VERSIONING_POLICY") {
+		t.Fatalf("Load() error = %v, want invalid worker versioning policy", err)
+	}
+}
+
+func TestLoadRequiresTemporalDeploymentWhenVersioningEnabled(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("TEMPORAL_WORKER_DEPLOYMENT_NAME", "   ")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "TEMPORAL_WORKER_DEPLOYMENT_NAME") {
+		t.Fatalf("Load() error = %v, want missing deployment name", err)
 	}
 }
 
@@ -168,6 +193,11 @@ func TestLoadAcceptsDashboardMachineWithBearer(t *testing.T) {
 	t.Setenv("DASHBOARD_MACHINE_REQUIRE_BEARER", "true")
 	t.Setenv("DASHBOARD_MACHINE_CLIENT_ID", "data-analysis")
 	t.Setenv("DASHBOARD_MACHINE_AUDIENCE", "basic-platform-application")
+	t.Setenv("DASHBOARD_MACHINE_ISSUER", "basic-platform")
+	t.Setenv("DASHBOARD_MACHINE_PUBLIC_KEY_PATH", "/tmp/application-jwt-public.pem")
+	t.Setenv("DASHBOARD_MACHINE_CALLER_APPLICATION_CODE", "data_analysis")
+	t.Setenv("DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE", "test")
+	t.Setenv("DASHBOARD_MACHINE_REQUIRED_SCOPE", "dashboard.contract.read")
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load() error = %v", err)

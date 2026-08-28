@@ -14,6 +14,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/bootstrap"
 	"github.com/j-s-te/contract-management/internal/config"
+	"github.com/j-s-te/contract-management/internal/filegatewayclient"
 	store "github.com/j-s-te/contract-management/internal/infrastructure/mysql"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/j-s-te/contract-management/internal/integration/crm"
@@ -92,13 +93,24 @@ func main() {
 		Personnel:               personnelDirectory,
 		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), Client: &http.Client{Timeout: 5 * time.Second}},
 	}
+	if cfg.StampedFileMode != "legacy" {
+		gatewayToken := filegatewayclient.NewClientCredentialsTokenSource(ctx, strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token", cfg.StampedFileClientID, cfg.StampedFileClientSecret, cfg.StampedFileScope)
+		gateway, gatewayErr := filegatewayclient.New(cfg.StampedFileGatewayURL, &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, gatewayToken)
+		if gatewayErr != nil {
+			logger.Error("file gateway initialization failed", "error", gatewayErr)
+			os.Exit(1)
+		}
+		service.StampedFileGateway = gateway
+		service.StampedFileMode = cfg.StampedFileMode
+		service.StampedFileApplicationID = cfg.StampedFileApplicationID
+	}
 	var dashboardBearer platform.ClientCredentialsTokenVerifier
 	if cfg.DashboardMachineEnabled && cfg.DashboardMachineRequireBearer {
 		dashboardBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
-			Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
-			ClientID: cfg.DashboardMachineClientID, Audience: cfg.DashboardMachineAudience,
-			TenantID: cfg.OIDCTenantID,
-			Timeout:  cfg.OIDCAuthorizationTimeout,
+			Issuer: cfg.DashboardMachineIssuer, Audience: cfg.DashboardMachineAudience, PublicKeyPath: cfg.DashboardMachinePublicKeyPath,
+			ClientID: cfg.DashboardMachineClientID, TenantID: cfg.OIDCTenantID,
+			CallerApplicationCode: cfg.DashboardMachineCallerApp, CallerEnvironmentCode: cfg.DashboardMachineCallerEnv,
+			RequiredScope: cfg.DashboardMachineScope,
 		})
 		if err != nil {
 			logger.Error("initialize dashboard machine bearer verifier", "error", err)
@@ -107,7 +119,7 @@ func main() {
 	}
 	var settlementBearer platform.ClientCredentialsTokenVerifier
 	if cfg.SettlementMachineEnabled && cfg.SettlementMachineRequireBearer {
-		settlementBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
+		settlementBearer, err = platform.NewKeycloakClientCredentialsTokenVerifier(ctx, platform.KeycloakClientCredentialsVerifierOptions{
 			Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 			ClientID: cfg.SettlementMachineClientID, Audience: cfg.SettlementMachineAudience,
 			TenantID: cfg.OIDCTenantID, Timeout: cfg.OIDCAuthorizationTimeout,
