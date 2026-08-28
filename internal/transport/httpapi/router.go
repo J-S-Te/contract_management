@@ -44,6 +44,10 @@ type LocalSessionLogout interface {
 	LogoutLocal(http.ResponseWriter, *http.Request)
 }
 
+type BackchannelLogout interface {
+	BackchannelLogout(http.ResponseWriter, *http.Request)
+}
+
 type PublicPathResolver interface {
 	PublicPath(string) string
 }
@@ -96,6 +100,9 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	}
 	if localLogout, ok := identity.(LocalSessionLogout); ok {
 		r.POST("/auth/local-logout", func(c *gin.Context) { localLogout.LogoutLocal(c.Writer, c.Request) })
+	}
+	if backchannelLogout, ok := identity.(BackchannelLogout); ok {
+		r.POST("/auth/backchannel-logout", func(c *gin.Context) { backchannelLogout.BackchannelLogout(c.Writer, c.Request) })
 	}
 	r.GET("/healthz", func(c *gin.Context) {
 		writeJSON(c, http.StatusOK, envelope{Code: "OK", Message: "ok", Data: map[string]string{"status": "up", "audit": auditAvailability(audit)}})

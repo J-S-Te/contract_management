@@ -50,7 +50,7 @@ func (r *Repository) ListApprovedContractsScoped(ctx context.Context, filter con
 
 func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, document contract.StampedDocument) error {
 	digest := fmt.Sprintf("%x", sha256.Sum256(document.Document))
-	record := stampedDocumentRecord{ContractID: document.ContractID, TenantID: tenantID, OriginalFilename: document.OriginalFilename, ContentSHA256: digest, Document: document.Document, UploadedAt: document.UploadedAt, UploadedBy: document.UploadedBy}
+	record := stampedDocumentRecord{ContractID: document.ContractID, TenantID: tenantID, OriginalFilename: document.OriginalFilename, ContentSHA256: digest, Document: document.Document, UploadedAt: document.UploadedAt, UploadedBy: document.UploadedBy, FileGatewayState: "DISABLED"}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.AssignmentColumns([]string{"original_filename", "content_sha256", "document", "uploaded_at", "uploaded_by"})}).Create(&record).Error; err != nil {
 			return err
@@ -63,6 +63,23 @@ func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, d
 	})
 }
 
+// MarkStampedDocumentGatewayPending 在旧 BLOB 提交成功后记录待上传状态，形成可恢复的跨系统边界。
+func (r *Repository) MarkStampedDocumentGatewayPending(ctx context.Context, tenantID, contractID string) error {
+	return r.db.WithContext(ctx).Model(&stampedDocumentRecord{}).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Updates(map[string]any{"file_gateway_state": "PENDING", "file_gateway_last_error": ""}).Error
+}
+
+// MarkStampedDocumentGatewayResult 记录平台文件 ID 或脱敏错误，不删除旧 BLOB。
+func (r *Repository) MarkStampedDocumentGatewayResult(ctx context.Context, tenantID, contractID, state, value string) error {
+	updates := map[string]any{"file_gateway_state": state}
+	if state == "READY" {
+		updates["platform_file_id"] = value
+		updates["file_gateway_last_error"] = ""
+	} else {
+		updates["file_gateway_last_error"] = value[:min(len(value), 512)]
+	}
+	return r.db.WithContext(ctx).Model(&stampedDocumentRecord{}).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Updates(updates).Error
+}
+
 func (r *Repository) GetStampedDocument(ctx context.Context, tenantID, contractID string) (contract.StampedDocument, error) {
 	var record stampedDocumentRecord
 	err := r.db.WithContext(ctx).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Take(&record).Error
@@ -72,7 +89,7 @@ func (r *Repository) GetStampedDocument(ctx context.Context, tenantID, contractI
 	if err != nil {
 		return contract.StampedDocument{}, err
 	}
-	return contract.StampedDocument{ContractID: record.ContractID, OriginalFilename: record.OriginalFilename, Document: record.Document, UploadedAt: record.UploadedAt, UploadedBy: record.UploadedBy}, nil
+	return contract.StampedDocument{ContractID: record.ContractID, OriginalFilename: record.OriginalFilename, Document: record.Document, UploadedAt: record.UploadedAt, UploadedBy: record.UploadedBy, PlatformFileID: record.PlatformFileID, FileGatewayState: record.FileGatewayState}, nil
 }
 
 func (r *Repository) ListSigningRecords(ctx context.Context, tenantID string, limit int) ([]contract.SigningRecord, error) {

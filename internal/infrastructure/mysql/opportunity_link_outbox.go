@@ -86,9 +86,9 @@ func (r *Repository) MarkOpportunityLinkFailed(ctx context.Context, id, message 
 	}).Error
 }
 
-// DecodeOpportunityLinkPayload is kept for tests and operational tooling.
-func DecodeOpportunityLinkPayload(payload []byte) (application.OpportunityIntake, error) {
-	var item application.OpportunityIntake
+// DecodeOpportunityLinkPayload 解码持久化队列中的稳定 CRM 回调协议，供测试和运维诊断使用。
+func DecodeOpportunityLinkPayload(payload []byte) (crmintegration.OpportunityLinkCallback, error) {
+	var item crmintegration.OpportunityLinkCallback
 	if err := json.Unmarshal(payload, &item); err != nil {
 		return item, err
 	}

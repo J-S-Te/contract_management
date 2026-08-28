@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -88,6 +89,28 @@ type gormSession struct {
 func (gormSession) TableName() string { return "con_oidc_session" }
 
 type GORMOIDCStore struct{ db *gorm.DB }
+
+// ProcessBackchannelLogout 在单一事务中记录 JTI 并撤销 subject 会话，避免中途崩溃留下错误的已处理标记。
+func (s *GORMOIDCStore) ProcessBackchannelLogout(ctx context.Context, tenantID, subject, jti string, now time.Time) (bool, error) {
+	if strings.TrimSpace(jti) == "" || strings.TrimSpace(subject) == "" {
+		return false, errors.New("back-channel logout subject and JTI are required")
+	}
+	claimed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Exec("INSERT INTO con_oidc_backchannel_logout_replay (jti_hash, expires_at, created_at) VALUES (?, ?, ?)", backchannelLogoutJTIHash(jti), now.Add(5*time.Minute), now)
+		if result.Error != nil {
+			if strings.Contains(strings.ToLower(result.Error.Error()), "duplicate") {
+				return nil
+			}
+			return result.Error
+		}
+		claimed = true
+		return tx.Model(&gormSession{}).
+			Where("tenant_id = ? AND revoked_at IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(principal_json, '$.subject')) = ?", tenantID, subject).
+			Updates(map[string]any{"revoked_at": now, "updated_at": now}).Error
+	})
+	return claimed, err
+}
 
 func NewGORMOIDCStore(db *gorm.DB) (*GORMOIDCStore, error) {
 	if db == nil {
@@ -170,6 +193,33 @@ func (s *GORMOIDCStore) RevokeSession(ctx context.Context, hash []byte, now time
 func (s *GORMOIDCStore) RevokeSessionsForIdentity(ctx context.Context, tenantID, identityID string, now time.Time) error {
 	return s.db.WithContext(ctx).Model(&gormSession{}).
 		Where("tenant_id = ? AND identity_id = ? AND revoked_at IS NULL", tenantID, identityID).
+		Updates(map[string]any{"revoked_at": now, "updated_at": now}).Error
+}
+
+// ClaimBackchannelLogout 以唯一 JTI 持久化注销事件，防止重复投递重复执行。
+func (s *GORMOIDCStore) ClaimBackchannelLogout(ctx context.Context, jti string, now time.Time) (bool, error) {
+	if jti == "" {
+		return false, errors.New("back-channel logout JTI is required")
+	}
+	result := s.db.WithContext(ctx).Exec("INSERT INTO con_oidc_backchannel_logout_replay (jti_hash, expires_at, created_at) VALUES (?, ?, ?)", backchannelLogoutJTIHash(jti), now.Add(5*time.Minute), now)
+	if result.Error != nil {
+		if strings.Contains(strings.ToLower(result.Error.Error()), "duplicate") {
+			return false, nil
+		}
+		return false, result.Error
+	}
+	return true, nil
+}
+
+// ReleaseBackchannelLogout 删除未完成的注销事件占位，使失败请求可以安全重试。
+func (s *GORMOIDCStore) ReleaseBackchannelLogout(ctx context.Context, jti string) error {
+	return s.db.WithContext(ctx).Exec("DELETE FROM con_oidc_backchannel_logout_replay WHERE jti_hash = ?", backchannelLogoutJTIHash(jti)).Error
+}
+
+// RevokeSessionsForSubject 按 OIDC subject 撤销当前租户下所有会话；subject 不匹配时不会扩大撤销范围。
+func (s *GORMOIDCStore) RevokeSessionsForSubject(ctx context.Context, tenantID, subject string, now time.Time) error {
+	return s.db.WithContext(ctx).Model(&gormSession{}).
+		Where("tenant_id = ? AND revoked_at IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(principal_json, '$.subject')) = ?", tenantID, subject).
 		Updates(map[string]any{"revoked_at": now, "updated_at": now}).Error
 }
 

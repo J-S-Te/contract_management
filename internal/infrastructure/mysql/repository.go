@@ -15,6 +15,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
+	crmintegration "github.com/j-s-te/contract-management/internal/integration/crm"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"github.com/oklog/ulid/v2"
 	"gorm.io/gorm"
@@ -100,7 +101,8 @@ func (r *Repository) ReviewOpportunityIntake(ctx context.Context, tenant, id, re
 	var out application.OpportunityIntake
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row opportunityIntakeRecord
-		if e := tx.Where("tenant_id=? AND intake_id=?", tenant, id).First(&row).Error; e != nil {
+		// 锁住接入记录，防止不同幂等键的并发审核同时越过 ACCEPTED 状态校验。
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id=? AND intake_id=?", tenant, id).First(&row).Error; e != nil {
 			if errors.Is(e, gorm.ErrRecordNotFound) {
 				return apperrors.ErrNotFound
 			}
@@ -154,11 +156,17 @@ func (r *Repository) ReviewOpportunityIntake(ctx context.Context, tenant, id, re
 		linkedID, linkedNumber := out.ContractID, out.ContractNumber
 		out = opportunityIntakeFromRecord(row)
 		out.ContractID, out.ContractNumber = linkedID, linkedNumber
-		data, _ := json.Marshal(out)
-		if review.Decision == application.OpportunityIntakeLinkConfirmed {
-			if e := enqueueOpportunityLink(tx, out, data); e != nil {
-				return e
-			}
+		data, marshalErr := json.Marshal(out)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		callbackPayload, marshalErr := crmintegration.EncodeOpportunityLinkCallback(out)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		// 确认与异常都必须回写 CRM，避免两边长期停留在不一致状态。
+		if e := enqueueOpportunityLink(tx, out, callbackPayload); e != nil {
+			return e
 		}
 		rec := opportunityIntakeReviewRecord{ReviewID: ulid.Make().String(), TenantID: tenant, IntakeID: id, IdempotencyKey: key, RequestHash: hash, Decision: review.Decision, Reason: review.Reason, Version: review.Version, ReviewerID: reviewer, ReviewerDisplayName: &display, ResponseJSON: data, CreatedAt: now}
 		return tx.Create(&rec).Error

@@ -22,6 +22,11 @@ type Config struct {
 	DashboardMachineRequireBearer bool
 	DashboardMachineClientID      string
 	DashboardMachineAudience      string
+	DashboardMachineIssuer        string
+	DashboardMachinePublicKeyPath string
+	DashboardMachineCallerApp     string
+	DashboardMachineCallerEnv     string
+	DashboardMachineScope         string
 	// SettlementMachine* 结算系统读取已完成合同的机器接入配置。
 	SettlementMachineEnabled       bool
 	SettlementMachineRequireBearer bool
@@ -57,6 +62,11 @@ type Config struct {
 	TemporalAddress                string
 	TemporalNamespace              string
 	TemporalTaskQueue              string
+	TemporalWorkerBuildID          string
+	TemporalWorkerDeploymentName   string
+	TemporalWorkerVersioning       bool
+	TemporalWorkerVersioningPolicy string
+	TemporalMetricsAddress         string
 	TemporalAPIKey                 string
 	TemporalTLS                    bool
 	NodeTimeout                    time.Duration
@@ -71,6 +81,13 @@ type Config struct {
 	ProjectIntegrationClientID     string
 	ProjectIntegrationClientSecret string
 	ProjectIntegrationAudience     string
+	// StampedFile* 控制盖章 PDF 到平台文件网关的渐进迁移；默认 legacy 保留旧 BLOB。
+	StampedFileMode          string
+	StampedFileGatewayURL    string
+	StampedFileApplicationID string
+	StampedFileClientID      string
+	StampedFileClientSecret  string
+	StampedFileScope         string
 }
 
 func Load() (Config, error) {
@@ -82,6 +99,11 @@ func Load() (Config, error) {
 		DashboardMachineRequireBearer:  envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
 		DashboardMachineClientID:       os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
 		DashboardMachineAudience:       os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
+		DashboardMachineIssuer:         os.Getenv("DASHBOARD_MACHINE_ISSUER"),
+		DashboardMachinePublicKeyPath:  os.Getenv("DASHBOARD_MACHINE_PUBLIC_KEY_PATH"),
+		DashboardMachineCallerApp:      os.Getenv("DASHBOARD_MACHINE_CALLER_APPLICATION_CODE"),
+		DashboardMachineCallerEnv:      os.Getenv("DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		DashboardMachineScope:          os.Getenv("DASHBOARD_MACHINE_REQUIRED_SCOPE"),
 		SettlementMachineEnabled:       envBool("SETTLEMENT_MACHINE_ENABLED", false),
 		SettlementMachineRequireBearer: envBool("SETTLEMENT_MACHINE_REQUIRE_BEARER", false),
 		SettlementMachineClientID:      os.Getenv("SETTLEMENT_MACHINE_CLIENT_ID"),
@@ -93,16 +115,24 @@ func Load() (Config, error) {
 		OIDCSessionCookieName: env("OIDC_SESSION_COOKIE_NAME", "contract_management_session"),
 		AppPublicURL:          os.Getenv("APP_PUBLIC_URL"), AppPathPrefix: env("APP_PATH_PREFIX", "/contract_management"),
 		PlatformAuditClientID: os.Getenv("PLATFORM_AUDIT_CLIENT_ID"), PlatformAuditClientSecret: os.Getenv("PLATFORM_AUDIT_CLIENT_SECRET"), PlatformApplicationCode: os.Getenv("PLATFORM_APPLICATION_CODE"), PlatformEnvironmentCode: os.Getenv("PLATFORM_ENVIRONMENT_CODE"),
-		PlatformApplicationID:        os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
-		PlatformCatalogClientID:      os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
-		PlatformCatalogSecret:        os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
-		PlatformPersonnelClientID:    os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID"),
-		PlatformPersonnelSecret:      os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET"),
-		PlatformNotificationClientID: os.Getenv("PLATFORM_NOTIFICATION_CLIENT_ID"),
-		PlatformNotificationSecret:   os.Getenv("PLATFORM_NOTIFICATION_CLIENT_SECRET"),
-		TemporalAddress:              env("TEMPORAL_ADDRESS", "localhost:7233"), TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"), TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "contract-management"),
-		TemporalAPIKey: os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
+		PlatformApplicationID:          os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_APPLICATION_ID"),
+		PlatformCatalogClientID:        os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_ID"),
+		PlatformCatalogSecret:          os.Getenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET"),
+		PlatformPersonnelClientID:      os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_ID"),
+		PlatformPersonnelSecret:        os.Getenv("PLATFORM_PERSONNEL_DIRECTORY_CLIENT_SECRET"),
+		PlatformNotificationClientID:   os.Getenv("PLATFORM_NOTIFICATION_CLIENT_ID"),
+		PlatformNotificationSecret:     os.Getenv("PLATFORM_NOTIFICATION_CLIENT_SECRET"),
+		TemporalAddress:                env("TEMPORAL_ADDRESS", "localhost:7233"),
+		TemporalNamespace:              env("TEMPORAL_NAMESPACE", "default"),
+		TemporalTaskQueue:              env("TEMPORAL_TASK_QUEUE", "contract-management"),
+		TemporalWorkerBuildID:          env("TEMPORAL_WORKER_BUILD_ID", "contract-worker-v1"),
+		TemporalWorkerDeploymentName:   env("TEMPORAL_WORKER_DEPLOYMENT_NAME", "contract-management"),
+		TemporalWorkerVersioningPolicy: strings.ToUpper(env("TEMPORAL_WORKER_VERSIONING_POLICY", "PINNED")),
+		TemporalMetricsAddress:         env("TEMPORAL_METRICS_ADDRESS", ":9091"),
+		TemporalAPIKey:                 os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 		ProjectAPIBaseURL: env("PROJECT_API_BASE_URL", "http://localhost:8082"),
+		StampedFileMode:   env("STAMPED_FILE_GATEWAY_MODE", "legacy"), StampedFileGatewayURL: env("FILE_GATEWAY_BASE_URL", ""),
+		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload"),
 	}
 	var err error
 	if c.NodeTimeout, err = duration("APPROVAL_NODE_TIMEOUT", 72*time.Hour); err != nil {
@@ -141,6 +171,9 @@ func Load() (Config, error) {
 	if c.TemporalTLS, err = strconv.ParseBool(env("TEMPORAL_TLS", "false")); err != nil {
 		return c, fmt.Errorf("TEMPORAL_TLS: %w", err)
 	}
+	if c.TemporalWorkerVersioning, err = strconv.ParseBool(env("TEMPORAL_WORKER_VERSIONING_ENABLED", "true")); err != nil {
+		return c, fmt.Errorf("TEMPORAL_WORKER_VERSIONING_ENABLED: %w", err)
+	}
 	if c.PlatformCatalogSync, err = strconv.ParseBool(env("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED: %w", err)
 	}
@@ -166,6 +199,14 @@ func Load() (Config, error) {
 }
 
 func (c Config) validate() error {
+	if c.StampedFileMode != "legacy" && c.StampedFileMode != "dual" && c.StampedFileMode != "required" {
+		return fmt.Errorf("STAMPED_FILE_GATEWAY_MODE must be legacy, dual or required")
+	}
+	if c.StampedFileMode != "legacy" {
+		if !validHTTPOrigin(c.StampedFileGatewayURL) || strings.TrimSpace(c.StampedFileApplicationID) == "" || strings.TrimSpace(c.StampedFileClientID) == "" || strings.TrimSpace(c.StampedFileClientSecret) == "" || strings.TrimSpace(c.StampedFileScope) == "" {
+			return fmt.Errorf("file gateway URL, application ID, client ID, client secret and scope are required when stamped file gateway is enabled")
+		}
+	}
 	if strings.TrimSpace(c.HTTPAddress) == "" {
 		return fmt.Errorf("HTTP_ADDRESS must not be empty")
 	}
@@ -232,8 +273,17 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.AppPublicURL) == "" {
 		return fmt.Errorf("APP_PUBLIC_URL is required")
 	}
-	if strings.TrimSpace(c.TemporalAddress) == "" || strings.TrimSpace(c.TemporalNamespace) == "" || strings.TrimSpace(c.TemporalTaskQueue) == "" {
+	if strings.TrimSpace(c.TemporalAddress) == "" || strings.TrimSpace(c.TemporalNamespace) == "" || strings.TrimSpace(c.TemporalTaskQueue) == "" || strings.TrimSpace(c.TemporalWorkerBuildID) == "" {
 		return fmt.Errorf("Temporal address, namespace and task queue must not be empty")
+	}
+	if c.TemporalWorkerVersioning && strings.TrimSpace(c.TemporalWorkerDeploymentName) == "" {
+		return fmt.Errorf("TEMPORAL_WORKER_DEPLOYMENT_NAME is required when worker versioning is enabled")
+	}
+	if c.TemporalWorkerVersioningPolicy != "PINNED" && c.TemporalWorkerVersioningPolicy != "AUTO_UPGRADE" {
+		return fmt.Errorf("TEMPORAL_WORKER_VERSIONING_POLICY must be PINNED or AUTO_UPGRADE")
+	}
+	if strings.TrimSpace(c.TemporalMetricsAddress) == "" {
+		return fmt.Errorf("TEMPORAL_METRICS_ADDRESS is required")
 	}
 	if c.NodeTimeout <= 0 || c.ReminderInterval <= 0 || c.ReminderInterval >= c.NodeTimeout {
 		return fmt.Errorf("approval durations must be positive and reminder interval must be shorter than node timeout")
@@ -272,6 +322,11 @@ func (c Config) validate() error {
 		}{
 			{"DASHBOARD_MACHINE_CLIENT_ID", c.DashboardMachineClientID},
 			{"DASHBOARD_MACHINE_AUDIENCE", c.DashboardMachineAudience},
+			{"DASHBOARD_MACHINE_ISSUER", c.DashboardMachineIssuer},
+			{"DASHBOARD_MACHINE_PUBLIC_KEY_PATH", c.DashboardMachinePublicKeyPath},
+			{"DASHBOARD_MACHINE_CALLER_APPLICATION_CODE", c.DashboardMachineCallerApp},
+			{"DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE", c.DashboardMachineCallerEnv},
+			{"DASHBOARD_MACHINE_REQUIRED_SCOPE", c.DashboardMachineScope},
 		} {
 			if strings.TrimSpace(item.value) == "" || placeholder(item.value) {
 				return fmt.Errorf("%s is required when dashboard bearer authentication is enabled", item.name)

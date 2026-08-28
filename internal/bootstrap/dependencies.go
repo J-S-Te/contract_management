@@ -41,8 +41,17 @@ func CloseDatabase(db *gorm.DB) error {
 	return sqlDB.Close()
 }
 
-func OpenTemporal(ctx context.Context, cfg config.Config) (client.Client, error) {
+func OpenTemporal(ctx context.Context, cfg config.Config, metricHandlers ...client.MetricsHandler) (client.Client, error) {
 	options := client.Options{HostPort: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace}
+	if len(metricHandlers) > 1 {
+		return nil, fmt.Errorf("open Temporal accepts at most one metrics handler")
+	}
+	if len(metricHandlers) == 1 {
+		if metricHandlers[0] == nil {
+			return nil, fmt.Errorf("Temporal metrics handler must not be nil")
+		}
+		options.MetricsHandler = metricHandlers[0]
+	}
 	if cfg.TemporalTLS {
 		options.ConnectionOptions.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
 	} else {

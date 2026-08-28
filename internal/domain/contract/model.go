@@ -74,6 +74,8 @@ type StampedDocument struct {
 	Document         []byte    `json:"-"`
 	UploadedAt       time.Time `json:"uploaded_at"`
 	UploadedBy       string    `json:"uploaded_by"`
+	PlatformFileID   string    `json:"-"`
+	FileGatewayState string    `json:"file_gateway_state,omitempty"`
 }
 
 type SigningStatus string

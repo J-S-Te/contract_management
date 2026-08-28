@@ -1,11 +1,13 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -99,14 +101,30 @@ type ScopedRepository interface {
 }
 
 type Service struct {
-	Repo                    Repository
-	Templates               TemplateRepository
-	Temporal                client.Client
-	TaskQueue               string
-	NodeTimeout             time.Duration
-	ReminderInterval        time.Duration
-	Personnel               PersonnelDirectory
-	OpportunityLinkNotifier OpportunityLinkNotifier
+	Repo                     Repository
+	Templates                TemplateRepository
+	Temporal                 client.Client
+	TaskQueue                string
+	NodeTimeout              time.Duration
+	ReminderInterval         time.Duration
+	Personnel                PersonnelDirectory
+	OpportunityLinkNotifier  OpportunityLinkNotifier
+	StampedFileGateway       StampedFileGateway
+	StampedFileMode          string
+	StampedFileApplicationID string
+}
+
+// StampedFileGateway 上传并绑定盖章合同；跨系统提交失败时旧 BLOB 仍可回退读取。
+type StampedFileGateway interface {
+	Upload(context.Context, string, string, string, string, string, io.Reader) (string, error)
+	Bind(context.Context, string, string, string, string, string, string) error
+	Download(context.Context, string) ([]byte, error)
+}
+
+// StampedDocumentGatewayStateRepository 持久化跨系统上传状态，供失败重试和运维对账使用。
+type StampedDocumentGatewayStateRepository interface {
+	MarkStampedDocumentGatewayPending(context.Context, string, string) error
+	MarkStampedDocumentGatewayResult(context.Context, string, string, string, string) error
 }
 
 type OpportunityLinkNotifier interface {
@@ -144,14 +162,63 @@ func (s *Service) SaveStampedDocument(ctx context.Context, actor Principal, id, 
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.stamped_pdf.upload"); err != nil {
 		return err
 	}
-	return s.Repo.SaveStampedDocument(ctx, actor.TenantID, contract.StampedDocument{ContractID: id, OriginalFilename: filename, Document: document, UploadedAt: time.Now().UTC(), UploadedBy: actor.UserID})
+	if err := s.Repo.SaveStampedDocument(ctx, actor.TenantID, contract.StampedDocument{ContractID: id, OriginalFilename: filename, Document: document, UploadedAt: time.Now().UTC(), UploadedBy: actor.UserID}); err != nil {
+		return err
+	}
+	if s.StampedFileGateway == nil || strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
+		return nil
+	}
+	if stateRepo, ok := s.Repo.(StampedDocumentGatewayStateRepository); ok {
+		if err := stateRepo.MarkStampedDocumentGatewayPending(ctx, actor.TenantID, id); err != nil {
+			return fmt.Errorf("mark file gateway upload pending: %w", err)
+		}
+	}
+	documentHash := sha256.Sum256(document)
+	requestID := fmt.Sprintf("contract-stamped-%s-%x", id, documentHash[:8])
+	fileID, err := s.StampedFileGateway.Upload(ctx, requestID, s.StampedFileApplicationID, "CONTRACT_STAMPED_PDF", filename, "application/pdf", bytes.NewReader(document))
+	if err == nil {
+		err = s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, fileID, "contract", id, "STAMPED_PDF", filename)
+	}
+	if err != nil {
+		if stateRepo, ok := s.Repo.(StampedDocumentGatewayStateRepository); ok {
+			_ = stateRepo.MarkStampedDocumentGatewayResult(ctx, actor.TenantID, id, "FAILED", err.Error())
+		}
+		if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "dual") {
+			// 双写灰度期间旧 BLOB 已持久化，网关失败只留下可重试状态，不阻断合同业务。
+			return nil
+		}
+		return fmt.Errorf("file gateway upload pending; legacy document retained: %w", err)
+	}
+	if stateRepo, ok := s.Repo.(StampedDocumentGatewayStateRepository); ok {
+		if err := stateRepo.MarkStampedDocumentGatewayResult(ctx, actor.TenantID, id, "READY", fileID); err != nil {
+			return fmt.Errorf("mark file gateway upload ready: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) GetStampedDocument(ctx context.Context, actor Principal, id string) (contract.StampedDocument, error) {
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.document.download"); err != nil {
 		return contract.StampedDocument{}, err
 	}
-	return s.Repo.GetStampedDocument(ctx, actor.TenantID, id)
+	document, err := s.Repo.GetStampedDocument(ctx, actor.TenantID, id)
+	if err != nil {
+		return contract.StampedDocument{}, err
+	}
+	mode := strings.ToLower(strings.TrimSpace(s.StampedFileMode))
+	if s.StampedFileGateway == nil || mode == "legacy" || document.PlatformFileID == "" || !strings.EqualFold(document.FileGatewayState, "READY") {
+		return document, nil
+	}
+	content, gatewayErr := s.StampedFileGateway.Download(ctx, document.PlatformFileID)
+	if gatewayErr == nil {
+		document.Document = content
+		return document, nil
+	}
+	if mode == "required" {
+		return contract.StampedDocument{}, fmt.Errorf("download stamped document from file gateway: %w", gatewayErr)
+	}
+	// 双写阶段只有在网关读取失败时回退历史 BLOB；网关成功后不再从数据库加载另一份内容。
+	return document, nil
 }
 
 func (s *Service) ListSigningRecords(ctx context.Context, actor Principal, limit int) ([]contract.SigningRecord, error) {

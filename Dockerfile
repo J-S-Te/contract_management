@@ -10,6 +10,7 @@ COPY . ./
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker ./cmd/worker \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker-rollout ./cmd/worker-rollout \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
 
 FROM alpine:3.21
@@ -20,6 +21,7 @@ WORKDIR /app
 
 COPY --from=builder /out/api ./api
 COPY --from=builder /out/worker ./worker
+COPY --from=builder /out/worker-rollout ./worker-rollout
 COPY --from=builder /out/migrate ./migrate
 COPY docker-entrypoint.sh /usr/local/bin/contract-management-entrypoint
 
