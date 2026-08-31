@@ -1085,6 +1085,8 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
 	case errors.Is(err, platform.ErrAuthorizationServiceUnavailable), errors.Is(err, application.ErrPersonnelDirectoryUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "AUTH_DEPENDENCY_UNAVAILABLE", "身份或授权服务暂时不可用", nil)
+	case errors.Is(err, application.ErrApprovalWorkflowUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_APPROVAL_WORKFLOW_UNAVAILABLE", "审批流程服务暂时不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrForbidden):
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, application.ErrApprovalTargetForbidden):

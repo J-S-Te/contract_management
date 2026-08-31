@@ -132,7 +132,7 @@ type OpportunityLinkNotifier interface {
 }
 
 func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, limit int) ([]contract.Contract, error) {
-	filter, ok := actor.Scope("contract.approved.read")
+	filter, ok := s.contractScope(actor, "contract.approved.read")
 	if !ok {
 		return nil, ErrForbidden
 	}
@@ -144,7 +144,7 @@ func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, li
 }
 
 func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, permission string) (contract.Contract, error) {
-	filter, ok := actor.Scope(permission)
+	filter, ok := s.contractScope(actor, permission)
 	if !ok {
 		return contract.Contract{}, ErrForbidden
 	}
@@ -538,7 +538,7 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	command.RoleNodeOrSign = command.Action == workflows.ActionApprove
 	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
 	if err := s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: signal approval workflow %s: %v", ErrApprovalWorkflowUnavailable, meta.WorkflowID, err)
 	}
 	return command.CommandID, nil
 }
@@ -580,11 +580,11 @@ func (s *Service) queryApprovalState(ctx context.Context, actor Principal, appro
 	}
 	encoded, err := s.Temporal.QueryWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.StateQueryName)
 	if err != nil {
-		return approval.Meta{}, workflows.ApprovalState{}, err
+		return approval.Meta{}, workflows.ApprovalState{}, fmt.Errorf("%w: query approval workflow %s: %v", ErrApprovalWorkflowUnavailable, meta.WorkflowID, err)
 	}
 	var state workflows.ApprovalState
 	if err := encoded.Get(&state); err != nil {
-		return approval.Meta{}, workflows.ApprovalState{}, err
+		return approval.Meta{}, workflows.ApprovalState{}, fmt.Errorf("%w: decode approval workflow %s state: %v", ErrApprovalWorkflowUnavailable, meta.WorkflowID, err)
 	}
 	return meta, state, nil
 }
@@ -612,7 +612,7 @@ func (s *Service) ListMyApprovals(ctx context.Context, actor Principal, limit in
 }
 
 func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (contract.Contract, error) {
-	filter, ok := actor.Scope("contract.read")
+	filter, ok := s.contractScope(actor, "contract.read")
 	if !ok {
 		return contract.Contract{}, ErrForbidden
 	}
@@ -627,7 +627,7 @@ func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id
 }
 
 func (s *Service) ListContracts(ctx context.Context, actor Principal, keyword string, status string, limit int) ([]contract.Contract, error) {
-	filter, ok := actor.Scope("contract.read")
+	filter, ok := s.contractScope(actor, "contract.read")
 	if !ok {
 		return nil, ErrForbidden
 	}
@@ -649,7 +649,7 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, keyword st
 }
 
 func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contract.Dashboard, error) {
-	filter, ok := actor.Scope("contract.read")
+	filter, ok := s.contractScope(actor, "contract.read")
 	if !ok {
 		return contract.Dashboard{}, ErrForbidden
 	}
@@ -859,6 +859,37 @@ func (s *Service) getContractScoped(ctx context.Context, filter contract.ScopeFi
 	return item, nil
 }
 
+func (s *Service) contractScope(actor Principal, permission string) (contract.ScopeFilter, bool) {
+	filter, ok := actor.Scope(permission)
+	if !ok {
+		return contract.ScopeFilter{}, false
+	}
+	// Contract-domain defense in depth: a plain sales user is always limited to
+	// contracts owned by the current identity, even if a stale platform claim
+	// accidentally carries an APPLICATION/TENANT-wide scope. Elevated contract
+	// roles retain their explicitly issued scope for approval work.
+	if permission == "contract.read" && salesOnly(actor.Roles) {
+		filter.AllowAll = false
+		filter.AllowSelf = true
+		filter.OrganizationIDs = nil
+		filter.ProjectIDs = nil
+	}
+	return filter, true
+}
+
+func salesOnly(roles []string) bool {
+	found := false
+	for _, role := range roles {
+		switch role {
+		case "admin", "sales_director", "tech_director", "finance_director", "audit_admin":
+			return false
+		case "sales":
+			found = true
+		}
+	}
+	return found
+}
+
 func canAccessContract(filter contract.ScopeFilter, item contract.Contract) bool {
 	if item.TenantID != filter.TenantID {
 		return false
@@ -908,4 +939,5 @@ var (
 	ErrValidation                    = errors.New("validation failed")
 	ErrApprovalTargetForbidden       = errors.New("approval target cannot process contract approvals")
 	ErrPersonnelDirectoryUnavailable = errors.New("approval personnel directory is unavailable")
+	ErrApprovalWorkflowUnavailable   = errors.New("approval workflow is unavailable")
 )
