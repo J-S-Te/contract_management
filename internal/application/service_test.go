@@ -160,6 +160,21 @@ func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	}
 }
 
+func TestSalesScopeCannotBeWidenedByBroadAuthorizationClaim(t *testing.T) {
+	service := &Service{}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "sales-1", IdentityID: "sales-1", Roles: []string{"sales"},
+		Permissions: map[string]bool{"contract.read": true},
+		PermissionScopes: map[string]contract.ScopeFilter{
+			"contract.read": {AllowAll: true, OrganizationIDs: []string{"org-1"}, ProjectIDs: []string{"project-1"}},
+		},
+	}
+	filter, ok := service.contractScope(actor, "contract.read")
+	if !ok || filter.AllowAll || !filter.AllowSelf || len(filter.OrganizationIDs) != 0 || len(filter.ProjectIDs) != 0 || filter.IdentityID != "sales-1" {
+		t.Fatalf("sales contract scope = %#v, want self-only", filter)
+	}
+}
+
 func TestAdminListContractsUsesTenantScopeAndCanReadTenantContract(t *testing.T) {
 	repository := &recordingRepository{contract: contract.Contract{ID: "contract-2", TenantID: "tenant-1", OwnerUserID: "user-2"}}
 	service := &Service{Repo: repository}
@@ -520,6 +535,46 @@ func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 	}
 	if commandID == "" {
 		t.Fatal("Command() returned an empty command id")
+	}
+}
+
+func TestGetApprovalDetailClassifiesTemporalQueryFailure(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
+		Return(nil, errors.New("workflow execution not found"))
+	repository := &recordingRepository{
+		approvalMeta: approval.Meta{ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", WorkflowID: "workflow-1", RunID: "run-1", ApplicantUserID: "applicant-1"},
+		contract:     contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true, "contract.read": true}, PermissionScopes: allowAllScope("contract.read")}
+
+	_, err := service.GetApprovalDetail(context.Background(), actor, "approval-1")
+	if !errors.Is(err, ErrApprovalWorkflowUnavailable) {
+		t.Fatalf("GetApprovalDetail() error = %v, want ErrApprovalWorkflowUnavailable", err)
+	}
+}
+
+func TestCommandClassifiesTemporalSignalFailure(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	encoded := temporalmocks.NewEncodedValue(t)
+	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
+		target := arguments.Get(0).(*workflows.ApprovalState)
+		*target = state
+	}).Return(nil)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).Return(encoded, nil)
+	temporal.On("SignalWorkflow", mock.Anything, "workflow-1", "run-1", workflows.CommandSignalName, mock.Anything).Return(errors.New("workflow execution already completed"))
+	repository := &recordingRepository{
+		approvalMeta: approval.Meta{ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", WorkflowID: "workflow-1", RunID: "run-1", Status: approval.StatusRunning},
+		contract:     contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true, "contract.read": true}, PermissionScopes: allowAllScope("contract.read")}
+
+	_, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	if !errors.Is(err, ErrApprovalWorkflowUnavailable) {
+		t.Fatalf("Command() error = %v, want ErrApprovalWorkflowUnavailable", err)
 	}
 }
 

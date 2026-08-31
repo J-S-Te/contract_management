@@ -16,6 +16,20 @@ import (
 
 type identityFunc func(context.Context, *http.Request) (application.Principal, error)
 
+func TestApprovalWorkflowUnavailableIsNotReportedAsInternalServerError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/v1/approvals/approval-1", nil)
+	writeError(context, application.ErrApprovalWorkflowUnavailable)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusServiceUnavailable, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "CON_APPROVAL_WORKFLOW_UNAVAILABLE") {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
 func (fn identityFunc) Authenticate(ctx context.Context, request *http.Request) (application.Principal, error) {
 	return fn(ctx, request)
 }
