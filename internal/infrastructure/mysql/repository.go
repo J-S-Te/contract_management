@@ -278,6 +278,27 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, keyword, owner
 	return result, nil
 }
 
+func dashboardActiveStatuses() []contract.Status {
+	return []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
+}
+
+// Archived contracts remain valid business contracts for reporting. They are
+// terminal and may have a past end date, so they must be counted separately
+// from currently active statuses and must never be classified as expired.
+func dashboardActiveScope(db *gorm.DB, activeStatuses []contract.Status, today time.Time) *gorm.DB {
+	return db.Where("(status = ? OR (status IN ? AND (end_date IS NULL OR end_date >= ?)))", contract.StatusArchived, activeStatuses, today)
+}
+
+func dashboardStatusIsActive(status contract.Status, endDate *time.Time, today time.Time) bool {
+	if status == contract.StatusArchived {
+		return true
+	}
+	if status != contract.StatusActive && status != contract.StatusInProgress && status != contract.StatusPendingPay {
+		return false
+	}
+	return endDate == nil || !endDate.Before(today)
+}
+
 func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserID string, today time.Time, limit int) (contract.Dashboard, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
@@ -314,10 +335,9 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 		return contract.Dashboard{}, err
 	}
 
-	activeStatuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
+	activeStatuses := dashboardActiveStatuses()
 	var activeCount, expiredCount int64
-	if err := contractScope().Where("status IN ?", activeStatuses).
-		Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
+	if err := dashboardActiveScope(contractScope(), activeStatuses, today).Count(&activeCount).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 	if err := contractScope().
@@ -337,14 +357,8 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 	}
 	items := make([]contract.DashboardContract, 0, len(records))
 	for _, record := range records {
-		statusIsActive := false
-		for _, status := range activeStatuses {
-			if contract.Status(record.Status) == status {
-				statusIsActive = true
-				break
-			}
-		}
-		expired := statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
+		statusIsActive := dashboardStatusIsActive(contract.Status(record.Status), record.EndDate, today)
+		expired := contract.Status(record.Status) != contract.StatusArchived && statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
 		item := contract.DashboardContract{ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, InApproval: inApproval[record.ID], ActiveUnexpired: statusIsActive && !expired, Expired: expired}
 		if record.CustomerCreditLevel != nil {
 			item.CustomerCreditLevel = *record.CustomerCreditLevel
@@ -377,9 +391,9 @@ func (r *Repository) ContractDashboardScoped(ctx context.Context, filter contrac
 		Pluck("contract_id", &approvalContractIDs).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
-	activeStatuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
+	activeStatuses := dashboardActiveStatuses()
 	var activeCount, expiredCount int64
-	if err := contractScope().Where("status IN ?", activeStatuses).Where("end_date IS NULL OR end_date >= ?", today).Count(&activeCount).Error; err != nil {
+	if err := dashboardActiveScope(contractScope(), activeStatuses, today).Count(&activeCount).Error; err != nil {
 		return contract.Dashboard{}, err
 	}
 	if err := contractScope().Where("status IN ? AND end_date IS NOT NULL AND end_date < ?", activeStatuses, today).Count(&expiredCount).Error; err != nil {
@@ -395,14 +409,8 @@ func (r *Repository) ContractDashboardScoped(ctx context.Context, filter contrac
 	}
 	items := make([]contract.DashboardContract, 0, len(records))
 	for _, record := range records {
-		statusIsActive := false
-		for _, status := range activeStatuses {
-			if contract.Status(record.Status) == status {
-				statusIsActive = true
-				break
-			}
-		}
-		expired := statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
+		statusIsActive := dashboardStatusIsActive(contract.Status(record.Status), record.EndDate, today)
+		expired := contract.Status(record.Status) != contract.StatusArchived && statusIsActive && record.EndDate != nil && record.EndDate.Before(today)
 		item := contract.DashboardContract{ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Status: contract.Status(record.Status), StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, InApproval: inApproval[record.ID], ActiveUnexpired: statusIsActive && !expired, Expired: expired}
 		if record.CustomerCreditLevel != nil {
 			item.CustomerCreditLevel = *record.CustomerCreditLevel
