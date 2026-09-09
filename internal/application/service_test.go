@@ -22,14 +22,6 @@ func allowSelfScope(permission string) map[string]contract.ScopeFilter {
 	return map[string]contract.ScopeFilter{permission: {AllowSelf: true}}
 }
 
-func allowAllScopes(permissions ...string) map[string]contract.ScopeFilter {
-	result := make(map[string]contract.ScopeFilter, len(permissions))
-	for _, permission := range permissions {
-		result[permission] = contract.ScopeFilter{AllowAll: true}
-	}
-	return result
-}
-
 type recordingRepository struct {
 	ownerUserID          string
 	contract             contract.Contract

@@ -37,11 +37,6 @@ var transitions = map[Status]map[Status]struct{}{
 	StatusArchived:   {},
 }
 
-// AllStatuses returns states in their normal lifecycle display order.
-func AllStatuses() []Status {
-	return []Status{StatusDraft, StatusPending, StatusApproved, StatusActive, StatusInProgress, StatusPendingPay, StatusCompleted, StatusTerminated, StatusArchived}
-}
-
 func (s Status) Valid() bool {
 	_, ok := transitions[s]
 	return ok

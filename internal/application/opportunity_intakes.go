@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 )
 
 const (
@@ -116,5 +114,3 @@ func (s *Service) ReviewOpportunityIntake(ctx context.Context, actor Principal, 
 	}
 	return result, nil
 }
-
-func newIntakeID() string { return ulid.Make().String() }
