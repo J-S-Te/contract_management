@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -114,8 +113,3 @@ func backchannelLogoutJTIHash(jti string) []byte {
 	sum := sha256.Sum256([]byte(jti))
 	return sum[:]
 }
-
-var errBackchannelLogoutReplay = errors.New("back-channel logout token replay")
-
-// BackchannelLogoutReplayError 判断错误是否表示 logout_token 已经处理过。
-func BackchannelLogoutReplayError(err error) bool { return errors.Is(err, errBackchannelLogoutReplay) }

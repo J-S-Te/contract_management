@@ -543,11 +543,6 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	return command.CommandID, nil
 }
 
-func (s *Service) GetApprovalState(ctx context.Context, actor Principal, approvalID string) (workflows.ApprovalState, error) {
-	_, state, err := s.queryApprovalState(ctx, actor, approvalID)
-	return state, err
-}
-
 func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approvalID string) (ApprovalDetail, error) {
 	meta, state, err := s.queryApprovalState(ctx, actor, approvalID)
 	if err != nil {
