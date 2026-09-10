@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 10
+  version: 11
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -216,6 +216,16 @@ roles:
       - contract.document.download
       - contract.stamped_pdf.upload
       - contract.signing.manage
+
+  # 只给"把已审批合同导入项目管理系统"这一件事所需的读权限：
+  # 项目管理系统的业务管理员需要选择已审批合同来创建项目，但不该获得下载、
+  # 盖章、签署管理等合同系统内的操作能力。
+  # 仅供项目管理系统创建项目时选择"已审批合同"使用。
+  # 名称会随目录发布到平台，description 不会被发布端序列化，因此说明只保留在这里。
+  - code: contract_importer
+    name: 合同导入只读
+    permissions:
+      - contract.approved.read
 
   - code: sales_director
     name: 销售总监
