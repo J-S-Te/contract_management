@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,10 +17,13 @@ import (
 )
 
 type projectActivationPayload struct {
-	ContractID              string                     `json:"contract_id"`
-	ContractVersion         string                     `json:"contract_version"`
-	ContractName            string                     `json:"contract_name"`
-	Customer                string                     `json:"customer"`
+	ContractID      string `json:"contract_id"`
+	ContractVersion string `json:"contract_version"`
+	ContractName    string `json:"contract_name"`
+	Customer        string `json:"customer"`
+	// CustomerID 是合同上的 CRM 客户标识；项目系统据此按客户聚合与对账，
+	// 不再依赖客户名称的字符串匹配。未从商机带出客户时为空。
+	CustomerID              string                     `json:"customer_id,omitempty"`
 	EffectiveAt             time.Time                  `json:"effective_at"`
 	StampedContractUploaded bool                       `json:"stamped_contract_uploaded"`
 	Services                []projectActivationService `json:"services"`
@@ -172,7 +176,7 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	if err := tx.Model(&stampedDocumentRecord{}).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Count(&stampedDocumentCount).Error; err != nil {
 		return err
 	}
-	payload := projectActivationPayload{ContractID: row.ID, ContractVersion: fmt.Sprintf("%d", row.Version), ContractName: row.Title, Customer: firstProjectValue(valueOrEmpty(row.CustomerName), "未指定客户"), EffectiveAt: effectiveAt, StampedContractUploaded: stampedDocumentCount > 0, Services: services}
+	payload := projectActivationPayload{ContractID: row.ID, ContractVersion: fmt.Sprintf("%d", row.Version), ContractName: row.Title, Customer: firstProjectValue(valueOrEmpty(row.CustomerName), "未指定客户"), CustomerID: customerIDOf(row.CRMCustomerID), EffectiveAt: effectiveAt, StampedContractUploaded: stampedDocumentCount > 0, Services: services}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -279,4 +283,12 @@ func (r *Repository) MarkProjectDeliveryFailed(ctx context.Context, id, message 
 		message = message[:1000]
 	}
 	return r.db.WithContext(ctx).Model(&projectDeliveryOutboxRecord{}).Where("id = ? AND delivery_status = ?", id, "processing").Updates(map[string]any{"delivery_status": status, "next_attempt_at": time.Now().UTC().Add(delay), "locked_at": nil, "last_error": message}).Error
+}
+
+// customerIDOf 把合同上的 CRM 客户标识转成项目系统使用的稳定标识；未关联商机时为空。
+func customerIDOf(crmCustomerID *uint64) string {
+	if crmCustomerID == nil || *crmCustomerID == 0 {
+		return ""
+	}
+	return strconv.FormatUint(*crmCustomerID, 10)
 }
