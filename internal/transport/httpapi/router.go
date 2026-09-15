@@ -73,17 +73,27 @@ type SettlementIntegrationOptions struct {
 	BearerVerifier platform.ClientCredentialsTokenVerifier
 }
 
+type ProjectIntegrationOptions struct {
+	Enabled        bool
+	RequireBearer  bool
+	BearerVerifier platform.ClientCredentialsTokenVerifier
+}
+
 // NewRouter 创建兼容现有调用方的合同管理路由。
 func NewRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, nil, audits...)
+	return newRouter(service, identity, dashboardOptions, nil, nil, audits...)
 }
 
 // NewRouterWithSettlement 创建包含结算系统内部读取接口的路由。
 func NewRouterWithSettlement(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, settlementOptions, audits...)
+	return newRouter(service, identity, dashboardOptions, settlementOptions, nil, audits...)
 }
 
-func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+func NewRouterWithIntegrations(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, audits...)
+}
+
+func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
 		audit = audits[0]
@@ -125,6 +135,11 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal := r.Group("/internal/v1/settlement")
 		internal.Use(h.authenticateServiceIntegration(*settlementOptions, "结算系统"))
 		internal.GET("/completed-contracts", h.listSettlementCompletedContracts)
+	}
+	if projectOptions != nil && projectOptions.Enabled {
+		internal := r.Group("/internal/v1/project")
+		internal.Use(h.authenticateServiceIntegration(*projectOptions, "项目管理系统"))
+		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
 	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
@@ -863,6 +878,19 @@ func (h *Handler) listSettlementCompletedContracts(c *gin.Context) {
 	writeData(c, http.StatusOK, result)
 }
 
+func (h *Handler) getProjectApprovedContract(c *gin.Context) {
+	item, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.approved.read")
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]any{
+		"id": item.ID, "contract_number": item.Number, "title": item.Title,
+		"customer_id": strconv.FormatUint(item.CRMCustomerID, 10), "customer_name": item.CustomerName,
+		"version": item.Version, "status": item.Status, "approval_passed": item.Status.ApprovalPassed(),
+	})
+}
+
 func (h *Handler) submitApproval(c *gin.Context) {
 	var body struct {
 		TermsIdentical bool `json:"terms_identical"`
@@ -1039,9 +1067,10 @@ func (h *Handler) authenticateServiceIntegration(options struct {
 		c.Set(principalKey, application.Principal{
 			Subject: serviceName, TenantID: tenantID, UserID: serviceName, IdentityID: serviceName,
 			DisplayName: serviceName,
-			Permissions: map[string]bool{"contract.read": true},
+			Permissions: map[string]bool{"contract.read": true, "contract.approved.read": true},
 			PermissionScopes: map[string]contract.ScopeFilter{
-				"contract.read": {TenantID: tenantID, IdentityID: "data_analysis", AllowAll: true},
+				"contract.read":          {TenantID: tenantID, IdentityID: "data_analysis", AllowAll: true},
+				"contract.approved.read": {TenantID: tenantID, IdentityID: serviceName, AllowAll: true},
 			},
 		})
 		c.Next()
