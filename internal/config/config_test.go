@@ -99,6 +99,19 @@ func TestLoadRequiresTemporalDeploymentWhenVersioningEnabled(t *testing.T) {
 	}
 }
 
+func TestLoadDisablesTemporalWorkerVersioningByDefault(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("TEMPORAL_WORKER_VERSIONING_ENABLED", "")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.TemporalWorkerVersioning {
+		t.Fatal("Temporal worker versioning must require an explicit opt-in")
+	}
+}
+
 func TestLoadRejectsPartialAuditConfiguration(t *testing.T) {
 	validEnvironment(t)
 	t.Setenv("PLATFORM_AUDIT_CLIENT_ID", "client-id")
