@@ -139,6 +139,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	if projectOptions != nil && projectOptions.Enabled {
 		internal := r.Group("/internal/v1/project")
 		internal.Use(h.authenticateServiceIntegration(*projectOptions, "项目管理系统"))
+		internal.GET("/approved-contracts", h.listProjectApprovedContracts)
 		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
 	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
@@ -878,17 +879,46 @@ func (h *Handler) listSettlementCompletedContracts(c *gin.Context) {
 	writeData(c, http.StatusOK, result)
 }
 
+type projectApprovedContract struct {
+	ID             string          `json:"id"`
+	ContractNumber string          `json:"contract_number"`
+	Title          string          `json:"title"`
+	CustomerID     string          `json:"customer_id"`
+	CustomerName   string          `json:"customer_name"`
+	Version        uint64          `json:"version"`
+	Status         contract.Status `json:"status"`
+	ApprovalPassed bool            `json:"approval_passed"`
+}
+
+func projectApprovedContractView(item contract.Contract) projectApprovedContract {
+	return projectApprovedContract{
+		ID: item.ID, ContractNumber: item.Number, Title: item.Title,
+		CustomerID: strconv.FormatUint(item.CRMCustomerID, 10), CustomerName: item.CustomerName,
+		Version: item.Version, Status: item.Status, ApprovalPassed: item.Status.ApprovalPassed(),
+	}
+}
+
+func (h *Handler) listProjectApprovedContracts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	items, err := h.service.ListApprovedContracts(c.Request.Context(), principal(c), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	result := make([]projectApprovedContract, 0, len(items))
+	for _, item := range items {
+		result = append(result, projectApprovedContractView(item))
+	}
+	writeData(c, http.StatusOK, result)
+}
+
 func (h *Handler) getProjectApprovedContract(c *gin.Context) {
 	item, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.approved.read")
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusOK, map[string]any{
-		"id": item.ID, "contract_number": item.Number, "title": item.Title,
-		"customer_id": strconv.FormatUint(item.CRMCustomerID, 10), "customer_name": item.CustomerName,
-		"version": item.Version, "status": item.Status, "approval_passed": item.Status.ApprovalPassed(),
-	})
+	writeData(c, http.StatusOK, projectApprovedContractView(item))
 }
 
 func (h *Handler) submitApproval(c *gin.Context) {
