@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/oklog/ulid/v2"
 )
@@ -235,6 +236,37 @@ func TestSettlementCompletedContractsRequiresBearer(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("missing settlement bearer status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestProjectApprovedContractsRequireMachineBearer(t *testing.T) {
+	router := NewRouterWithIntegrations(nil, nil, nil, nil, &ProjectIntegrationOptions{
+		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{tenantID: "tenant-1"},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/internal/v1/project/approved-contracts", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("missing project bearer status = %d, want %d; body = %s", response.Code, http.StatusUnauthorized, response.Body.String())
+	}
+}
+
+func TestProjectApprovedContractViewExposesOnlyProjectSummary(t *testing.T) {
+	item := contract.Contract{
+		ID: "C-1", Number: "HT-1", Title: "技术服务", CRMCustomerID: 8, CustomerName: "客户",
+		Version: 2, Status: contract.StatusApproved, Content: "不得暴露的合同正文", Document: []byte("document"),
+	}
+	view := projectApprovedContractView(item)
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	if view.CustomerID != "8" || !view.ApprovalPassed || !strings.Contains(body, `"contract_number":"HT-1"`) {
+		t.Fatalf("view=%+v body=%s", view, body)
+	}
+	if strings.Contains(body, "不得暴露") || strings.Contains(body, "document") {
+		t.Fatalf("internal endpoint leaked contract body: %s", body)
 	}
 }
 
