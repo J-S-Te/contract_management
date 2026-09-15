@@ -129,6 +129,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	var projectApprovalBearer platform.ClientCredentialsTokenVerifier
+	if cfg.ProjectApprovalMachineEnabled {
+		projectApprovalBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
+			Issuer: cfg.ProjectApprovalMachineIssuer, Audience: cfg.ProjectApprovalMachineAudience,
+			PublicKeyPath: cfg.ProjectApprovalMachinePublicKeyPath, ClientID: cfg.ProjectApprovalMachineClientID,
+			TenantID: cfg.OIDCTenantID, CallerApplicationCode: cfg.ProjectApprovalMachineCallerApp,
+			CallerEnvironmentCode: cfg.ProjectApprovalMachineCallerEnv, RequiredScope: cfg.ProjectApprovalMachineScope,
+		})
+		if err != nil {
+			logger.Error("initialize project approval bearer verifier", "error", err)
+			os.Exit(1)
+		}
+	}
 	auditReporter := platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
@@ -154,9 +167,10 @@ func main() {
 	}
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
-		Handler: httpapi.NewRouterWithSettlement(service, identity,
+		Handler: httpapi.NewRouterWithIntegrations(service, identity,
 			&httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer},
-			&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer}, auditReporter),
+			&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer},
+			&httpapi.ProjectIntegrationOptions{Enabled: cfg.ProjectApprovalMachineEnabled, RequireBearer: cfg.ProjectApprovalMachineRequireBearer, BearerVerifier: projectApprovalBearer}, auditReporter),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

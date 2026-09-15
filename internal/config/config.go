@@ -28,54 +28,63 @@ type Config struct {
 	DashboardMachineCallerEnv     string
 	DashboardMachineScope         string
 	// SettlementMachine* 结算系统读取已完成合同的机器接入配置。
-	SettlementMachineEnabled       bool
-	SettlementMachineRequireBearer bool
-	SettlementMachineClientID      string
-	SettlementMachineAudience      string
-	OIDCClientSecret               string
-	OIDCRedirectURI                string
-	OIDCPostLogoutRedirectURI      string
-	OIDCIDPHint                    string
-	OIDCScopes                     []string
-	OIDCTenantID                   string
-	OIDCSessionCookieName          string
-	OIDCSessionTTL                 time.Duration
-	OIDCAuthorizationRefresh       time.Duration
-	OIDCAuthorizationTimeout       time.Duration
-	OIDCAuthorizationMaxStale      time.Duration
-	OIDCSessionEncryptionKey       []byte
-	OIDCSessionSecure              bool
-	AppPublicURL                   string
-	AppPathPrefix                  string
-	PlatformAuditClientID          string
-	PlatformAuditClientSecret      string
-	PlatformApplicationCode        string
-	PlatformEnvironmentCode        string
-	PlatformApplicationID          string
-	PlatformCatalogSync            bool
-	PlatformCatalogClientID        string
-	PlatformCatalogSecret          string
-	PlatformPersonnelClientID      string
-	PlatformPersonnelSecret        string
-	PlatformNotificationClientID   string
-	PlatformNotificationSecret     string
-	TemporalAddress                string
-	TemporalNamespace              string
-	TemporalTaskQueue              string
-	TemporalWorkerBuildID          string
-	TemporalWorkerDeploymentName   string
-	TemporalWorkerVersioning       bool
-	TemporalWorkerVersioningPolicy string
-	TemporalMetricsAddress         string
-	TemporalAPIKey                 string
-	TemporalTLS                    bool
-	NodeTimeout                    time.Duration
-	ReminderInterval               time.Duration
-	ArchiveCron                    string
-	ProjectIntegrationEnabled      bool
-	ProjectAPIBaseURL              string
-	ProjectIntegrationPoll         time.Duration
-	ProjectIntegrationRetries      uint
+	SettlementMachineEnabled            bool
+	SettlementMachineRequireBearer      bool
+	SettlementMachineClientID           string
+	SettlementMachineAudience           string
+	ProjectApprovalMachineEnabled       bool
+	ProjectApprovalMachineRequireBearer bool
+	ProjectApprovalMachineClientID      string
+	ProjectApprovalMachineAudience      string
+	ProjectApprovalMachineIssuer        string
+	ProjectApprovalMachinePublicKeyPath string
+	ProjectApprovalMachineCallerApp     string
+	ProjectApprovalMachineCallerEnv     string
+	ProjectApprovalMachineScope         string
+	OIDCClientSecret                    string
+	OIDCRedirectURI                     string
+	OIDCPostLogoutRedirectURI           string
+	OIDCIDPHint                         string
+	OIDCScopes                          []string
+	OIDCTenantID                        string
+	OIDCSessionCookieName               string
+	OIDCSessionTTL                      time.Duration
+	OIDCAuthorizationRefresh            time.Duration
+	OIDCAuthorizationTimeout            time.Duration
+	OIDCAuthorizationMaxStale           time.Duration
+	OIDCSessionEncryptionKey            []byte
+	OIDCSessionSecure                   bool
+	AppPublicURL                        string
+	AppPathPrefix                       string
+	PlatformAuditClientID               string
+	PlatformAuditClientSecret           string
+	PlatformApplicationCode             string
+	PlatformEnvironmentCode             string
+	PlatformApplicationID               string
+	PlatformCatalogSync                 bool
+	PlatformCatalogClientID             string
+	PlatformCatalogSecret               string
+	PlatformPersonnelClientID           string
+	PlatformPersonnelSecret             string
+	PlatformNotificationClientID        string
+	PlatformNotificationSecret          string
+	TemporalAddress                     string
+	TemporalNamespace                   string
+	TemporalTaskQueue                   string
+	TemporalWorkerBuildID               string
+	TemporalWorkerDeploymentName        string
+	TemporalWorkerVersioning            bool
+	TemporalWorkerVersioningPolicy      string
+	TemporalMetricsAddress              string
+	TemporalAPIKey                      string
+	TemporalTLS                         bool
+	NodeTimeout                         time.Duration
+	ReminderInterval                    time.Duration
+	ArchiveCron                         string
+	ProjectIntegrationEnabled           bool
+	ProjectAPIBaseURL                   string
+	ProjectIntegrationPoll              time.Duration
+	ProjectIntegrationRetries           uint
 	// H4：内部投递机器令牌（项目侧来源校验强制开启后必配）。
 	ProjectIntegrationTokenURL     string
 	ProjectIntegrationClientID     string
@@ -94,21 +103,30 @@ func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
 		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
-		OIDCBackchannelBaseURL:         os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
-		DashboardMachineEnabled:        envBool("DASHBOARD_MACHINE_ENABLED", false),
-		DashboardMachineRequireBearer:  envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
-		DashboardMachineClientID:       os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
-		DashboardMachineAudience:       os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
-		DashboardMachineIssuer:         os.Getenv("DASHBOARD_MACHINE_ISSUER"),
-		DashboardMachinePublicKeyPath:  os.Getenv("DASHBOARD_MACHINE_PUBLIC_KEY_PATH"),
-		DashboardMachineCallerApp:      os.Getenv("DASHBOARD_MACHINE_CALLER_APPLICATION_CODE"),
-		DashboardMachineCallerEnv:      os.Getenv("DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE"),
-		DashboardMachineScope:          os.Getenv("DASHBOARD_MACHINE_REQUIRED_SCOPE"),
-		SettlementMachineEnabled:       envBool("SETTLEMENT_MACHINE_ENABLED", false),
-		SettlementMachineRequireBearer: envBool("SETTLEMENT_MACHINE_REQUIRE_BEARER", false),
-		SettlementMachineClientID:      os.Getenv("SETTLEMENT_MACHINE_CLIENT_ID"),
-		SettlementMachineAudience:      os.Getenv("SETTLEMENT_MACHINE_AUDIENCE"),
-		OIDCClientSecret:               os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
+		OIDCBackchannelBaseURL:              os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
+		DashboardMachineEnabled:             envBool("DASHBOARD_MACHINE_ENABLED", false),
+		DashboardMachineRequireBearer:       envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
+		DashboardMachineClientID:            os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
+		DashboardMachineAudience:            os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
+		DashboardMachineIssuer:              os.Getenv("DASHBOARD_MACHINE_ISSUER"),
+		DashboardMachinePublicKeyPath:       os.Getenv("DASHBOARD_MACHINE_PUBLIC_KEY_PATH"),
+		DashboardMachineCallerApp:           os.Getenv("DASHBOARD_MACHINE_CALLER_APPLICATION_CODE"),
+		DashboardMachineCallerEnv:           os.Getenv("DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		DashboardMachineScope:               os.Getenv("DASHBOARD_MACHINE_REQUIRED_SCOPE"),
+		SettlementMachineEnabled:            envBool("SETTLEMENT_MACHINE_ENABLED", false),
+		SettlementMachineRequireBearer:      envBool("SETTLEMENT_MACHINE_REQUIRE_BEARER", false),
+		SettlementMachineClientID:           os.Getenv("SETTLEMENT_MACHINE_CLIENT_ID"),
+		SettlementMachineAudience:           os.Getenv("SETTLEMENT_MACHINE_AUDIENCE"),
+		ProjectApprovalMachineEnabled:       envBool("PROJECT_APPROVAL_MACHINE_ENABLED", false),
+		ProjectApprovalMachineRequireBearer: envBool("PROJECT_APPROVAL_MACHINE_REQUIRE_BEARER", false),
+		ProjectApprovalMachineClientID:      os.Getenv("PROJECT_APPROVAL_MACHINE_CLIENT_ID"),
+		ProjectApprovalMachineAudience:      os.Getenv("PROJECT_APPROVAL_MACHINE_AUDIENCE"),
+		ProjectApprovalMachineIssuer:        os.Getenv("PROJECT_APPROVAL_MACHINE_ISSUER"),
+		ProjectApprovalMachinePublicKeyPath: os.Getenv("PROJECT_APPROVAL_MACHINE_PUBLIC_KEY_PATH"),
+		ProjectApprovalMachineCallerApp:     os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_APPLICATION_CODE"),
+		ProjectApprovalMachineCallerEnv:     os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		ProjectApprovalMachineScope:         os.Getenv("PROJECT_APPROVAL_MACHINE_REQUIRED_SCOPE"),
+		OIDCClientSecret:                    os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
@@ -231,6 +249,24 @@ func (c Config) validate() error {
 	}
 	if c.ProjectIntegrationPoll <= 0 {
 		return fmt.Errorf("PROJECT_INTEGRATION_POLL_INTERVAL must be positive")
+	}
+	if c.ProjectApprovalMachineEnabled {
+		if !c.ProjectApprovalMachineRequireBearer {
+			return fmt.Errorf("PROJECT_APPROVAL_MACHINE_REQUIRE_BEARER must be true when project approval integration is enabled")
+		}
+		for name, value := range map[string]string{
+			"PROJECT_APPROVAL_MACHINE_CLIENT_ID":               c.ProjectApprovalMachineClientID,
+			"PROJECT_APPROVAL_MACHINE_AUDIENCE":                c.ProjectApprovalMachineAudience,
+			"PROJECT_APPROVAL_MACHINE_ISSUER":                  c.ProjectApprovalMachineIssuer,
+			"PROJECT_APPROVAL_MACHINE_PUBLIC_KEY_PATH":         c.ProjectApprovalMachinePublicKeyPath,
+			"PROJECT_APPROVAL_MACHINE_CALLER_APPLICATION_CODE": c.ProjectApprovalMachineCallerApp,
+			"PROJECT_APPROVAL_MACHINE_CALLER_ENVIRONMENT_CODE": c.ProjectApprovalMachineCallerEnv,
+			"PROJECT_APPROVAL_MACHINE_REQUIRED_SCOPE":          c.ProjectApprovalMachineScope,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when project approval integration is enabled", name)
+			}
+		}
 	}
 	platformURL, err := url.ParseRequestURI(c.PlatformBaseURL)
 	if err != nil || (platformURL.Scheme != "http" && platformURL.Scheme != "https") ||
