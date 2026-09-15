@@ -22,8 +22,8 @@ func allowSelfScope(permission string) map[string]contract.ScopeFilter {
 	return map[string]contract.ScopeFilter{permission: {AllowSelf: true}}
 }
 
-func TestCountPendingProjectContractsUsesAuthorizedTenantScope(t *testing.T) {
-	repository := &recordingRepository{pendingProjectCount: 7}
+func TestListApprovedContractReferencesUsesStableCursorAndAuthorizedTenant(t *testing.T) {
+	repository := &recordingRepository{approvedContractReferences: []contract.Contract{{ID: "C-2", Number: "HT-2", Version: 3}}}
 	service := &Service{Repo: repository}
 	actor := Principal{
 		TenantID:         "tenant-1",
@@ -31,32 +31,37 @@ func TestCountPendingProjectContractsUsesAuthorizedTenantScope(t *testing.T) {
 		PermissionScopes: allowAllScope("contract.approved.read"),
 	}
 
-	count, err := service.CountPendingProjectContracts(context.Background(), actor)
+	references, err := service.ListApprovedContractReferences(context.Background(), actor, "C-1", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 7 || repository.pendingProjectCountTenant != "tenant-1" {
-		t.Fatalf("count=%d tenant=%q, want 7 for tenant-1", count, repository.pendingProjectCountTenant)
+	if len(references) != 1 || references[0].ID != "C-2" {
+		t.Fatalf("references=%+v", references)
+	}
+	if repository.approvedReferenceTenant != "tenant-1" || repository.approvedReferenceAfter != "C-1" || repository.approvedReferenceLimit != 500 {
+		t.Fatalf("tenant=%q after=%q limit=%d", repository.approvedReferenceTenant, repository.approvedReferenceAfter, repository.approvedReferenceLimit)
 	}
 
 	actor.Permissions = map[string]bool{}
-	if _, err := service.CountPendingProjectContracts(context.Background(), actor); !errors.Is(err, ErrForbidden) {
+	if _, err := service.ListApprovedContractReferences(context.Background(), actor, "", 500); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("missing permission error=%v, want ErrForbidden", err)
 	}
 }
 
 type recordingRepository struct {
-	ownerUserID               string
-	contract                  contract.Contract
-	created                   contract.Contract
-	approvalMeta              approval.Meta
-	actions                   []approval.Action
-	lifecycle                 []contract.LifecycleEvent
-	dashboard                 contract.Dashboard
-	dashboardTenantID         string
-	dashboardOwnerUserID      string
-	pendingProjectCount       int64
-	pendingProjectCountTenant string
+	ownerUserID                string
+	contract                   contract.Contract
+	created                    contract.Contract
+	approvalMeta               approval.Meta
+	actions                    []approval.Action
+	lifecycle                  []contract.LifecycleEvent
+	dashboard                  contract.Dashboard
+	dashboardTenantID          string
+	dashboardOwnerUserID       string
+	approvedContractReferences []contract.Contract
+	approvedReferenceTenant    string
+	approvedReferenceAfter     string
+	approvedReferenceLimit     int
 }
 
 type personnelStub struct {
@@ -79,9 +84,11 @@ func (r *recordingRepository) ListContracts(_ context.Context, _, _, ownerUserID
 func (r *recordingRepository) ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error) {
 	return nil, nil
 }
-func (r *recordingRepository) CountPendingProjectContracts(_ context.Context, tenantID string) (int64, error) {
-	r.pendingProjectCountTenant = tenantID
-	return r.pendingProjectCount, nil
+func (r *recordingRepository) ListApprovedContractReferences(_ context.Context, tenantID, afterID string, limit int) ([]contract.Contract, error) {
+	r.approvedReferenceTenant = tenantID
+	r.approvedReferenceAfter = afterID
+	r.approvedReferenceLimit = limit
+	return r.approvedContractReferences, nil
 }
 func (r *recordingRepository) SaveStampedDocument(context.Context, string, contract.StampedDocument) error {
 	return nil
