@@ -140,6 +140,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal := r.Group("/internal/v1/project")
 		internal.Use(h.authenticateServiceIntegration(*projectOptions, "项目管理系统"))
 		internal.GET("/approved-contracts", h.listProjectApprovedContracts)
+		internal.GET("/pending-projects/count", h.countPendingProjects)
 		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
 	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
@@ -910,6 +911,15 @@ func (h *Handler) listProjectApprovedContracts(c *gin.Context) {
 		result = append(result, projectApprovedContractView(item))
 	}
 	writeData(c, http.StatusOK, result)
+}
+
+func (h *Handler) countPendingProjects(c *gin.Context) {
+	count, err := h.service.CountPendingProjectContracts(c.Request.Context(), principal(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]int64{"count": count})
 }
 
 func (h *Handler) getProjectApprovedContract(c *gin.Context) {
