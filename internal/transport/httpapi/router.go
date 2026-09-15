@@ -140,7 +140,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal := r.Group("/internal/v1/project")
 		internal.Use(h.authenticateServiceIntegration(*projectOptions, "项目管理系统"))
 		internal.GET("/approved-contracts", h.listProjectApprovedContracts)
-		internal.GET("/pending-projects/count", h.countPendingProjects)
+		internal.GET("/approved-contract-references", h.listProjectApprovedContractReferences)
 		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
 	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
@@ -913,13 +913,25 @@ func (h *Handler) listProjectApprovedContracts(c *gin.Context) {
 	writeData(c, http.StatusOK, result)
 }
 
-func (h *Handler) countPendingProjects(c *gin.Context) {
-	count, err := h.service.CountPendingProjectContracts(c.Request.Context(), principal(c))
+func (h *Handler) listProjectApprovedContractReferences(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	contracts, err := h.service.ListApprovedContractReferences(c.Request.Context(), principal(c), strings.TrimSpace(c.Query("after_id")), limit)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusOK, map[string]int64{"count": count})
+	nextAfterID := ""
+	if len(contracts) == limit {
+		nextAfterID = contracts[len(contracts)-1].ID
+	}
+	references := make([]gin.H, 0, len(contracts))
+	for _, item := range contracts {
+		references = append(references, gin.H{"id": item.ID, "contract_number": item.Number, "version": item.Version})
+	}
+	writeData(c, http.StatusOK, gin.H{"contracts": references, "next_after_id": nextAfterID})
 }
 
 func (h *Handler) getProjectApprovedContract(c *gin.Context) {

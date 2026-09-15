@@ -245,7 +245,7 @@ func TestProjectApprovedContractsRequireMachineBearer(t *testing.T) {
 	})
 	for _, path := range []string{
 		"/internal/v1/project/approved-contracts",
-		"/internal/v1/project/pending-projects/count",
+		"/internal/v1/project/approved-contract-references",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()

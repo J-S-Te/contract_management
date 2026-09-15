@@ -64,7 +64,7 @@ type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, string, int) ([]contract.Contract, error)
 	ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error)
-	CountPendingProjectContracts(context.Context, string) (int64, error)
+	ListApprovedContractReferences(context.Context, string, string, int) ([]contract.Contract, error)
 	SaveStampedDocument(context.Context, string, contract.StampedDocument) error
 	GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error)
 	ListSigningRecords(context.Context, string, int) ([]contract.SigningRecord, error)
@@ -96,7 +96,7 @@ type ScopedRepository interface {
 	GetContractScoped(context.Context, contract.ScopeFilter, string) (contract.Contract, error)
 	ListContractsScoped(context.Context, contract.ScopeFilter, string, string, int) ([]contract.Contract, error)
 	ListApprovedContractsScoped(context.Context, contract.ScopeFilter, int) ([]contract.Contract, error)
-	CountPendingProjectContractsScoped(context.Context, contract.ScopeFilter) (int64, error)
+	ListApprovedContractReferencesScoped(context.Context, contract.ScopeFilter, string, int) ([]contract.Contract, error)
 	ListSigningRecordsScoped(context.Context, contract.ScopeFilter, int) ([]contract.SigningRecord, error)
 	GetSigningRecordScoped(context.Context, contract.ScopeFilter, string) (contract.SigningRecord, error)
 	ContractDashboardScoped(context.Context, contract.ScopeFilter, time.Time, int) (contract.Dashboard, error)
@@ -145,23 +145,22 @@ func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, li
 	return filterContracts(items, filter), err
 }
 
-// CountPendingProjectContracts returns contracts whose approval flow has
-// completed but whose durable project-delivery message has not been
-// acknowledged. The delivery acknowledgement is authoritative: counting all
-// projects in another database would incorrectly subtract manually created or
-// legacy projects that did not originate from Contract Management.
-func (s *Service) CountPendingProjectContracts(ctx context.Context, actor Principal) (int64, error) {
+// ListApprovedContractReferences is a stable, ID-ordered integration feed used to
+// reconcile Contract Management with projects already persisted in Project
+// Management. A cursor avoids the 200-row UI-list cap and keeps each cross-
+// service request bounded.
+func (s *Service) ListApprovedContractReferences(ctx context.Context, actor Principal, afterID string, limit int) ([]contract.Contract, error) {
 	filter, ok := s.contractScope(actor, "contract.approved.read")
 	if !ok {
-		return 0, ErrForbidden
+		return nil, ErrForbidden
 	}
 	if scoped, ok := s.Repo.(ScopedRepository); ok {
-		return scoped.CountPendingProjectContractsScoped(ctx, filter)
+		return scoped.ListApprovedContractReferencesScoped(ctx, filter, afterID, limit)
 	}
 	if !filter.AllowAll {
-		return 0, ErrForbidden
+		return nil, ErrForbidden
 	}
-	return s.Repo.CountPendingProjectContracts(ctx, actor.TenantID)
+	return s.Repo.ListApprovedContractReferences(ctx, actor.TenantID, afterID, limit)
 }
 
 func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, permission string) (contract.Contract, error) {
