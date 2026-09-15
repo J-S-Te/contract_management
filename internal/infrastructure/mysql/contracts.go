@@ -31,6 +31,15 @@ func (r *Repository) ListApprovedContracts(ctx context.Context, tenantID string,
 	return result, nil
 }
 
+func (r *Repository) CountPendingProjectContracts(ctx context.Context, tenantID string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&contractRecord{}).
+		Where("tenant_id = ? AND status IN ?", tenantID, contract.ApprovalPassedStatuses()).
+		Where("NOT EXISTS (SELECT 1 FROM con_project_delivery_outbox AS delivery WHERE delivery.tenant_id = con_contract.tenant_id AND delivery.contract_id = con_contract.id AND delivery.delivery_status = ?)", "delivered").
+		Count(&count).Error
+	return count, err
+}
+
 func (r *Repository) ListApprovedContractsScoped(ctx context.Context, filter contract.ScopeFilter, limit int) ([]contract.Contract, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -46,6 +55,15 @@ func (r *Repository) ListApprovedContractsScoped(ctx context.Context, filter con
 		result = append(result, contractFromRecord(record))
 	}
 	return result, nil
+}
+
+func (r *Repository) CountPendingProjectContractsScoped(ctx context.Context, filter contract.ScopeFilter) (int64, error) {
+	var count int64
+	err := applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter).
+		Where("status IN ?", contract.ApprovalPassedStatuses()).
+		Where("NOT EXISTS (SELECT 1 FROM con_project_delivery_outbox AS delivery WHERE delivery.tenant_id = con_contract.tenant_id AND delivery.contract_id = con_contract.id AND delivery.delivery_status = ?)", "delivered").
+		Count(&count).Error
+	return count, err
 }
 
 func (r *Repository) SaveStampedDocument(ctx context.Context, tenantID string, document contract.StampedDocument) error {

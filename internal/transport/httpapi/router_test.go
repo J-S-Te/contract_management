@@ -243,11 +243,16 @@ func TestProjectApprovedContractsRequireMachineBearer(t *testing.T) {
 	router := NewRouterWithIntegrations(nil, nil, nil, nil, &ProjectIntegrationOptions{
 		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{tenantID: "tenant-1"},
 	})
-	request := httptest.NewRequest(http.MethodGet, "/internal/v1/project/approved-contracts", nil)
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("missing project bearer status = %d, want %d; body = %s", response.Code, http.StatusUnauthorized, response.Body.String())
+	for _, path := range []string{
+		"/internal/v1/project/approved-contracts",
+		"/internal/v1/project/pending-projects/count",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("missing project bearer for %s status = %d, want %d; body = %s", path, response.Code, http.StatusUnauthorized, response.Body.String())
+		}
 	}
 }
 

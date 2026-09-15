@@ -22,16 +22,41 @@ func allowSelfScope(permission string) map[string]contract.ScopeFilter {
 	return map[string]contract.ScopeFilter{permission: {AllowSelf: true}}
 }
 
+func TestCountPendingProjectContractsUsesAuthorizedTenantScope(t *testing.T) {
+	repository := &recordingRepository{pendingProjectCount: 7}
+	service := &Service{Repo: repository}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		Permissions:      map[string]bool{"contract.approved.read": true},
+		PermissionScopes: allowAllScope("contract.approved.read"),
+	}
+
+	count, err := service.CountPendingProjectContracts(context.Background(), actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 7 || repository.pendingProjectCountTenant != "tenant-1" {
+		t.Fatalf("count=%d tenant=%q, want 7 for tenant-1", count, repository.pendingProjectCountTenant)
+	}
+
+	actor.Permissions = map[string]bool{}
+	if _, err := service.CountPendingProjectContracts(context.Background(), actor); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("missing permission error=%v, want ErrForbidden", err)
+	}
+}
+
 type recordingRepository struct {
-	ownerUserID          string
-	contract             contract.Contract
-	created              contract.Contract
-	approvalMeta         approval.Meta
-	actions              []approval.Action
-	lifecycle            []contract.LifecycleEvent
-	dashboard            contract.Dashboard
-	dashboardTenantID    string
-	dashboardOwnerUserID string
+	ownerUserID               string
+	contract                  contract.Contract
+	created                   contract.Contract
+	approvalMeta              approval.Meta
+	actions                   []approval.Action
+	lifecycle                 []contract.LifecycleEvent
+	dashboard                 contract.Dashboard
+	dashboardTenantID         string
+	dashboardOwnerUserID      string
+	pendingProjectCount       int64
+	pendingProjectCountTenant string
 }
 
 type personnelStub struct {
@@ -53,6 +78,10 @@ func (r *recordingRepository) ListContracts(_ context.Context, _, _, ownerUserID
 }
 func (r *recordingRepository) ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error) {
 	return nil, nil
+}
+func (r *recordingRepository) CountPendingProjectContracts(_ context.Context, tenantID string) (int64, error) {
+	r.pendingProjectCountTenant = tenantID
+	return r.pendingProjectCount, nil
 }
 func (r *recordingRepository) SaveStampedDocument(context.Context, string, contract.StampedDocument) error {
 	return nil
