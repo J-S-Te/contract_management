@@ -189,7 +189,9 @@ func Load() (Config, error) {
 	if c.TemporalTLS, err = strconv.ParseBool(env("TEMPORAL_TLS", "false")); err != nil {
 		return c, fmt.Errorf("TEMPORAL_TLS: %w", err)
 	}
-	if c.TemporalWorkerVersioning, err = strconv.ParseBool(env("TEMPORAL_WORKER_VERSIONING_ENABLED", "true")); err != nil {
+	// Deployment Versioning 必须在注册并提升 Current 版本后显式开启。默认关闭可
+	// 保证升级前创建的 UNVERSIONED 长工作流仍有兼容 Worker 消费。
+	if c.TemporalWorkerVersioning, err = strconv.ParseBool(env("TEMPORAL_WORKER_VERSIONING_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("TEMPORAL_WORKER_VERSIONING_ENABLED: %w", err)
 	}
 	if c.PlatformCatalogSync, err = strconv.ParseBool(env("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "false")); err != nil {
