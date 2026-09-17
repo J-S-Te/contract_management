@@ -582,7 +582,24 @@ func (a *OIDCAuthenticator) publicPath(path string) string {
 
 func (a *OIDCAuthenticator) writeCallbackError(writer http.ResponseWriter, request *http.Request, stage string, status int, cause error) {
 	slog.ErrorContext(request.Context(), "contract OIDC callback failed", "stage", stage, "issuer", a.options.Issuer, "client_id", a.options.ClientID, "environment", a.options.EnvironmentCode, "error", cause)
-	http.Error(writer, http.StatusText(status), status)
+	// 失败时不能再返回 plain text "Unauthorized/Forbidden"：用户卡在地址栏里看不到任何可操作信息。
+	// 跳到平台顶层 /access-error 错误页，由前端 SubsystemAccessErrorView 渲染：
+	// - 必须用相对路径让浏览器继续走同一个会话，避免跳出当前 origin；
+	// - 必须不带子系统路径前缀（/contract_management/...），否则会触发路由守卫再次要求合同会话，
+	//   形成死循环；/access-error 是平台共享路由，不需要子系统会话。
+	// - 把 stage / status / request_id / from 全部塞进 query，便于前端展示 + 后端按 stage 定位。
+	// - 302 Found 让浏览器 GET 重定向（POST 切到 GET 也安全）。
+	query := url.Values{}
+	query.Set("reason", "callback_failed")
+	query.Set("stage", stage)
+	query.Set("code", fmt.Sprintf("%d", status))
+	if raw := request.URL.Path; raw != "" {
+		query.Set("from", raw)
+	}
+	if requestID := strings.TrimSpace(request.Header.Get("X-Request-ID")); requestID != "" {
+		query.Set("request_id", requestID)
+	}
+	http.Redirect(writer, request, "/access-error?"+query.Encode(), http.StatusFound)
 }
 
 func refreshTokenWasRejected(err error) bool {

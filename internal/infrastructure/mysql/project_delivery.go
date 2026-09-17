@@ -23,20 +23,10 @@ type projectActivationPayload struct {
 	Customer        string `json:"customer"`
 	// CustomerID 是合同上的 CRM 客户标识；项目系统据此按客户聚合与对账，
 	// 不再依赖客户名称的字符串匹配。未从商机带出客户时为空。
-	CustomerID              string                     `json:"customer_id,omitempty"`
-	EffectiveAt             time.Time                  `json:"effective_at"`
-	StampedContractUploaded bool                       `json:"stamped_contract_uploaded"`
-	Services                []projectActivationService `json:"services"`
-}
-type projectActivationService struct {
-	SourceID    string `json:"source_id"`
-	Name        string `json:"name"`
-	Site        string `json:"site"`
-	Batch       string `json:"batch"`
-	Category    string `json:"category"`
-	System      string `json:"system"`
-	Requirement string `json:"requirement"`
-	TestMode    string `json:"test_mode"`
+	CustomerID              string                        `json:"customer_id,omitempty"`
+	EffectiveAt             time.Time                     `json:"effective_at"`
+	StampedContractUploaded bool                          `json:"stamped_contract_uploaded"`
+	Services                []contract.ProjectServiceItem `json:"services"`
 }
 
 type projectDeliveryCandidate struct {
@@ -144,30 +134,7 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	if err := json.Unmarshal(row.ServiceItemsJSON, &items); err != nil {
 		return fmt.Errorf("decode service items for project delivery: %w", err)
 	}
-	services := make([]projectActivationService, 0)
-	for itemIndex, item := range items {
-		systems := item.Systems
-		if len(systems) == 0 {
-			systems = []contract.SystemInfo{{}}
-		}
-		for systemIndex, system := range systems {
-			sourceID := strings.TrimSpace(item.SourceID)
-			if sourceID == "" {
-				sourceID = fmt.Sprintf("%s-%02d", contractID, itemIndex+1)
-			}
-			if len(systems) > 1 {
-				sourceID = fmt.Sprintf("%s-%02d", sourceID, systemIndex+1)
-			}
-			mode := strings.ToUpper(strings.TrimSpace(item.TestMode))
-			if mode == "" {
-				mode = "STANDARD"
-				if strings.Contains(item.ServiceType, "渗透") || strings.Contains(strings.ToLower(item.ServiceType), "penetration") {
-					mode = "PENETRATION"
-				}
-			}
-			services = append(services, projectActivationService{SourceID: sourceID, Name: firstProjectValue(item.Name, item.ServiceType), Site: firstProjectValue(item.Site, "默认场所"), Batch: firstProjectValue(item.Batch, "默认批次"), Category: firstProjectValue(item.Category, item.ServiceType), System: system.Name, Requirement: item.Requirement, TestMode: mode})
-		}
-	}
+	services := contract.ProjectServiceItems(contractID, items)
 	effectiveAt := time.Now().UTC()
 	if row.StartDate != nil {
 		effectiveAt = row.StartDate.UTC()
