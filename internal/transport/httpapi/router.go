@@ -142,6 +142,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal.GET("/approved-contracts", h.listProjectApprovedContracts)
 		internal.GET("/approved-contract-references", h.listProjectApprovedContractReferences)
 		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
+		internal.GET("/approved-contracts/:contractID/service-items", h.getProjectApprovedContractServiceItems)
 	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
@@ -941,6 +942,22 @@ func (h *Handler) getProjectApprovedContract(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, projectApprovedContractView(item))
+}
+
+// getProjectApprovedContractServiceItems exposes only the structured service
+// scope required to create a project. Contract text, prices, contacts and files
+// remain outside the Project Management integration boundary.
+func (h *Handler) getProjectApprovedContractServiceItems(c *gin.Context) {
+	item, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.approved.read")
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, gin.H{
+		"contract_id":      item.ID,
+		"contract_version": item.Version,
+		"service_items":    contract.ProjectServiceItems(item.ID, item.ServiceItems),
+	})
 }
 
 func (h *Handler) submitApproval(c *gin.Context) {

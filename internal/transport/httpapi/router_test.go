@@ -246,6 +246,7 @@ func TestProjectApprovedContractsRequireMachineBearer(t *testing.T) {
 	for _, path := range []string{
 		"/internal/v1/project/approved-contracts",
 		"/internal/v1/project/approved-contract-references",
+		"/internal/v1/project/approved-contracts/C-1/service-items",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
@@ -272,6 +273,30 @@ func TestProjectApprovedContractViewExposesOnlyProjectSummary(t *testing.T) {
 	}
 	if strings.Contains(body, "不得暴露") || strings.Contains(body, "document") {
 		t.Fatalf("internal endpoint leaked contract body: %s", body)
+	}
+}
+
+func TestProjectApprovedContractServiceItemsExposeOnlyStructuredScope(t *testing.T) {
+	item := contract.Contract{
+		ID: "C-1", Number: "HT-1", Title: "技术服务", CRMCustomerID: 8, CustomerName: "客户",
+		Version: 2, Status: contract.StatusApproved, Content: "不得暴露的合同正文", Document: []byte("document"),
+		ServiceItems: []contract.ServiceItem{{
+			SourceID: "SVC-1", Name: "等级保护测评", ServiceType: "等保测评", Site: "杭州机房", Batch: "第一批",
+			Category: "等保测评", Requirement: "按三级要求实施", TestMode: "STANDARD",
+			Systems: []contract.SystemInfo{{Name: "核心交易系统", Level: "三级"}},
+		}},
+	}
+	services := contract.ProjectServiceItems(item.ID, item.ServiceItems)
+	encoded, err := json.Marshal(services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	if len(services) != 1 || services[0].SourceID != "SVC-1" || services[0].SystemLevel != "三级" || !strings.Contains(body, `"category":"等保测评"`) {
+		t.Fatalf("services=%+v body=%s", services, body)
+	}
+	if strings.Contains(body, "不得暴露") || strings.Contains(body, "document") || strings.Contains(body, "amount_minor") {
+		t.Fatalf("project service projection leaked contract data: %s", body)
 	}
 }
 
