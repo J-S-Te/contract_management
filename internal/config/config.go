@@ -90,6 +90,12 @@ type Config struct {
 	ProjectIntegrationClientID     string
 	ProjectIntegrationClientSecret string
 	ProjectIntegrationAudience     string
+	CRMReferenceEnabled            bool
+	CRMReferenceBaseURL            string
+	CRMReferenceTokenURL           string
+	CRMReferenceClientID           string
+	CRMReferenceClientSecret       string
+	CRMReferenceScope              string
 	// StampedFile* 控制盖章 PDF 到平台文件网关的渐进迁移；默认 legacy 保留旧 BLOB。
 	StampedFileMode          string
 	StampedFileGatewayURL    string
@@ -148,8 +154,11 @@ func Load() (Config, error) {
 		TemporalWorkerVersioningPolicy: strings.ToUpper(env("TEMPORAL_WORKER_VERSIONING_POLICY", "PINNED")),
 		TemporalMetricsAddress:         env("TEMPORAL_METRICS_ADDRESS", ":9091"),
 		TemporalAPIKey:                 os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
-		ProjectAPIBaseURL: env("PROJECT_API_BASE_URL", "http://localhost:8082"),
-		StampedFileMode:   env("STAMPED_FILE_GATEWAY_MODE", "legacy"), StampedFileGatewayURL: env("FILE_GATEWAY_BASE_URL", ""),
+		ProjectAPIBaseURL:    env("PROJECT_API_BASE_URL", "http://localhost:8082"),
+		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090")),
+		CRMReferenceTokenURL: os.Getenv("CRM_REFERENCE_TOKEN_URL"), CRMReferenceClientID: os.Getenv("CRM_REFERENCE_CLIENT_ID"),
+		CRMReferenceClientSecret: os.Getenv("CRM_REFERENCE_CLIENT_SECRET"), CRMReferenceScope: env("CRM_REFERENCE_SCOPE", "customer.contract_reference.read"),
+		StampedFileMode: env("STAMPED_FILE_GATEWAY_MODE", "legacy"), StampedFileGatewayURL: env("FILE_GATEWAY_BASE_URL", ""),
 		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload"),
 	}
 	var err error
@@ -212,6 +221,9 @@ func Load() (Config, error) {
 	c.ProjectIntegrationClientID = os.Getenv("PROJECT_INTEGRATION_CLIENT_ID")
 	c.ProjectIntegrationClientSecret = os.Getenv("PROJECT_INTEGRATION_CLIENT_SECRET")
 	c.ProjectIntegrationAudience = os.Getenv("PROJECT_INTEGRATION_AUDIENCE")
+	if c.CRMReferenceEnabled, err = strconv.ParseBool(env("CRM_REFERENCE_ENABLED", "false")); err != nil {
+		return c, fmt.Errorf("CRM_REFERENCE_ENABLED: %w", err)
+	}
 	if err := c.validate(); err != nil {
 		return c, err
 	}
@@ -251,6 +263,27 @@ func (c Config) validate() error {
 	}
 	if c.ProjectIntegrationPoll <= 0 {
 		return fmt.Errorf("PROJECT_INTEGRATION_POLL_INTERVAL must be positive")
+	}
+	if c.CRMReferenceEnabled {
+		if !validHTTPOrigin(c.CRMReferenceBaseURL) {
+			return fmt.Errorf("CRM_REFERENCE_BASE_URL must be an HTTP(S) origin")
+		}
+		for _, item := range []struct{ name, value string }{
+			{"CRM_REFERENCE_TOKEN_URL", c.CRMReferenceTokenURL},
+			{"CRM_REFERENCE_CLIENT_ID", c.CRMReferenceClientID},
+			{"CRM_REFERENCE_CLIENT_SECRET", c.CRMReferenceClientSecret},
+		} {
+			if strings.TrimSpace(item.value) == "" {
+				return fmt.Errorf("%s is required when CRM_REFERENCE_ENABLED=true", item.name)
+			}
+		}
+		tokenURL, tokenErr := url.ParseRequestURI(c.CRMReferenceTokenURL)
+		if tokenErr != nil || (tokenURL.Scheme != "http" && tokenURL.Scheme != "https") || tokenURL.Host == "" || tokenURL.User != nil || tokenURL.RawQuery != "" || tokenURL.Fragment != "" {
+			return fmt.Errorf("CRM_REFERENCE_TOKEN_URL must be a valid HTTP(S) URL without credentials, query or fragment")
+		}
+		if c.CRMReferenceScope != "customer.contract_reference.read" {
+			return fmt.Errorf("CRM_REFERENCE_SCOPE must be customer.contract_reference.read")
+		}
 	}
 	if c.ProjectApprovalMachineEnabled {
 		if !c.ProjectApprovalMachineRequireBearer {

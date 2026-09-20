@@ -17,7 +17,17 @@ import (
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 )
 
-const MaxTemplateSize = 10 << 20
+const (
+	MaxTemplateSize = 10 << 20
+	// MaxDocumentSize is shared by templates and externally authored contract
+	// documents. Keeping one hard limit prevents a valid upload from becoming
+	// impossible to preview or export later in the workflow.
+	MaxDocumentSize = MaxTemplateSize
+	maxExpandedSize = 50 << 20
+	maxArchiveFiles = 2048
+)
+
+const mainDocumentContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 
 var (
 	textNodePattern    = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
@@ -117,6 +127,33 @@ func PlainText(document []byte) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
+// ValidateExternalDocument performs the stricter package checks required for
+// an externally authored contract. Generic template helpers deliberately keep
+// accepting the small synthetic DOCX packages used by existing callers, while
+// this boundary requires Word's main-document content type as proof that the
+// ZIP is an OOXML word-processing document rather than an arbitrary archive.
+func ValidateExternalDocument(document []byte) error {
+	files, err := read(document)
+	if err != nil {
+		return err
+	}
+	var contentTypes struct {
+		Overrides []struct {
+			PartName    string `xml:"PartName,attr"`
+			ContentType string `xml:"ContentType,attr"`
+		} `xml:"Override"`
+	}
+	if err := xml.Unmarshal(files["[Content_Types].xml"], &contentTypes); err != nil {
+		return fmt.Errorf("invalid docx content types: %w", err)
+	}
+	for _, override := range contentTypes.Overrides {
+		if override.PartName == "/word/document.xml" && override.ContentType == mainDocumentContentType {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid docx: main Word document content type is missing")
+}
+
 func replacePlaceholders(xml string, values map[string]string) (string, error) {
 	visible, nodes := visibleText(xml)
 	matches := placeholderPattern.FindAllStringSubmatchIndex(visible, -1)
@@ -194,31 +231,57 @@ func locate(nodes []textNode, offset int, end bool) (int, int) {
 }
 
 func read(document []byte) (map[string][]byte, error) {
-	if len(document) == 0 || len(document) > MaxTemplateSize {
-		return nil, fmt.Errorf("docx size must be between 1 byte and %d bytes", MaxTemplateSize)
+	if len(document) == 0 || len(document) > MaxDocumentSize {
+		return nil, fmt.Errorf("docx size must be between 1 byte and %d bytes", MaxDocumentSize)
 	}
 	reader, err := zip.NewReader(bytes.NewReader(document), int64(len(document)))
 	if err != nil {
 		return nil, fmt.Errorf("invalid docx zip: %w", err)
 	}
+	if len(reader.File) == 0 || len(reader.File) > maxArchiveFiles {
+		return nil, fmt.Errorf("invalid docx: archive file count is outside the allowed range")
+	}
 	files := make(map[string][]byte, len(reader.File))
+	seen := make(map[string]struct{}, len(reader.File))
 	var expanded uint64
 	for _, file := range reader.File {
+		if strings.Contains(file.Name, "\\") {
+			return nil, fmt.Errorf("invalid docx archive path %q", file.Name)
+		}
+		archiveName := strings.TrimSuffix(file.Name, "/")
+		cleanName := path.Clean(archiveName)
+		if archiveName == "" || cleanName == "." || cleanName != archiveName || path.IsAbs(cleanName) || strings.HasPrefix(cleanName, "../") {
+			return nil, fmt.Errorf("invalid docx archive path %q", file.Name)
+		}
+		if file.Flags&0x1 != 0 {
+			return nil, fmt.Errorf("invalid docx: encrypted archive entries are not supported")
+		}
+		if _, exists := seen[file.Name]; exists {
+			return nil, fmt.Errorf("invalid docx: duplicate archive entry %q", file.Name)
+		}
+		seen[file.Name] = struct{}{}
+		if file.FileInfo().IsDir() {
+			continue
+		}
 		expanded += file.UncompressedSize64
-		if expanded > 50<<20 {
+		if expanded > maxExpandedSize {
 			return nil, fmt.Errorf("docx expanded content is too large")
 		}
 		stream, err := file.Open()
 		if err != nil {
 			return nil, err
 		}
-		body, readErr := io.ReadAll(stream)
+		remaining := int64(maxExpandedSize-expanded+file.UncompressedSize64) + 1
+		body, readErr := io.ReadAll(io.LimitReader(stream, remaining))
 		closeErr := stream.Close()
 		if readErr != nil {
 			return nil, readErr
 		}
 		if closeErr != nil {
 			return nil, closeErr
+		}
+		if uint64(len(body)) != file.UncompressedSize64 {
+			return nil, fmt.Errorf("invalid docx: archive entry size mismatch")
 		}
 		files[file.Name] = body
 	}

@@ -178,6 +178,26 @@ func TestProjectIntegrationRequiresHTTPOrigin(t *testing.T) {
 	}
 }
 
+func TestCRMReferenceIntegrationRequiresLeastPrivilegeMachineConfiguration(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("CRM_REFERENCE_ENABLED", "true")
+	t.Setenv("CRM_REFERENCE_BASE_URL", "http://customer-api:8090")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRM_REFERENCE_TOKEN_URL") {
+		t.Fatalf("missing token configuration error=%v", err)
+	}
+	t.Setenv("CRM_REFERENCE_TOKEN_URL", "http://platform-api:8080/oauth2/token")
+	t.Setenv("CRM_REFERENCE_CLIENT_ID", "contract-crm-reader")
+	t.Setenv("CRM_REFERENCE_CLIENT_SECRET", "secret")
+	t.Setenv("CRM_REFERENCE_SCOPE", "customer.read")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRM_REFERENCE_SCOPE") {
+		t.Fatalf("overbroad scope error=%v", err)
+	}
+	t.Setenv("CRM_REFERENCE_SCOPE", "customer.contract_reference.read")
+	if _, err := Load(); err != nil {
+		t.Fatalf("valid CRM reference configuration error=%v", err)
+	}
+}
+
 func TestLoadRejectsDashboardMachineWithoutBearer(t *testing.T) {
 	validEnvironment(t)
 	t.Setenv("DASHBOARD_MACHINE_ENABLED", "true")

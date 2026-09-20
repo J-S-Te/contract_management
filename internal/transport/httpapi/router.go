@@ -152,6 +152,8 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/opportunity-intakes/:intakeID", h.getOpportunityIntake)
 	api.POST("/opportunity-intakes/:intakeID/reviews", h.reviewOpportunityIntake)
 	api.POST("/contracts", h.createContract)
+	api.POST("/contracts/external", h.createExternalContract)
+	api.GET("/detection-categories", h.listDetectionCategories)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/approved-contracts", h.listApprovedContracts)
 	api.GET("/approved-contracts/:contractID/docx", h.downloadApprovedDOCX)
@@ -523,12 +525,120 @@ type createContractRequest struct {
 	EndDate             *time.Time             `json:"end_date"`
 }
 
+type externalContractMetadata struct {
+	Title               string                 `json:"title"`
+	ContractType        string                 `json:"contract_type"`
+	ServiceType         string                 `json:"service_type"`
+	OpportunityID       string                 `json:"opportunity_id"`
+	OpportunityName     string                 `json:"opportunity_name"`
+	CRMCustomerID       uint64                 `json:"crm_customer_id"`
+	CustomerName        string                 `json:"customer_name"`
+	CustomerAddress     string                 `json:"customer_address"`
+	CustomerContact     string                 `json:"customer_contact"`
+	CustomerPhone       string                 `json:"customer_phone"`
+	Systems             []contract.SystemInfo  `json:"systems"`
+	ServiceItems        []contract.ServiceItem `json:"service_items"`
+	CustomerCreditLevel string                 `json:"customer_credit_level"`
+	AmountMinor         int64                  `json:"amount_minor"`
+	Currency            string                 `json:"currency"`
+	StartDate           *time.Time             `json:"start_date"`
+	EndDate             *time.Time             `json:"end_date"`
+}
+
 func (h *Handler) createContract(c *gin.Context) {
 	var body createContractRequest
 	if !decode(c, &body) {
 		return
 	}
 	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusCreated, created)
+}
+
+func (h *Handler) listDetectionCategories(c *gin.Context) {
+	items, err := h.service.ListDetectionCategories(c.Request.Context(), principal(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+func (h *Handler) createExternalContract(c *gin.Context) {
+	const metadataLimit = 1 << 20
+	if _, ok := principal(c).Scope("contract.create"); !ok {
+		writeError(c, application.ErrForbidden)
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, docx.MaxDocumentSize+(2<<20))
+	if err := c.Request.ParseMultipartForm(metadataLimit); err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同上传参数不合法或文件过大", nil)
+		return
+	}
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
+	if c.Request.MultipartForm == nil || len(c.Request.MultipartForm.Value) != 1 || len(c.Request.MultipartForm.Value["metadata"]) != 1 || len(c.Request.MultipartForm.File) != 1 || len(c.Request.MultipartForm.File["file"]) != 1 {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同请求必须且只能包含一个 file 和一个 metadata", nil)
+		return
+	}
+	metadata := strings.TrimSpace(c.PostForm("metadata"))
+	if metadata == "" || len(metadata) > metadataLimit {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请填写外部合同元数据", nil)
+		return
+	}
+	var body externalContractMetadata
+	decoder := json.NewDecoder(strings.NewReader(metadata))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同元数据不合法", err.Error())
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同元数据只能包含一个 JSON 对象", nil)
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择外部合同 DOCX 文件", nil)
+		return
+	}
+	if fileHeader.Size <= 0 || fileHeader.Size > docx.MaxDocumentSize || !strings.EqualFold(filepath.Ext(filepath.Base(fileHeader.Filename)), ".docx") {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "仅支持不超过 10MB 的 DOCX 文件", nil)
+		return
+	}
+	mediaType, _, mimeErr := mime.ParseMediaType(fileHeader.Header.Get("Content-Type"))
+	if mimeErr != nil || mediaType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" && mediaType != "application/octet-stream" {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同文件类型必须为 DOCX", nil)
+		return
+	}
+	stream, err := fileHeader.Open()
+	if err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "无法读取外部合同文件", nil)
+		return
+	}
+	document, readErr := io.ReadAll(io.LimitReader(stream, docx.MaxDocumentSize+1))
+	closeErr := stream.Close()
+	if readErr != nil || closeErr != nil || len(document) == 0 || len(document) > docx.MaxDocumentSize {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同文件为空、过大或无法读取", nil)
+		return
+	}
+	if err := docx.ValidateExternalDocument(document); err != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同文件不是有效的 DOCX", nil)
+		return
+	}
+	created, err := h.service.CreateExternalContract(c.Request.Context(), principal(c), contract.Contract{
+		Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType,
+		OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName,
+		CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName,
+		CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
+		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
+		AmountMinor: body.AmountMinor, Currency: body.Currency, Document: document,
+		StartDate: body.StartDate, EndDate: body.EndDate,
+	})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -643,7 +753,7 @@ func (h *Handler) exportContract(c *gin.Context) {
 		return
 	}
 	if len(found.Document) == 0 {
-		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可导出的模板文档", nil)
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可导出的 DOCX 文档", nil)
 		return
 	}
 	filename := strings.TrimSuffix(filepath.Base(found.Number), filepath.Ext(found.Number))
@@ -819,7 +929,7 @@ func (h *Handler) previewContract(c *gin.Context) {
 		return
 	}
 	if len(found.Document) == 0 {
-		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可预览的模板文档", nil)
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可预览的 DOCX 文档", nil)
 		return
 	}
 	preview, err := docx.PreviewHTML(found.Document)
@@ -1032,7 +1142,7 @@ func (h *Handler) previewApprovalContract(c *gin.Context) {
 		return
 	}
 	if len(detail.Contract.Document) == 0 {
-		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该审批合同没有可预览的模板文档", nil)
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该审批合同没有可预览的 DOCX 文档", nil)
 		return
 	}
 	preview, err := docx.PreviewHTML(detail.Contract.Document)
@@ -1185,6 +1295,10 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "AUTH_DEPENDENCY_UNAVAILABLE", "身份或授权服务暂时不可用", nil)
 	case errors.Is(err, application.ErrApprovalWorkflowUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_APPROVAL_WORKFLOW_UNAVAILABLE", "审批流程服务暂时不可用，请稍后重试", nil)
+	case errors.Is(err, application.ErrDetectionCategoryDirectoryUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DETECTION_CATEGORY_DIRECTORY_UNAVAILABLE", "检测类别目录暂时不可用，请稍后重试", nil)
+	case errors.Is(err, application.ErrCRMReferenceDirectoryUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_CRM_REFERENCE_DIRECTORY_UNAVAILABLE", "CRM 客户与商机目录暂时不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrForbidden):
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, application.ErrApprovalTargetForbidden):

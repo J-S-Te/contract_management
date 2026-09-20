@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 
@@ -14,6 +18,32 @@ import (
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/oklog/ulid/v2"
 )
+
+type externalContractRepository struct {
+	application.Repository
+	created contract.Contract
+}
+
+type externalDetectionCategoryDirectory struct{}
+
+func (externalDetectionCategoryDirectory) List(context.Context) ([]application.DetectionCategory, error) {
+	return []application.DetectionCategory{{Category: "等保测评", Enabled: true}}, nil
+}
+
+type externalCRMReferenceDirectory struct{}
+
+func (externalCRMReferenceDirectory) Resolve(_ context.Context, customerID uint64, opportunityID, _ string) (application.CRMContractReference, error) {
+	result := application.CRMContractReference{Customer: application.CRMCustomerReference{ID: customerID, Name: "CRM 权威客户", Status: "ACTIVE"}}
+	if opportunityID != "" {
+		result.Opportunity = &application.CRMOpportunityReference{ID: 9, Name: "CRM 权威商机", CustomerID: customerID, Status: "FOLLOWING"}
+	}
+	return result, nil
+}
+
+func (r *externalContractRepository) CreateContract(_ context.Context, created contract.Contract, _ string) error {
+	r.created = created
+	return nil
+}
 
 type identityFunc func(context.Context, *http.Request) (application.Principal, error)
 
@@ -148,6 +178,147 @@ func TestInvalidJSONDoesNotReachService(t *testing.T) {
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnprocessableEntity, response.Body.String())
 	}
+}
+
+func TestCreateExternalContractMultipart(t *testing.T) {
+	repository := &externalContractRepository{}
+	service := &application.Service{Repo: repository, DetectionCategories: externalDetectionCategoryDirectory{}, CRMContractReferences: externalCRMReferenceDirectory{}}
+	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
+		return application.Principal{
+			TenantID: "tenant-1", UserID: "user-1", IdentityID: "identity-1",
+			Permissions:      map[string]bool{"contract.create": true},
+			PermissionScopes: map[string]contract.ScopeFilter{"contract.create": {AllowAll: true}},
+		}, nil
+	})
+	metadata := `{"title":"外部合同","contract_type":"直签","crm_customer_id":7,"customer_name":"示例客户","amount_minor":10000,"currency":"CNY","service_items":[{"service_type":"等保测评","site":"杭州","batch":"第一批","category":"等保测评","test_mode":"STANDARD"}]}`
+	request := externalContractUploadRequest(t, metadata, "external.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", externalContractDOCX(t))
+	response := httptest.NewRecorder()
+
+	NewRouter(service, identity, nil).ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if repository.created.TemplateID != "" || repository.created.CRMCustomerID != 7 || repository.created.Content != "外部合同正文" || len(repository.created.Document) == 0 {
+		t.Fatalf("created=%+v", repository.created)
+	}
+}
+
+func TestDetectionCategoryProxyUsesContractCreatePermission(t *testing.T) {
+	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
+		return application.Principal{
+			TenantID: "tenant-1", UserID: "user-1",
+			Permissions:      map[string]bool{"contract.create": true},
+			PermissionScopes: map[string]contract.ScopeFilter{"contract.create": {AllowAll: true}},
+		}, nil
+	})
+	service := &application.Service{DetectionCategories: externalDetectionCategoryDirectory{}}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/detection-categories", nil)
+	response := httptest.NewRecorder()
+	NewRouter(service, identity, nil).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"category":"等保测评"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestDetectionCategoryDirectoryUnavailableIsServiceUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/v1/detection-categories", nil)
+	writeError(context, application.ErrDetectionCategoryDirectoryUnavailable)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "CON_DETECTION_CATEGORY_DIRECTORY_UNAVAILABLE") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCRMReferenceDirectoryUnavailableIsServiceUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/external", nil)
+	writeError(context, application.ErrCRMReferenceDirectoryUnavailable)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "CON_CRM_REFERENCE_DIRECTORY_UNAVAILABLE") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCreateExternalContractRejectsInvalidMultipartInputs(t *testing.T) {
+	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
+		return application.Principal{
+			TenantID: "tenant-1", UserID: "user-1", IdentityID: "identity-1",
+			Permissions:      map[string]bool{"contract.create": true},
+			PermissionScopes: map[string]contract.ScopeFilter{"contract.create": {AllowAll: true}},
+		}, nil
+	})
+	validMetadata := `{"title":"外部合同"}`
+	tests := []struct {
+		name, metadata, filename, contentType string
+		document                              []byte
+	}{
+		{name: "unknown metadata field", metadata: `{"title":"外部合同","template_id":"forbidden"}`, filename: "external.docx", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", document: externalContractDOCX(t)},
+		{name: "wrong extension", metadata: validMetadata, filename: "external.zip", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", document: externalContractDOCX(t)},
+		{name: "wrong declared MIME", metadata: validMetadata, filename: "external.docx", contentType: "text/plain", document: externalContractDOCX(t)},
+		{name: "corrupt DOCX", metadata: validMetadata, filename: "external.docx", contentType: "application/octet-stream", document: []byte("not-a-docx")},
+		{name: "over 10MB", metadata: validMetadata, filename: "external.docx", contentType: "application/octet-stream", document: bytes.Repeat([]byte("x"), (10<<20)+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := externalContractUploadRequest(t, test.metadata, test.filename, test.contentType, test.document)
+			response := httptest.NewRecorder()
+			NewRouter(nil, identity, nil).ServeHTTP(response, request)
+			if response.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func externalContractUploadRequest(t *testing.T, metadata, filename, contentType string, document []byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("metadata", metadata); err != nil {
+		t.Fatal(err)
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="file"; filename="`+filename+`"`)
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(document); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/contracts/external", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+func externalContractDOCX(t *testing.T) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	writer := zip.NewWriter(&body)
+	for name, content := range map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml":   `<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>外部合同正文</w:t></w:r></w:p></w:body></w:document>`,
+	} {
+		part, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
 }
 
 // stubVerifier 实现 platform.ClientCredentialsTokenVerifier，用于验证路由层只信任

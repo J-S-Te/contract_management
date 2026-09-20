@@ -104,3 +104,40 @@ func TestDispatcherReconcilesHistoricalContractsBeforeDelivery(t *testing.T) {
 		t.Fatalf("reconcile() count=%d calls=%d, want 2 and 1", count, store.reconciled)
 	}
 }
+
+func TestDetectionCategoryDirectoryUsesMachineBearerAndInternalReadEndpoint(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/internal/v1/contracts/detection-categories" {
+			t.Fatalf("request=%s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer category-token" || request.Header.Get("X-Contract-Delivery-ID") != "" {
+			t.Fatalf("headers=%v", request.Header)
+		}
+		body := `{"code":"OK","data":{"items":[{"category":"等保测评","enabled":true}]}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	directory := &DetectionCategoryDirectory{BaseURL: "http://project-api:8082", Client: client, TokenSource: func(context.Context) (string, error) { return "category-token", nil }}
+	items, err := directory.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Category != "等保测评" || !items[0].Enabled {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestDetectionCategoryDirectoryRejectsNonSuccessAndMissingConfiguration(t *testing.T) {
+	if _, err := (&DetectionCategoryDirectory{}).List(context.Background()); err == nil {
+		t.Fatal("unconfigured directory unexpectedly succeeded")
+	}
+	directory := &DetectionCategoryDirectory{
+		BaseURL:     "http://project-api:8082",
+		TokenSource: func(context.Context) (string, error) { return "category-token", nil },
+		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(`{"code":"AUTH_FORBIDDEN"}`)), Header: make(http.Header)}, nil
+		})},
+	}
+	if _, err := directory.List(context.Background()); err == nil {
+		t.Fatal("forbidden project response unexpectedly succeeded")
+	}
+}

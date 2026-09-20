@@ -75,6 +75,7 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | GET | `/api/v1/approved-contracts/{id}/docx` | `contract.document.download` | 下载审批时冻结的 DOCX |
 | GET | `/api/v1/approved-contracts/{id}/pdf` | `contract.document.download` | 使用 LibreOffice 转换并下载格式化 PDF |
 | PUT | `/api/v1/approved-contracts/{id}/stamped-pdf` | `contract.stamped_pdf.upload` | 上传不超过 20MB 的盖章合同 PDF |
+| POST | `/api/v1/contracts/external` | `contract.create` | 通过 multipart `file` + `metadata` 上传不超过 10MB 的外部 DOCX 合同草稿 |
 | POST | `/api/v1/contracts/{id}/submit-approval` | `contract.create` | 匹配规则并启动合同审批 |
 | POST | `/api/v1/contracts/{id}/status-changes` | `contract.edit` | 直接流转或启动关键状态审批 |
 | GET | `/api/v1/approvals` | 已登录 | 当前用户发起的审批与历史状态 |
@@ -108,6 +109,8 @@ docker compose --env-file .env.local up -d --build
 Compose 会先等待 MySQL 健康，再由一次性 `migrate` 服务按编号执行所有待完成迁移；只有迁移成功后 API 才会启动。API 默认监听 `:8081`，但 Compose 只通过平台 Docker 网络暴露；门户网关仅把 `/contract_management/api/`、`/contract_management/auth/` 等后端路径转发至本服务并去除前缀，其余 `/contract_management/` 页面由统一前端承载。
 
 启用合同到项目对接时，设置 `PROJECT_INTEGRATION_ENABLED=true` 和 `PROJECT_API_BASE_URL`，项目服务设置 `CONTRACT_INTEGRATION_ENABLED=true`。Compose 内项目地址为 `http://project-api:8082`，内部接口不得通过公网或门户网关暴露。投递达到 `PROJECT_INTEGRATION_MAX_ATTEMPTS` 后进入 `dead` 状态，需运维核对网络和项目接口后重新置为 `pending`。
+
+外部合同创建必须启用 CRM 权威复核：设置 `CRM_REFERENCE_ENABLED=true`、CRM 内网地址、平台 Token 地址和独立 `client_credentials` 凭据。该客户端只能授予 `customer.contract_reference.read`；每次查询都携带时间戳与随机 nonce，CRM 会校验租户、活动客户状态以及可选商机的客户归属。目录不可用时创建失败关闭，不会回退为信任浏览器快照。
 
 审批人根据基础平台中合同应用的有效角色动态解析，直接用户授权、组织授权和岗位继承均会生效。同一角色有多人时采用或签，任一人处理后进入下一节点。不要在镜像或仓库中保存 Temporal API Key 或数据库密码。
 

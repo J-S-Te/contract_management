@@ -103,6 +103,39 @@ func TestPreviewHTMLPreservesParagraphAndTableFormatting(t *testing.T) {
 	}
 }
 
+func TestValidateExternalDocumentAcceptsDirectoryEntries(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	if _, err := writer.Create("word/"); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml":   `<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>外部合同</w:t></w:r></w:p></w:body></w:document>`,
+	} {
+		file, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateExternalDocument(buffer.Bytes()); err != nil {
+		t.Fatalf("ValidateExternalDocument() error = %v", err)
+	}
+}
+
+func TestValidateExternalDocumentRejectsGenericZIP(t *testing.T) {
+	document := testDocument(t, `<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>正文</w:t></w:r></w:p></w:body></w:document>`)
+	if err := ValidateExternalDocument(document); err == nil {
+		t.Fatal("ValidateExternalDocument() error = nil, want missing OOXML content type")
+	}
+}
+
 func testDocument(t *testing.T, documentXML string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
