@@ -141,3 +141,37 @@ func TestDetectionCategoryDirectoryRejectsNonSuccessAndMissingConfiguration(t *t
 		t.Fatal("forbidden project response unexpectedly succeeded")
 	}
 }
+
+func TestDetectionCategoryDirectoryRetriesTransientProjectFailure(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader(`{"code":"PM_NOT_READY"}`)), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"items":[{"category":"等保测评","enabled":true}]}}`)), Header: make(http.Header)}, nil
+	})}
+	directory := &DetectionCategoryDirectory{BaseURL: "http://project-api:8082", Client: client, TokenSource: func(context.Context) (string, error) { return "category-token", nil }}
+	items, err := directory.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if attempts != 3 || len(items) != 1 || items[0].Category != "等保测评" {
+		t.Fatalf("attempts=%d items=%+v, want three attempts and one category", attempts, items)
+	}
+}
+
+func TestDetectionCategoryDirectoryDoesNotRetryForbiddenProjectFailure(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(`{"code":"AUTH_FORBIDDEN"}`)), Header: make(http.Header)}, nil
+	})}
+	directory := &DetectionCategoryDirectory{BaseURL: "http://project-api:8082", Client: client, TokenSource: func(context.Context) (string, error) { return "category-token", nil }}
+	if _, err := directory.List(context.Background()); err == nil {
+		t.Fatal("forbidden project response unexpectedly succeeded")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want one attempt for a non-transient authorization failure", attempts)
+	}
+}
