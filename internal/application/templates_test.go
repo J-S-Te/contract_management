@@ -243,7 +243,7 @@ func applicationTestDOCX(t *testing.T, text string) []byte {
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
 	for name, body := range map[string]string{
-		"[Content_Types].xml": `<Types xmlns="content-types"></Types>`,
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
 		"word/document.xml":   `<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>` + text + `</w:t></w:r></w:p></w:body></w:document>`,
 	} {
 		file, err := writer.Create(name)

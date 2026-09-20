@@ -78,10 +78,18 @@ func main() {
 		logger.Error("OIDC session store failed", "error", err)
 		os.Exit(1)
 	}
+	var projectDetectionCategories application.DetectionCategoryDirectory
+	var crmContractReferences application.CRMContractReferenceDirectory
 	if cfg.ProjectIntegrationEnabled {
+		tokenSource := projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)
 		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
-			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)}
+			TokenSource: tokenSource}
 		go dispatcher.Run(ctx)
+		projectDetectionCategories = &projectintegration.DetectionCategoryDirectory{BaseURL: cfg.ProjectAPIBaseURL, TokenSource: tokenSource}
+	}
+	if cfg.CRMReferenceEnabled {
+		crmTokenSource := crm.NewClientCredentialsTokenSource(ctx, cfg.CRMReferenceTokenURL, cfg.CRMReferenceClientID, cfg.CRMReferenceClientSecret, cfg.CRMReferenceScope)
+		crmContractReferences = &crm.ContractReferenceDirectory{BaseURL: cfg.CRMReferenceBaseURL, TokenSource: crmTokenSource}
 	}
 	service := &application.Service{
 		Repo:                    repository,
@@ -92,6 +100,8 @@ func main() {
 		ReminderInterval:        cfg.ReminderInterval,
 		Personnel:               personnelDirectory,
 		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), Client: &http.Client{Timeout: 5 * time.Second}},
+		DetectionCategories:     projectDetectionCategories,
+		CRMContractReferences:   crmContractReferences,
 	}
 	if cfg.StampedFileMode != "legacy" {
 		gatewayToken := filegatewayclient.NewClientCredentialsTokenSource(ctx, strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token", cfg.StampedFileClientID, cfg.StampedFileClientSecret, cfg.StampedFileScope)

@@ -69,6 +69,36 @@ type personnelStub struct {
 	err   error
 }
 
+type detectionCategoryDirectoryStub struct {
+	items []DetectionCategory
+	err   error
+}
+
+type crmReferenceDirectoryStub struct {
+	reference CRMContractReference
+	err       error
+}
+
+func (stub crmReferenceDirectoryStub) Resolve(context.Context, uint64, string, string) (CRMContractReference, error) {
+	return stub.reference, stub.err
+}
+
+func validCRMReference(customerID uint64) crmReferenceDirectoryStub {
+	return crmReferenceDirectoryStub{reference: CRMContractReference{Customer: CRMCustomerReference{ID: customerID, Name: "CRM 权威客户", Status: "ACTIVE"}}}
+}
+
+func (s detectionCategoryDirectoryStub) List(context.Context) ([]DetectionCategory, error) {
+	return s.items, s.err
+}
+
+func enabledDetectionCategories(values ...string) detectionCategoryDirectoryStub {
+	items := make([]DetectionCategory, 0, len(values))
+	for _, value := range values {
+		items = append(items, DetectionCategory{Category: value, Enabled: true})
+	}
+	return detectionCategoryDirectoryStub{items: items}
+}
+
 func (s personnelStub) ListEligibleUsers(context.Context, Principal, []string) ([]UserReference, error) {
 	return s.users, s.err
 }
@@ -172,7 +202,7 @@ func (r *recordingRepository) ListTasks(context.Context, string, string, int) ([
 
 func TestListContractsScopesNonManagerToAuthenticatedUser(t *testing.T) {
 	repository := &recordingRepository{}
-	service := &Service{Repo: repository}
+	service := &Service{Repo: repository, DetectionCategories: enabledDetectionCategories("等保测评")}
 	actor := Principal{
 		TenantID:         "tenant-1",
 		UserID:           "user-1",
@@ -375,6 +405,135 @@ func TestCreateContractRejectsStartDateAfterEndDate(t *testing.T) {
 	})
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("CreateContract() error = %v, want ErrValidation", err)
+	}
+}
+
+func TestCreateExternalContractFreezesDocumentAndNormalizesServiceScope(t *testing.T) {
+	repository := &recordingRepository{}
+	service := &Service{Repo: repository, DetectionCategories: enabledDetectionCategories("等保测评"), CRMContractReferences: validCRMReference(7)}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "user-1", DisplayName: "章六", IdentityID: "identity-1",
+		Permissions: map[string]bool{"contract.create": true}, PermissionScopes: allowAllScope("contract.create"),
+	}
+	document := applicationTestDOCX(t, "外部合同正文")
+	created, err := service.CreateExternalContract(context.Background(), actor, contract.Contract{
+		Title: " 外部合同 ", Type: " 直签 ", CRMCustomerID: 7, CustomerName: " 示例客户 ",
+		AmountMinor: 10000, Currency: "CNY", Document: document,
+		ServiceItems: []contract.ServiceItem{{
+			ServiceType: " 等保测评 ", Site: " 杭州机房 ", Batch: " 第一批 ", Category: " 等保测评 ", TestMode: "standard",
+			Systems: []contract.SystemInfo{{Name: " 核心系统 ", Level: "三级"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateExternalContract() error = %v", err)
+	}
+	if created.TemplateID != "" || created.Content != "外部合同正文" || created.ContentHash == "" || created.NumberFormat != contracttemplate.DefaultNumberFormat {
+		t.Fatalf("created=%+v", created)
+	}
+	if len(created.ServiceItems) != 1 || created.ServiceItems[0].Name != "等保测评" || created.ServiceItems[0].TestMode != "STANDARD" || created.ServiceItems[0].Site != "杭州机房" {
+		t.Fatalf("normalized service items=%+v", created.ServiceItems)
+	}
+	if len(repository.created.Document) == 0 || repository.created.TemplateID != "" {
+		t.Fatalf("persisted=%+v", repository.created)
+	}
+	if repository.created.CustomerName != "CRM 权威客户" {
+		t.Fatalf("customer name=%q, want authoritative CRM snapshot", repository.created.CustomerName)
+	}
+}
+
+func TestExternalDetectionCategoryMustBeEnabledAndDirectoryFailsClosed(t *testing.T) {
+	actor := Principal{TenantID: "tenant-1", UserID: "user-1", IdentityID: "identity-1", Permissions: map[string]bool{"contract.create": true}, PermissionScopes: allowAllScope("contract.create")}
+	input := contract.Contract{
+		Title: "外部合同", Type: "直签", CRMCustomerID: 7, CustomerName: "示例客户", AmountMinor: 10000, Currency: "CNY",
+		Document:     applicationTestDOCX(t, "外部合同正文"),
+		ServiceItems: []contract.ServiceItem{{ServiceType: "等保测评", Site: "杭州", Batch: "第一批", Category: "已停用类别", TestMode: "STANDARD"}},
+	}
+	service := &Service{Repo: &recordingRepository{}, DetectionCategories: enabledDetectionCategories("等保测评"), CRMContractReferences: validCRMReference(7)}
+	if _, err := service.CreateExternalContract(context.Background(), actor, input); !errors.Is(err, ErrValidation) {
+		t.Fatalf("disabled category error=%v, want ErrValidation", err)
+	}
+	service.DetectionCategories = nil
+	if _, err := service.CreateExternalContract(context.Background(), actor, input); !errors.Is(err, ErrDetectionCategoryDirectoryUnavailable) {
+		t.Fatalf("missing directory error=%v, want ErrDetectionCategoryDirectoryUnavailable", err)
+	}
+}
+
+func TestExternalContractCRMReferenceFailsClosedAndRejectsCrossCustomerOpportunity(t *testing.T) {
+	actor := Principal{TenantID: "tenant-1", UserID: "user-1", IdentityID: "identity-1", Permissions: map[string]bool{"contract.create": true}, PermissionScopes: allowAllScope("contract.create")}
+	input := contract.Contract{
+		Title: "外部合同", Type: "直签", CRMCustomerID: 7, CustomerName: "浏览器快照", OpportunityID: "9", OpportunityName: "浏览器商机",
+		AmountMinor: 10000, Currency: "CNY", Document: applicationTestDOCX(t, "外部合同正文"),
+		ServiceItems: []contract.ServiceItem{{ServiceType: "等保测评", Site: "杭州", Batch: "第一批", Category: "等保测评", TestMode: "STANDARD"}},
+	}
+	service := &Service{Repo: &recordingRepository{}, DetectionCategories: enabledDetectionCategories("等保测评")}
+	if _, err := service.CreateExternalContract(context.Background(), actor, input); !errors.Is(err, ErrCRMReferenceDirectoryUnavailable) {
+		t.Fatalf("missing CRM directory error=%v", err)
+	}
+	service.CRMContractReferences = crmReferenceDirectoryStub{reference: CRMContractReference{
+		Customer:    CRMCustomerReference{ID: 7, Name: "权威客户", Status: "ACTIVE"},
+		Opportunity: &CRMOpportunityReference{ID: 9, Name: "跨客户商机", CustomerID: 8, Status: "FOLLOWING"},
+	}}
+	if _, err := service.CreateExternalContract(context.Background(), actor, input); !errors.Is(err, ErrValidation) {
+		t.Fatalf("cross-customer opportunity error=%v, want ErrValidation", err)
+	}
+	service.CRMContractReferences = crmReferenceDirectoryStub{err: ErrCRMReferenceInvalid}
+	if _, err := service.CreateExternalContract(context.Background(), actor, input); !errors.Is(err, ErrValidation) {
+		t.Fatalf("invalid CRM reference error=%v, want ErrValidation", err)
+	}
+}
+
+func TestListDetectionCategoriesFiltersDisabledBlankAndDuplicateValues(t *testing.T) {
+	service := &Service{DetectionCategories: detectionCategoryDirectoryStub{items: []DetectionCategory{
+		{Category: " 等保测评 ", Enabled: true}, {Category: "等保测评", Enabled: true},
+		{Category: "停用类别", Enabled: false}, {Category: " ", Enabled: true},
+	}}}
+	actor := Principal{TenantID: "tenant-1", Permissions: map[string]bool{"contract.create": true}, PermissionScopes: allowAllScope("contract.create")}
+	items, err := service.ListDetectionCategories(context.Background(), actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Category != "等保测评" || !items[0].Enabled {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestCreateExternalContractRejectsIncompleteMetadata(t *testing.T) {
+	service := &Service{Repo: &recordingRepository{}, DetectionCategories: enabledDetectionCategories("等保测评"), CRMContractReferences: validCRMReference(7)}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "user-1", IdentityID: "identity-1", Permissions: map[string]bool{"contract.create": true},
+		PermissionScopes: allowAllScope("contract.create"),
+	}
+	valid := contract.Contract{
+		Title: "外部合同", Type: "直签", CRMCustomerID: 7, CustomerName: "示例客户", AmountMinor: 10000, Currency: "CNY",
+		Document:     applicationTestDOCX(t, "外部合同正文"),
+		ServiceItems: []contract.ServiceItem{{ServiceType: "等保测评", Site: "杭州", Batch: "第一批", Category: "等保测评", TestMode: "STANDARD"}},
+	}
+	tests := map[string]func(*contract.Contract){
+		"invalid contract type": func(c *contract.Contract) { c.Type = "其他" },
+		"missing CRM customer":  func(c *contract.Contract) { c.CRMCustomerID = 0 },
+		"missing customer name": func(c *contract.Contract) { c.CustomerName = "" },
+		"zero amount":           func(c *contract.Contract) { c.AmountMinor = 0 },
+		"missing site":          func(c *contract.Contract) { c.ServiceItems[0].Site = "" },
+		"missing batch":         func(c *contract.Contract) { c.ServiceItems[0].Batch = "" },
+		"missing category":      func(c *contract.Contract) { c.ServiceItems[0].Category = "" },
+		"missing test mode":     func(c *contract.Contract) { c.ServiceItems[0].TestMode = "" },
+		"invalid test mode":     func(c *contract.Contract) { c.ServiceItems[0].TestMode = "OTHER" },
+		"partial system":        func(c *contract.Contract) { c.ServiceItems[0].Systems = []contract.SystemInfo{{Name: "系统"}} },
+		"opportunity no name":   func(c *contract.Contract) { c.OpportunityID = "9" },
+		"invalid opportunity ID": func(c *contract.Contract) {
+			c.OpportunityID, c.OpportunityName = "not-a-number", "无效商机"
+		},
+		"template mixed in": func(c *contract.Contract) { c.TemplateID = "template-1" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			candidate.ServiceItems = append([]contract.ServiceItem(nil), valid.ServiceItems...)
+			mutate(&candidate)
+			if _, err := service.CreateExternalContract(context.Background(), actor, candidate); !errors.Is(err, ErrValidation) {
+				t.Fatalf("CreateExternalContract() error=%v, want ErrValidation", err)
+			}
+		})
 	}
 }
 

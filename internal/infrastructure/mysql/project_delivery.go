@@ -18,6 +18,7 @@ import (
 
 type projectActivationPayload struct {
 	ContractID      string `json:"contract_id"`
+	ContractNumber  string `json:"contract_number"`
 	ContractVersion string `json:"contract_version"`
 	ContractName    string `json:"contract_name"`
 	Customer        string `json:"customer"`
@@ -143,7 +144,7 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	if err := tx.Model(&stampedDocumentRecord{}).Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Count(&stampedDocumentCount).Error; err != nil {
 		return err
 	}
-	payload := projectActivationPayload{ContractID: row.ID, ContractVersion: fmt.Sprintf("%d", row.Version), ContractName: row.Title, Customer: firstProjectValue(valueOrEmpty(row.CustomerName), "未指定客户"), CustomerID: customerIDOf(row.CRMCustomerID), EffectiveAt: effectiveAt, StampedContractUploaded: stampedDocumentCount > 0, Services: services}
+	payload := newProjectActivationPayload(row, effectiveAt, stampedDocumentCount > 0, services)
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -151,6 +152,15 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	now := time.Now().UTC()
 	record := projectDeliveryOutboxRecord{ID: newID(), TenantID: tenantID, ContractID: row.ID, ContractVersion: row.Version, PayloadJSON: encoded, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error
+}
+
+func newProjectActivationPayload(row contractRecord, effectiveAt time.Time, stamped bool, services []contract.ProjectServiceItem) projectActivationPayload {
+	return projectActivationPayload{
+		ContractID: row.ID, ContractNumber: valueOrEmpty(row.ContractNumber), ContractVersion: fmt.Sprintf("%d", row.Version),
+		ContractName: row.Title, Customer: firstProjectValue(valueOrEmpty(row.CustomerName), "未指定客户"),
+		CustomerID: customerIDOf(row.CRMCustomerID), EffectiveAt: effectiveAt,
+		StampedContractUploaded: stamped, Services: services,
+	}
 }
 
 // markProjectDeliveryStamped refreshes an existing activation delivery after

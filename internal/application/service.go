@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,6 +115,8 @@ type Service struct {
 	StampedFileGateway       StampedFileGateway
 	StampedFileMode          string
 	StampedFileApplicationID string
+	DetectionCategories      DetectionCategoryDirectory
+	CRMContractReferences    CRMContractReferenceDirectory
 }
 
 // StampedFileGateway 上传并绑定盖章合同；跨系统提交失败时旧 BLOB 仍可回退读取。
@@ -332,6 +335,32 @@ type ApprovalDetail struct {
 }
 
 func (s *Service) CreateContract(ctx context.Context, actor Principal, c contract.Contract) (contract.Contract, error) {
+	return s.createContract(ctx, actor, c, false)
+}
+
+// CreateExternalContract creates a draft from a caller-supplied DOCX without
+// introducing a second workflow or persistence model. The document is frozen
+// in the same rendered_document/content/content_hash fields used by template
+// contracts, so preview, approval and export keep one authoritative source.
+func (s *Service) CreateExternalContract(ctx context.Context, actor Principal, c contract.Contract) (contract.Contract, error) {
+	if _, ok := actor.Scope("contract.create"); !ok {
+		return c, ErrForbidden
+	}
+	if c.TemplateID != "" || len(c.TemplateValues) != 0 || len(c.Document) == 0 {
+		return c, ErrValidation
+	}
+	if err := docx.ValidateExternalDocument(c.Document); err != nil {
+		return c, fmt.Errorf("%w: 外部合同 DOCX 解析失败：%v", ErrValidation, err)
+	}
+	content, err := docx.PlainText(c.Document)
+	if err != nil || strings.TrimSpace(content) == "" {
+		return c, fmt.Errorf("%w: 外部合同 DOCX 正文不能为空", ErrValidation)
+	}
+	c.Content = content
+	return s.createContract(ctx, actor, c, true)
+}
+
+func (s *Service) createContract(ctx context.Context, actor Principal, c contract.Contract, external bool) (contract.Contract, error) {
 	filter, ok := actor.Scope("contract.create")
 	if !ok {
 		return c, ErrForbidden
@@ -348,7 +377,7 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	if c.ProjectID != "" && !filter.AllowAll && !containsString(filter.ProjectIDs, c.ProjectID) {
 		return c, ErrForbidden
 	}
-	if c.TemplateID != "" {
+	if !external && c.TemplateID != "" {
 		rendered, normalizedValues, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues)
 		if err != nil {
 			return c, err
@@ -365,7 +394,38 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 		}
 		c.NumberFormat = item.NumberFormat
 	}
-	if c.Title == "" || c.Type == "" || c.TemplateID == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0 || !validServiceItems(c.ServiceItems) || (c.OpportunityID == "") != (c.CRMCustomerID == 0) {
+	c.Title = strings.TrimSpace(c.Title)
+	c.Type = strings.TrimSpace(c.Type)
+	c.OpportunityID = strings.TrimSpace(c.OpportunityID)
+	c.OpportunityName = strings.TrimSpace(c.OpportunityName)
+	c.CustomerName = strings.TrimSpace(c.CustomerName)
+	c.CustomerAddress = strings.TrimSpace(c.CustomerAddress)
+	c.CustomerContact = strings.TrimSpace(c.CustomerContact)
+	c.CustomerPhone = strings.TrimSpace(c.CustomerPhone)
+	if external {
+		c.ServiceItems = normalizeExternalServiceItems(c.ServiceItems)
+	}
+	commonInvalid := c.Title == "" || c.Type == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0
+	if external {
+		if commonInvalid || c.TemplateID != "" || c.Type != "直签" && c.Type != "三方" || c.CRMCustomerID == 0 || c.CustomerName == "" || c.AmountMinor <= 0 || !validExternalServiceItems(c.ServiceItems) || c.OpportunityID != "" && c.OpportunityName == "" || c.OpportunityID == "" && c.OpportunityName != "" || !validOptionalCRMID(c.OpportunityID) {
+			return c, ErrValidation
+		}
+		reference, err := s.validateExternalCRMReference(ctx, c.CRMCustomerID, c.OpportunityID, actor.IdentityID)
+		if err != nil {
+			return c, err
+		}
+		c.CustomerName = strings.TrimSpace(reference.Customer.Name)
+		if reference.Opportunity != nil {
+			c.OpportunityName = strings.TrimSpace(reference.Opportunity.Name)
+		}
+		categories := make([]string, 0, len(c.ServiceItems))
+		for _, item := range c.ServiceItems {
+			categories = append(categories, item.Category)
+		}
+		if err := s.validateExternalDetectionCategories(ctx, categories); err != nil {
+			return c, err
+		}
+	} else if commonInvalid || c.TemplateID == "" || !validServiceItems(c.ServiceItems) || (c.OpportunityID == "") != (c.CRMCustomerID == 0) {
 		return c, ErrValidation
 	}
 	c.ServiceType = c.ServiceItems[0].ServiceType
@@ -375,6 +435,10 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	}
 	if c.Currency == "" {
 		c.Currency = "CNY"
+	}
+	c.Currency = strings.ToUpper(strings.TrimSpace(c.Currency))
+	if external && len(c.Currency) != 3 {
+		return c, ErrValidation
 	}
 	if c.NumberFormat == "" {
 		c.NumberFormat = contracttemplate.DefaultNumberFormat
@@ -394,6 +458,51 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	}
 	c.Version = 1
 	return c, nil
+}
+
+func validOptionalCRMID(value string) bool {
+	if value == "" {
+		return true
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && parsed > 0
+}
+
+func normalizeExternalServiceItems(items []contract.ServiceItem) []contract.ServiceItem {
+	normalized := append([]contract.ServiceItem(nil), items...)
+	for index := range normalized {
+		item := &normalized[index]
+		item.SourceID = ""
+		item.ServiceType = strings.TrimSpace(item.ServiceType)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.Name == "" {
+			item.Name = item.ServiceType
+		}
+		item.Site = strings.TrimSpace(item.Site)
+		item.Batch = strings.TrimSpace(item.Batch)
+		item.Category = strings.TrimSpace(item.Category)
+		item.Requirement = strings.TrimSpace(item.Requirement)
+		item.TestMode = strings.ToUpper(strings.TrimSpace(item.TestMode))
+		item.Systems = append([]contract.SystemInfo(nil), item.Systems...)
+		for systemIndex := range item.Systems {
+			item.Systems[systemIndex].Name = strings.TrimSpace(item.Systems[systemIndex].Name)
+			item.Systems[systemIndex].Level = strings.TrimSpace(item.Systems[systemIndex].Level)
+		}
+	}
+	return normalized
+}
+
+func validExternalServiceItems(items []contract.ServiceItem) bool {
+	if len(items) == 0 || len(items) > 20 {
+		return false
+	}
+	for _, item := range items {
+		if item.ServiceType == "" || item.Site == "" || item.Batch == "" || item.Category == "" ||
+			(item.TestMode != "STANDARD" && item.TestMode != "PENETRATION") || !validSystems(item.Systems) {
+			return false
+		}
+	}
+	return true
 }
 
 func validSystems(items []contract.SystemInfo) bool {
@@ -950,9 +1059,10 @@ func unique(values []string) []string {
 }
 
 var (
-	ErrForbidden                     = errors.New("forbidden")
-	ErrValidation                    = errors.New("validation failed")
-	ErrApprovalTargetForbidden       = errors.New("approval target cannot process contract approvals")
-	ErrPersonnelDirectoryUnavailable = errors.New("approval personnel directory is unavailable")
-	ErrApprovalWorkflowUnavailable   = errors.New("approval workflow is unavailable")
+	ErrForbidden                             = errors.New("forbidden")
+	ErrValidation                            = errors.New("validation failed")
+	ErrApprovalTargetForbidden               = errors.New("approval target cannot process contract approvals")
+	ErrPersonnelDirectoryUnavailable         = errors.New("approval personnel directory is unavailable")
+	ErrApprovalWorkflowUnavailable           = errors.New("approval workflow is unavailable")
+	ErrDetectionCategoryDirectoryUnavailable = errors.New("detection category directory is unavailable")
 )
