@@ -109,7 +109,7 @@ jobs:
           # 合同发布提前失败。仅为本次进程提供不可拉取的 digest 占位值；已有正式
           # PROJECT_IMAGE 时保持原值，且不会把占位值写入服务器 .release.env。
           printf -v remote_command \
-            'command -v bash >/dev/null && test -x %q/bin/deploy-service.sh && cd %q && project_image=$(grep -m1 "^PROJECT_IMAGE=" .release.env | cut -d= -f2-) && PROJECT_IMAGE=${project_image:-invalid.local/project-management@sha256:0000000000000000000000000000000000000000000000000000000000000000} bash ./bin/deploy-service.sh contract %q' \
+            'command -v bash >/dev/null && test -x %q/bin/deploy-service.sh && cd %q && project_image=$(grep -m1 "^PROJECT_IMAGE=" .release.env | cut -d= -f2-) && DEPLOY_FAIL_IF_RUNTIME_NOT_READY=true PROJECT_IMAGE=${project_image:-invalid.local/project-management@sha256:0000000000000000000000000000000000000000000000000000000000000000} bash ./bin/deploy-service.sh contract %q' \
             "$DEPLOY_PATH" "$DEPLOY_PATH" "$IMAGE_REF"
           ssh \
             -o BatchMode=yes \
