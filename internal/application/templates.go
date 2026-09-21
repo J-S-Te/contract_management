@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -43,8 +44,30 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 		OriginalFilename: filename, NumberFormat: contracttemplate.DefaultNumberFormat, Fields: fields, Content: append([]byte(nil), content...),
 		CreatedAt: time.Now().UTC(), CreatedBy: actor.UserID,
 	}
+	if s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
+		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-template-"+item.ID, s.StampedFileApplicationID, "CONTRACT_TEMPLATE", filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(content))
+		if uploadErr != nil {
+			if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "required") {
+				return contracttemplate.Template{}, fmt.Errorf("template file gateway: %w", uploadErr)
+			}
+			item.FileGatewayState = "FAILED"
+		} else {
+			item.PlatformFileID, item.FileGatewayState = fileID, "PENDING"
+		}
+	}
 	if err := s.Templates.CreateTemplate(ctx, item); err != nil {
 		return contracttemplate.Template{}, err
+	}
+	if item.PlatformFileID != "" {
+		bindErr := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, item.PlatformFileID, "contract_template", item.ID, "TEMPLATE_SOURCE", item.OriginalFilename)
+		state, detail := "READY", ""
+		if bindErr != nil {
+			state, detail = "FAILED", bindErr.Error()
+		}
+		item.FileGatewayState = state
+		if repository, ok := s.Templates.(SourceFileGatewayStateRepository); ok {
+			_ = repository.MarkTemplateGatewayResult(ctx, item.TenantID, item.ID, item.PlatformFileID, state, detail)
+		}
 	}
 	return item, nil
 }

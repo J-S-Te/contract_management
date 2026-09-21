@@ -380,6 +380,7 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 		OpportunityID: stringPtr(c.OpportunityID), OpportunityName: stringPtr(c.OpportunityName), CRMCustomerID: uintPtr(c.CRMCustomerID), CustomerName: stringPtr(c.CustomerName), CustomerAddress: stringPtr(c.CustomerAddress), CustomerContact: stringPtr(c.CustomerContact), CustomerPhone: stringPtr(c.CustomerPhone), OwnerIdentityID: stringPtr(c.OwnerIdentityID), OwnerOrgID: stringPtr(c.OwnerOrgID), ProjectID: stringPtr(c.ProjectID), SystemsJSON: systems, ServiceItemsJSON: serviceItems,
 		OwnerUserID: c.OwnerUserID, OwnerDisplayName: c.OwnerDisplayName, AmountMinor: c.AmountMinor, Currency: c.Currency, Content: c.Content,
 		TemplateID: stringPtr(c.TemplateID), TemplateValuesJSON: templateValues, RenderedDocument: c.Document,
+		SourceFileID: c.SourceFileID, SourceFileStatus: c.SourceFileStatus,
 		Status: string(c.Status), StartDate: c.StartDate, EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,
 		CreatedAt: now, CreatedBy: actorUserID, UpdatedAt: now, UpdatedBy: actorUserID,
 	}

@@ -132,6 +132,11 @@ type StampedDocumentGatewayStateRepository interface {
 	MarkStampedDocumentGatewayResult(context.Context, string, string, string, string) error
 }
 
+type SourceFileGatewayStateRepository interface {
+	MarkContractSourceGatewayResult(context.Context, string, string, string, string, string) error
+	MarkTemplateGatewayResult(context.Context, string, string, string, string, string) error
+}
+
 type OpportunityLinkNotifier interface {
 	NotifyOpportunityLink(context.Context, OpportunityIntake) error
 }
@@ -453,8 +458,30 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 	}
 	hash := sha256.Sum256(hashSource)
 	c.ContentHash = hex.EncodeToString(hash[:])
+	if external && s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
+		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-external-"+c.ID, s.StampedFileApplicationID, "CONTRACT_EXTERNAL_SOURCE", "external-contract.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(c.Document))
+		if uploadErr != nil {
+			if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "required") {
+				return c, fmt.Errorf("contract source file gateway: %w", uploadErr)
+			}
+			c.SourceFileStatus = "FAILED"
+		} else {
+			c.SourceFileID, c.SourceFileStatus = fileID, "PENDING"
+		}
+	}
 	if err := s.Repo.CreateContract(ctx, c, actor.UserID); err != nil {
 		return c, err
+	}
+	if external && c.SourceFileID != "" {
+		bindErr := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, c.SourceFileID, "contract", c.ID, "EXTERNAL_SOURCE", c.Title+".docx")
+		state, detail := "READY", ""
+		if bindErr != nil {
+			state, detail = "FAILED", bindErr.Error()
+		}
+		c.SourceFileStatus = state
+		if repository, ok := s.Repo.(SourceFileGatewayStateRepository); ok {
+			_ = repository.MarkContractSourceGatewayResult(ctx, c.TenantID, c.ID, c.SourceFileID, state, detail)
+		}
 	}
 	c.Version = 1
 	return c, nil

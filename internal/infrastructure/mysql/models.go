@@ -78,6 +78,9 @@ type contractRecord struct {
 	TemplateID           *string
 	TemplateValuesJSON   []byte `gorm:"type:json"`
 	RenderedDocument     []byte `gorm:"type:longblob"`
+	SourceFileID         string
+	SourceFileStatus     string
+	SourceFileLastError  string
 	Status               string
 	StartDate            *time.Time
 	EndDate              *time.Time
@@ -92,15 +95,18 @@ type contractRecord struct {
 func (contractRecord) TableName() string { return "con_contract" }
 
 type contractTemplateRecord struct {
-	ID               string `gorm:"primaryKey"`
-	TenantID         string
-	Name             string
-	OriginalFilename string
-	NumberFormat     string
-	FieldsJSON       []byte `gorm:"type:json"`
-	Document         []byte `gorm:"type:longblob"`
-	CreatedAt        time.Time
-	CreatedBy        string
+	ID                   string `gorm:"primaryKey"`
+	TenantID             string
+	Name                 string
+	OriginalFilename     string
+	NumberFormat         string
+	FieldsJSON           []byte `gorm:"type:json"`
+	Document             []byte `gorm:"type:longblob"`
+	PlatformFileID       string
+	FileGatewayState     string
+	FileGatewayLastError string
+	CreatedAt            time.Time
+	CreatedBy            string
 }
 
 func (contractTemplateRecord) TableName() string { return "con_contract_template" }
@@ -109,6 +115,7 @@ func templateFromRecord(record contractTemplateRecord) contracttemplate.Template
 	return contracttemplate.Template{
 		ID: record.ID, TenantID: record.TenantID, Name: record.Name,
 		OriginalFilename: record.OriginalFilename, NumberFormat: record.NumberFormat, Content: record.Document,
+		PlatformFileID: record.PlatformFileID, FileGatewayState: record.FileGatewayState,
 		CreatedAt: record.CreatedAt, CreatedBy: record.CreatedBy,
 	}
 }

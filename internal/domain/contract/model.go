@@ -31,6 +31,8 @@ type Contract struct {
 	TemplateID          string            `json:"template_id,omitempty"`
 	TemplateValues      map[string]string `json:"template_values,omitempty"`
 	Document            []byte            `json:"-"`
+	SourceFileID        string            `json:"source_file_id,omitempty"`
+	SourceFileStatus    string            `json:"source_file_status,omitempty"`
 	Status              Status            `json:"status"`
 	Version             uint64            `json:"version"`
 	StartDate           *time.Time        `json:"start_date,omitempty"`

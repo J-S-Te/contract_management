@@ -75,7 +75,21 @@ func (c *Client) Upload(ctx context.Context, requestID, applicationID, classific
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("application_id", applicationID)
-	_ = writer.WriteField("classification", classification)
+	classificationValue := strings.ToUpper(strings.TrimSpace(classification))
+	purpose := ""
+	switch classificationValue {
+	case "CONTRACT_STAMPED_PDF":
+		purpose = "contract.stamped-pdf"
+	case "CONTRACT_EXTERNAL_SOURCE":
+		purpose = "contract.external.source"
+	case "CONTRACT_TEMPLATE":
+		purpose = "contract.template"
+	}
+	if purpose != "" {
+		_ = writer.WriteField("purpose", purpose)
+		classificationValue = "CONFIDENTIAL"
+	}
+	_ = writer.WriteField("classification", classificationValue)
 	contentType := strings.TrimSpace(mediaType)
 	if contentType == "" {
 		contentType = "application/octet-stream"
