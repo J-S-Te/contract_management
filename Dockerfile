@@ -9,6 +9,8 @@ RUN go mod download
 COPY . ./
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/authz-catalog ./cmd/authz-catalog \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/file-backfill ./cmd/file-backfill \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker ./cmd/worker \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker-rollout ./cmd/worker-rollout \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
@@ -20,6 +22,8 @@ RUN apk add --no-cache ca-certificates tzdata wget libreoffice-writer font-noto-
 WORKDIR /app
 
 COPY --from=builder /out/api ./api
+COPY --from=builder /out/authz-catalog ./authz-catalog
+COPY --from=builder /out/file-backfill ./file-backfill
 COPY --from=builder /out/worker ./worker
 COPY --from=builder /out/worker-rollout ./worker-rollout
 COPY --from=builder /out/migrate ./migrate

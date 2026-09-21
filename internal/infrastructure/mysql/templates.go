@@ -20,7 +20,7 @@ func (r *Repository) CreateTemplate(ctx context.Context, item contracttemplate.T
 	record := contractTemplateRecord{
 		ID: item.ID, TenantID: item.TenantID, Name: item.Name,
 		OriginalFilename: item.OriginalFilename, NumberFormat: item.NumberFormat, FieldsJSON: fields,
-		Document: item.Content, CreatedAt: now, CreatedBy: item.CreatedBy,
+		Document: item.Content, PlatformFileID: item.PlatformFileID, FileGatewayState: item.FileGatewayState, CreatedAt: now, CreatedBy: item.CreatedBy,
 	}
 	return r.db.WithContext(ctx).Create(&record).Error
 }

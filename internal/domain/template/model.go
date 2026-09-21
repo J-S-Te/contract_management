@@ -19,6 +19,8 @@ type Template struct {
 	NumberFormat     string    `json:"number_format"`
 	Fields           []Field   `json:"fields"`
 	Content          []byte    `json:"-"`
+	PlatformFileID   string    `json:"file_id,omitempty"`
+	FileGatewayState string    `json:"file_status,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	CreatedBy        string    `json:"created_by"`
 }
