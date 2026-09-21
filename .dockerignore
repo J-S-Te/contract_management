@@ -1,5 +1,5 @@
 .git
-.env
+.env*
 data
 tmp
 *.log
