@@ -152,6 +152,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	var crmSignedCountBearer platform.ClientCredentialsTokenVerifier
+	if cfg.CRMSignedCountMachineEnabled {
+		crmSignedCountBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
+			Issuer: cfg.CRMSignedCountMachineIssuer, Audience: cfg.CRMSignedCountMachineAudience,
+			PublicKeyPath: cfg.CRMSignedCountMachinePublicKeyPath, ClientID: cfg.CRMSignedCountMachineClientID,
+			TenantID: cfg.OIDCTenantID, CallerApplicationCode: cfg.CRMSignedCountMachineCallerApp,
+			CallerEnvironmentCode: cfg.CRMSignedCountMachineCallerEnv, RequiredScope: cfg.CRMSignedCountMachineScope,
+		})
+		if err != nil {
+			logger.Error("initialize CRM signed contract count bearer verifier", "error", err)
+			os.Exit(1)
+		}
+	}
 	auditReporter := platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
@@ -177,10 +190,11 @@ func main() {
 	}
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
-		Handler: httpapi.NewRouterWithIntegrations(service, identity,
+		Handler: httpapi.NewRouterWithAllIntegrations(service, identity,
 			&httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer},
 			&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer},
-			&httpapi.ProjectIntegrationOptions{Enabled: cfg.ProjectApprovalMachineEnabled, RequireBearer: cfg.ProjectApprovalMachineRequireBearer, BearerVerifier: projectApprovalBearer}, auditReporter),
+			&httpapi.ProjectIntegrationOptions{Enabled: cfg.ProjectApprovalMachineEnabled, RequireBearer: cfg.ProjectApprovalMachineRequireBearer, BearerVerifier: projectApprovalBearer},
+			&httpapi.CRMSignedCountIntegrationOptions{Enabled: cfg.CRMSignedCountMachineEnabled, RequireBearer: cfg.CRMSignedCountMachineRequireBearer, BearerVerifier: crmSignedCountBearer}, auditReporter),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

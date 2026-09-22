@@ -79,21 +79,31 @@ type ProjectIntegrationOptions struct {
 	BearerVerifier platform.ClientCredentialsTokenVerifier
 }
 
+type CRMSignedCountIntegrationOptions struct {
+	Enabled        bool
+	RequireBearer  bool
+	BearerVerifier platform.ClientCredentialsTokenVerifier
+}
+
 // NewRouter 创建兼容现有调用方的合同管理路由。
 func NewRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, nil, nil, audits...)
+	return newRouter(service, identity, dashboardOptions, nil, nil, nil, audits...)
 }
 
 // NewRouterWithSettlement 创建包含结算系统内部读取接口的路由。
 func NewRouterWithSettlement(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, settlementOptions, nil, audits...)
+	return newRouter(service, identity, dashboardOptions, settlementOptions, nil, nil, audits...)
 }
 
 func NewRouterWithIntegrations(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, audits...)
+	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, nil, audits...)
 }
 
-func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+func NewRouterWithAllIntegrations(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, crmSignedCountOptions, audits...)
+}
+
+func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
 		audit = audits[0]
@@ -144,6 +154,11 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
 		internal.GET("/approved-contracts/:contractID/service-items", h.getProjectApprovedContractServiceItems)
 	}
+	if crmSignedCountOptions != nil && crmSignedCountOptions.Enabled {
+		internal := r.Group("/contract_management/internal/opportunity-contract-counts")
+		internal.Use(h.authenticateServiceIntegration(*crmSignedCountOptions, "客户与商机管理系统"))
+		internal.POST("/query", h.countSignedContractsByOpportunity)
+	}
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
 	api.GET("/auth/me", h.me)
 	api.GET("/dashboard", h.dashboard)
@@ -189,6 +204,46 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		api.POST("/approvals/:approvalID/"+action, h.command(action))
 	}
 	return r
+}
+
+type opportunitySignedCountQuery struct {
+	OpportunityIDs []string `json:"opportunity_ids"`
+}
+
+func (h *Handler) countSignedContractsByOpportunity(c *gin.Context) {
+	var input opportunitySignedCountQuery
+	if !decode(c, &input) {
+		return
+	}
+	if len(input.OpportunityIDs) == 0 || len(input.OpportunityIDs) > 1000 {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "商机编号数量必须在 1 到 1000 之间", nil)
+		return
+	}
+	seen := make(map[string]struct{}, len(input.OpportunityIDs))
+	for index, value := range input.OpportunityIDs {
+		value = strings.TrimSpace(value)
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || parsed == 0 || strconv.FormatUint(parsed, 10) != value {
+			writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "商机编号必须是规范的正整数", nil)
+			return
+		}
+		if _, exists := seen[value]; exists {
+			writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "商机编号不能重复", nil)
+			return
+		}
+		seen[value] = struct{}{}
+		input.OpportunityIDs[index] = value
+	}
+	counts, err := h.service.CountSignedContractsByOpportunityIDs(c.Request.Context(), principal(c).TenantID, input.OpportunityIDs)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(input.OpportunityIDs))
+	for _, opportunityID := range input.OpportunityIDs {
+		items = append(items, map[string]any{"opportunity_id": opportunityID, "signed_contract_count": counts[opportunityID]})
+	}
+	writeData(c, http.StatusOK, map[string]any{"items": items})
 }
 
 func auditAvailability(audit platform.AuditReporter) string {
