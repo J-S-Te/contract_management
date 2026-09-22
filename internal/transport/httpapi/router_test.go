@@ -24,6 +24,18 @@ type externalContractRepository struct {
 	created contract.Contract
 }
 
+type signedCountHTTPRepository struct {
+	application.Repository
+	tenant string
+	ids    []string
+}
+
+func (repository *signedCountHTTPRepository) CountSignedContractsByOpportunityIDs(_ context.Context, tenant string, ids []string) (map[string]uint64, error) {
+	repository.tenant = tenant
+	repository.ids = append([]string(nil), ids...)
+	return map[string]uint64{"7": 2, "9": 0}, nil
+}
+
 type externalDetectionCategoryDirectory struct{}
 
 func (externalDetectionCategoryDirectory) List(context.Context) ([]application.DetectionCategory, error) {
@@ -333,6 +345,29 @@ func (s stubVerifier) VerifyClientCredentials(_ context.Context, _ string) (plat
 		return platform.ServiceTokenIdentity{}, s.err
 	}
 	return platform.ServiceTokenIdentity{TenantID: s.tenantID}, nil
+}
+
+func TestCRMSignedCountIntegrationUsesVerifiedTenantAndReturnsEveryRequestedOpportunity(t *testing.T) {
+	repository := &signedCountHTTPRepository{}
+	service := &application.Service{Repo: repository}
+	router := NewRouterWithAllIntegrations(service, nil, nil, nil, nil, &CRMSignedCountIntegrationOptions{
+		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{tenantID: "tenant-from-token"},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/contract_management/internal/opportunity-contract-counts/query", strings.NewReader(`{"opportunity_ids":["7","9"]}`))
+	request.Header.Set("Authorization", "Bearer machine-token")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Tenant-ID", "attacker-tenant")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if repository.tenant != "tenant-from-token" || strings.Join(repository.ids, ",") != "7,9" {
+		t.Fatalf("repository call tenant=%q ids=%v", repository.tenant, repository.ids)
+	}
+	if body := response.Body.String(); !strings.Contains(body, `"opportunity_id":"7","signed_contract_count":2`) || !strings.Contains(body, `"opportunity_id":"9","signed_contract_count":0`) {
+		t.Fatalf("body = %s", body)
+	}
 }
 
 func TestDashboardIntegrationRequiresExplicitTenantBoundary(t *testing.T) {

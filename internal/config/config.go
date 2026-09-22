@@ -41,6 +41,15 @@ type Config struct {
 	ProjectApprovalMachineCallerApp     string
 	ProjectApprovalMachineCallerEnv     string
 	ProjectApprovalMachineScope         string
+	CRMSignedCountMachineEnabled        bool
+	CRMSignedCountMachineRequireBearer  bool
+	CRMSignedCountMachineClientID       string
+	CRMSignedCountMachineAudience       string
+	CRMSignedCountMachineIssuer         string
+	CRMSignedCountMachinePublicKeyPath  string
+	CRMSignedCountMachineCallerApp      string
+	CRMSignedCountMachineCallerEnv      string
+	CRMSignedCountMachineScope          string
 	OIDCClientSecret                    string
 	OIDCRedirectURI                     string
 	OIDCPostLogoutRedirectURI           string
@@ -132,6 +141,15 @@ func Load() (Config, error) {
 		ProjectApprovalMachineCallerApp:     os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_APPLICATION_CODE"),
 		ProjectApprovalMachineCallerEnv:     os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_ENVIRONMENT_CODE"),
 		ProjectApprovalMachineScope:         os.Getenv("PROJECT_APPROVAL_MACHINE_REQUIRED_SCOPE"),
+		CRMSignedCountMachineEnabled:        envBool("CRM_SIGNED_COUNT_MACHINE_ENABLED", false),
+		CRMSignedCountMachineRequireBearer:  envBool("CRM_SIGNED_COUNT_MACHINE_REQUIRE_BEARER", false),
+		CRMSignedCountMachineClientID:       os.Getenv("CRM_SIGNED_COUNT_MACHINE_CLIENT_ID"),
+		CRMSignedCountMachineAudience:       os.Getenv("CRM_SIGNED_COUNT_MACHINE_AUDIENCE"),
+		CRMSignedCountMachineIssuer:         os.Getenv("CRM_SIGNED_COUNT_MACHINE_ISSUER"),
+		CRMSignedCountMachinePublicKeyPath:  os.Getenv("CRM_SIGNED_COUNT_MACHINE_PUBLIC_KEY_PATH"),
+		CRMSignedCountMachineCallerApp:      os.Getenv("CRM_SIGNED_COUNT_MACHINE_CALLER_APPLICATION_CODE"),
+		CRMSignedCountMachineCallerEnv:      os.Getenv("CRM_SIGNED_COUNT_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		CRMSignedCountMachineScope:          os.Getenv("CRM_SIGNED_COUNT_MACHINE_REQUIRED_SCOPE"),
 		OIDCClientSecret:                    os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
@@ -301,6 +319,27 @@ func (c Config) validate() error {
 			if strings.TrimSpace(value) == "" {
 				return fmt.Errorf("%s is required when project approval integration is enabled", name)
 			}
+		}
+	}
+	if c.CRMSignedCountMachineEnabled {
+		if !c.CRMSignedCountMachineRequireBearer {
+			return fmt.Errorf("CRM_SIGNED_COUNT_MACHINE_REQUIRE_BEARER must be true when CRM signed count integration is enabled")
+		}
+		for name, value := range map[string]string{
+			"CRM_SIGNED_COUNT_MACHINE_CLIENT_ID":               c.CRMSignedCountMachineClientID,
+			"CRM_SIGNED_COUNT_MACHINE_AUDIENCE":                c.CRMSignedCountMachineAudience,
+			"CRM_SIGNED_COUNT_MACHINE_ISSUER":                  c.CRMSignedCountMachineIssuer,
+			"CRM_SIGNED_COUNT_MACHINE_PUBLIC_KEY_PATH":         c.CRMSignedCountMachinePublicKeyPath,
+			"CRM_SIGNED_COUNT_MACHINE_CALLER_APPLICATION_CODE": c.CRMSignedCountMachineCallerApp,
+			"CRM_SIGNED_COUNT_MACHINE_CALLER_ENVIRONMENT_CODE": c.CRMSignedCountMachineCallerEnv,
+			"CRM_SIGNED_COUNT_MACHINE_REQUIRED_SCOPE":          c.CRMSignedCountMachineScope,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when CRM signed count integration is enabled", name)
+			}
+		}
+		if c.CRMSignedCountMachineScope != "contract.opportunity_signed_count.read" {
+			return fmt.Errorf("CRM_SIGNED_COUNT_MACHINE_REQUIRED_SCOPE must be contract.opportunity_signed_count.read")
 		}
 	}
 	platformURL, err := url.ParseRequestURI(c.PlatformBaseURL)
