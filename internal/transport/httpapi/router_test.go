@@ -183,6 +183,7 @@ func TestInvalidJSONDoesNotReachService(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/contracts", strings.NewReader(`{"unknown":true}`))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "http://example.com")
 	response := httptest.NewRecorder()
 
 	NewRouter(nil, identity, nil).ServeHTTP(response, request)
@@ -308,6 +309,8 @@ func externalContractUploadRequest(t *testing.T, metadata, filename, contentType
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/contracts/external", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
+	// 同源校验（SEC-D11）要求写请求携带与 APP_PUBLIC_URL 一致的 Origin。
+	request.Header.Set("Origin", "http://example.com")
 	return request
 }
 

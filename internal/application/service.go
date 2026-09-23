@@ -286,6 +286,12 @@ func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id s
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
 		return err
 	}
+	// 收件人手机号长度上限（SEC-D7）：列加密密文 = 前缀 + nonce + GCM tag + Base64，
+	// 只有 ≤MaxSigningPhonePlaintextLen 个字符的明文才能稳定存入 000016 迁移的
+	// VARCHAR(80)；超长按参数不合法拒绝（422），而不是让 SQL 报"数据过长"。
+	if phone := strings.TrimSpace(shipment.RecipientPhone); phone == "" || len([]rune(phone)) > contract.MaxSigningPhonePlaintextLen {
+		return fmt.Errorf("%w: 收件人手机号必须为 1~%d 个字符", ErrValidation, contract.MaxSigningPhonePlaintextLen)
+	}
 	current, err := s.Repo.GetSigningRecord(ctx, actor.TenantID, id)
 	if err != nil {
 		return err

@@ -215,6 +215,8 @@ func (r *Repository) GetSigningRecord(ctx context.Context, tenantID, contractID 
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return contract.SigningRecord{}, err
 	}
+	// 存量明文手机号懒回填（SEC-D7）：读取时顺手加密，掩码不依赖回填成功。
+	r.repairSigningPhonePlaintext(ctx, tenantID, contractID, signing)
 	return signingFromRecords(item, signing, document), nil
 }
 
@@ -233,7 +235,51 @@ func (r *Repository) GetSigningRecordScoped(ctx context.Context, filter contract
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return contract.SigningRecord{}, err
 	}
+	// 存量明文手机号懒回填（SEC-D7）：读取时顺手加密，掩码不依赖回填成功。
+	r.repairSigningPhonePlaintext(ctx, filter.TenantID, contractID, signing)
 	return signingFromRecords(item, signing, document), nil
+}
+
+// maskStoredSigningPhone 是读路径的掩码投影（SEC-D7）：API 只返回 138****5678
+// 形式的掩码号码，完整号码不出读路径。
+//   - 密文：解密后掩码；解密失败（密钥缺失/篡改）返回固定占位，绝不回传密文；
+//   - 存量明文（加密上线前写入）：直接掩码，回填由 repairSigningPhonePlaintext 负责。
+func maskStoredSigningPhone(contractID, stored string) string {
+	if stored == "" {
+		return ""
+	}
+	if contract.IsSigningPhoneCiphertext(stored) {
+		plain, err := contract.DecryptSigningPhone(contractID, stored)
+		if err != nil {
+			return "***"
+		}
+		return contract.MaskPhone(plain)
+	}
+	return contract.MaskPhone(stored)
+}
+
+// signingPhoneColumnLimit 是 000016_signing_recipient_phone.sql 的 VARCHAR(80)：
+// 超长值无法回填为密文（宁可保留明文行 + 读掩码，也不制造截断或写失败）。
+const signingPhoneColumnLimit = 80
+
+// repairSigningPhonePlaintext 是存量明文手机号的懒回填策略（SEC-D7）：
+// 读取签署记录时把仍为明文的行就地加密回填，无需停机迁移。
+// 只尽力而为——密钥缺失、密文超长或并发更新都不影响本次读取（掩码投影已生效），
+// 下一次读取会再次尝试，业务下次寄送更新也会以密文覆盖。
+func (r *Repository) repairSigningPhonePlaintext(ctx context.Context, tenantID, contractID string, row signingRecord) {
+	stored := valueOrEmpty(row.RecipientPhone)
+	if stored == "" || contract.IsSigningPhoneCiphertext(stored) {
+		return
+	}
+	repaired, err := contract.EncryptSigningPhone(contractID, stored)
+	if err != nil || len(repaired) > signingPhoneColumnLimit {
+		return
+	}
+	if err := r.db.WithContext(ctx).Model(&signingRecord{}).
+		Where("tenant_id = ? AND contract_id = ? AND recipient_phone = ?", tenantID, contractID, stored).
+		Update("recipient_phone", repaired).Error; err != nil {
+		// 懒回填失败不阻塞读取：掩码已生效，下次读取/写入仍会重试回填。
+	}
 }
 
 func signingFromRecords(item contract.Contract, row signingRecord, document stampedDocumentRecord) contract.SigningRecord {
@@ -243,14 +289,20 @@ func signingFromRecords(item contract.Contract, row signingRecord, document stam
 	if row.ContractID != "" {
 		status, method, version = contract.SigningStatus(row.Status), row.Method, row.Version
 	}
-	return contract.SigningRecord{Contract: item, Method: method, Status: status, CourierNumber: valueOrEmpty(row.CourierNumber), RecipientName: valueOrEmpty(row.RecipientName), RecipientPhone: valueOrEmpty(row.RecipientPhone), RecipientAddress: valueOrEmpty(row.RecipientAddress), MailedAt: row.MailedAt, CustomerReceivedAt: row.CustomerReceivedAt, ReturnedDocumentName: document.OriginalFilename, ReturnedAt: timePtr(document.UploadedAt), SealVerified: row.SealVerified, SignatureVerified: row.SignatureVerified, SignedAt: row.SignedAt, ConfirmedAt: row.ConfirmedAt, ReminderCount: row.ReminderCount, LastRemindedAt: row.LastRemindedAt, Version: version}
+	return contract.SigningRecord{Contract: item, Method: method, Status: status, CourierNumber: valueOrEmpty(row.CourierNumber), RecipientName: valueOrEmpty(row.RecipientName), RecipientPhone: maskStoredSigningPhone(item.ID, valueOrEmpty(row.RecipientPhone)), RecipientAddress: valueOrEmpty(row.RecipientAddress), MailedAt: row.MailedAt, CustomerReceivedAt: row.CustomerReceivedAt, ReturnedDocumentName: document.OriginalFilename, ReturnedAt: timePtr(document.UploadedAt), SealVerified: row.SealVerified, SignatureVerified: row.SignatureVerified, SignedAt: row.SignedAt, ConfirmedAt: row.ConfirmedAt, ReminderCount: row.ReminderCount, LastRemindedAt: row.LastRemindedAt, Version: version}
 }
 
 func (r *Repository) SaveSigningShipment(ctx context.Context, tenantID, contractID, actor string, shipment contract.SigningShipment) error {
 	now := time.Now().UTC()
-	record := signingRecord{ContractID: contractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningInReturn), CourierNumber: stringPtr(shipment.CourierNumber), RecipientName: stringPtr(shipment.RecipientName), RecipientPhone: stringPtr(shipment.RecipientPhone), RecipientAddress: stringPtr(shipment.RecipientAddress), MailedAt: &shipment.MailedAt, Version: 1, UpdatedAt: now, UpdatedBy: actor}
+	// 列加密（SEC-D7）：签署人手机号属于 PII，AES-GCM 落库；密钥缺失或非法时
+	// 直接返回错误（写入失败关闭），绝不回退明文存储。
+	encryptedPhone, err := contract.EncryptSigningPhone(contractID, shipment.RecipientPhone)
+	if err != nil {
+		return fmt.Errorf("encrypt signing recipient phone: %w", err)
+	}
+	record := signingRecord{ContractID: contractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningInReturn), CourierNumber: stringPtr(shipment.CourierNumber), RecipientName: stringPtr(shipment.RecipientName), RecipientPhone: stringPtr(encryptedPhone), RecipientAddress: stringPtr(shipment.RecipientAddress), MailedAt: &shipment.MailedAt, Version: 1, UpdatedAt: now, UpdatedBy: actor}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningInReturn, "courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName, "recipient_phone": shipment.RecipientPhone, "recipient_address": shipment.RecipientAddress, "mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})}).Create(&record).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningInReturn, "courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName, "recipient_phone": encryptedPhone, "recipient_address": shipment.RecipientAddress, "mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})}).Create(&record).Error; err != nil {
 			return err
 		}
 		return insertSigningNotification(tx, tenantID, contractID, "signing_shipped", "合同已寄出", "合同签署文件已寄出，请关注回传进度", signingNotificationKey(contractID, "shipped"))
