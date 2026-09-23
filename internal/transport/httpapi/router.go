@@ -130,11 +130,19 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	r.GET("/readyz", func(c *gin.Context) {
 		status := http.StatusOK
 		state := "ready"
+		phoneKeyState := "ready"
+		// 签署人手机号列加密密钥必填（SEC-D7，*_KEY_BASE64 模式）：缺失或非法时
+		// 就绪检查失败关闭，避免带密钥缺口上线后所有寄送写入只能报错。
+		if err := contract.SigningPhoneKeyStatus(); err != nil {
+			status = http.StatusServiceUnavailable
+			state = "not_ready"
+			phoneKeyState = "missing"
+		}
 		if auditRequired() && audit == nil {
 			status = http.StatusServiceUnavailable
 			state = "not_ready"
 		}
-		writeJSON(c, status, envelope{Code: "OK", Message: state, Data: map[string]string{"status": state, "audit": auditAvailability(audit)}})
+		writeJSON(c, status, envelope{Code: "OK", Message: state, Data: map[string]string{"status": state, "audit": auditAvailability(audit), "signing_phone_key": phoneKeyState}})
 	})
 	if dashboardOptions != nil && dashboardOptions.Enabled {
 		internal := r.Group("/internal/v1")
@@ -159,7 +167,9 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal.Use(h.authenticateServiceIntegration(*crmSignedCountOptions, "客户与商机管理系统"))
 		internal.POST("/query", h.countSignedContractsByOpportunity)
 	}
-	api := r.Group("/api/v1", h.authenticate(), h.auditWrites())
+	// SEC-D11：cookie 会话写请求必须通过同源 Origin 校验（失败关闭）；
+	// 放在 auditWrites 之后使跨站拒绝尝试同样进入审计。
+	api := r.Group("/api/v1", h.authenticate(), h.auditWrites(), h.requireSameOriginWrite())
 	api.GET("/auth/me", h.me)
 	api.GET("/dashboard", h.dashboard)
 	api.POST("/opportunity-intakes", h.acceptOpportunityIntake)
@@ -358,18 +368,86 @@ func (h *Handler) listContractLifecycle(c *gin.Context) {
 	writeData(c, http.StatusOK, events)
 }
 
+// auditWrites 在业务 handler 完成后把写请求（与敏感读）的结果上报平台审计。
+//
+// 安全理由（SEC-D4b）：原实现对审计管道 fail-open —— reporter 为 nil 直接放行、
+// Report 错误被空白标识符丢弃，凭据失效或 ingest 故障时合同审批/签署/状态变更等
+// 所有写入都没有审计且不可见。现在：
+//  1. 上报失败一律 error 日志（含路由与请求 id），不再静默；
+//  2. 强制审计模式（PLATFORM_AUDIT_REQUIRED 或 PLATFORM_ENVIRONMENT_CODE=prod）下：
+//     - reporter 缺失 => 在执行业务 handler 之前就拒绝请求（503），不产生无审计的写；
+//     - 写请求先缓冲响应，Report 成功才提交给客户端；失败则丢弃业务响应并返回
+//     503，保证“审计写不进去 ⇒ 客户端拿不到成功”。
+//
+// 非强制模式保持原有放行语义，仅补上可告警的错误日志。
 func (h *Handler) auditWrites() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if h.audit == nil || skipAudit(c.Request.Method, c.Request.URL.Path) {
+		if skipAudit(c.Request.Method, c.Request.URL.Path) {
 			c.Next()
 			return
 		}
-		c.Next()
-		p := principal(c)
-		status := c.Writer.Status()
-		resourceType, resourceID := auditResource(c)
+		route := c.Request.Method + " " + c.Request.URL.Path
 		requestID := requestIDFrom(c.Request.Context())
-		_ = h.audit.Report(c.Request.Context(), platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: auditResult(status), RiskLevel: auditRiskLevel(c.Request.Method, c.Request.URL.Path, status), ReasonCode: strconv.Itoa(status), UserLoginIP: requestClientIP(c.Request)})
+		if h.audit == nil {
+			if !auditRequired() {
+				// 非强制模式：审计按配置关闭，/healthz 与 /readyz 已暴露 disabled 状态。
+				c.Next()
+				return
+			}
+			slog.ErrorContext(c.Request.Context(), "audit reporter unavailable, rejecting request",
+				"route", route,
+				"request_id", requestID,
+			)
+			c.Abort()
+			writeEnvelopeError(c, http.StatusServiceUnavailable, "AUDIT_UNAVAILABLE", "审计服务不可用，操作已被拒绝", nil)
+			return
+		}
+		required := auditRequired()
+		origWriter := c.Writer
+		var buffered *auditBuffer
+		if required && isUnsafeMethod(c.Request.Method) {
+			buffered = newAuditBuffer(origWriter)
+			c.Writer = buffered
+		}
+		// handler panic 展平时先恢复真实 writer，外层 recoverer 才能把 500 写出去；
+		// 缓冲中的半成品响应被直接丢弃，不会被当成成功提交。
+		defer func() { c.Writer = origWriter }()
+		c.Next()
+		status := c.Writer.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		p := principal(c)
+		resourceType, resourceID := auditResource(c)
+		event := platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: auditResult(status), RiskLevel: auditRiskLevel(c.Request.Method, c.Request.URL.Path, status), ReasonCode: strconv.Itoa(status), UserLoginIP: requestClientIP(c.Request)}
+		if err := h.audit.Report(c.Request.Context(), event); err != nil {
+			slog.ErrorContext(c.Request.Context(), "report platform audit failed",
+				"route", route,
+				"request_id", requestID,
+				"status", status,
+				"error", err,
+			)
+			if required {
+				// 强制审计模式：审计事件写入失败必须拒绝该请求，不能静默成功。
+				c.Writer = origWriter
+				writeEnvelopeError(c, http.StatusServiceUnavailable, "AUDIT_WRITE_REJECTED", "审计记录写入失败，操作未被确认", nil)
+			}
+			return
+		}
+		if buffered != nil {
+			buffered.flushTo(origWriter)
+		}
+	}
+}
+
+// isUnsafeMethod 判定需要缓冲响应的不安全方法（写请求）；读请求不缓冲，
+// 避免把大文件下载整包压进内存。
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
 	}
 }
 
