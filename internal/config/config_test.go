@@ -236,3 +236,54 @@ func TestLoadAcceptsDashboardMachineWithBearer(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 }
+
+// AUD-2026-018：CRM 回写凭据（CRM_API_BASE_URL/CRM_API_TOKEN）纳入启动校验。
+// crm.Dispatcher.Run 与 crm.LinkNotifier 对空 BaseURL 均按“集成关闭”处理，
+// 因此空 BaseURL 合法；配置 BaseURL 时必须是 HTTP(S) origin 且 Token 必填。
+func TestLoadTreatsEmptyCRMDeliveryBaseURLAsDisabled(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("CRM_API_BASE_URL", "")
+	t.Setenv("CRM_API_TOKEN", "")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.CRMDeliveryBaseURL != "" || config.CRMDeliveryToken != "" {
+		t.Fatalf("CRMDelivery = %q/%q, want empty (integration disabled)", config.CRMDeliveryBaseURL, config.CRMDeliveryToken)
+	}
+}
+
+func TestLoadAcceptsValidCRMDeliveryConfiguration(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("CRM_API_BASE_URL", "http://customer-api:8090")
+	t.Setenv("CRM_API_TOKEN", "delivery-machine-token")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.CRMDeliveryBaseURL != "http://customer-api:8090" || config.CRMDeliveryToken != "delivery-machine-token" {
+		t.Fatalf("CRMDelivery = %q/%q, want configured values", config.CRMDeliveryBaseURL, config.CRMDeliveryToken)
+	}
+}
+
+func TestLoadRejectsNonHTTPCRMDeliveryBaseURL(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("CRM_API_BASE_URL", "ftp://customer-api:8090")
+	t.Setenv("CRM_API_TOKEN", "delivery-machine-token")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRM_API_BASE_URL") {
+		t.Fatalf("Load() error = %v, want invalid CRM_API_BASE_URL origin error", err)
+	}
+}
+
+func TestLoadRequiresCRMDeliveryTokenWhenBaseURLIsSet(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("CRM_API_BASE_URL", "http://customer-api:8090")
+	t.Setenv("CRM_API_TOKEN", "   ")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRM_API_TOKEN") {
+		t.Fatalf("Load() error = %v, want missing CRM_API_TOKEN error", err)
+	}
+}

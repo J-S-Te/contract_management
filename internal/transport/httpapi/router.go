@@ -1432,6 +1432,8 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DETECTION_CATEGORY_DIRECTORY_UNAVAILABLE", "检测类别目录暂时不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrCRMReferenceDirectoryUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_CRM_REFERENCE_DIRECTORY_UNAVAILABLE", "CRM 客户与商机目录暂时不可用，请稍后重试", nil)
+	case errors.Is(err, contractpdf.ErrConversionUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_PDF_CONVERSION_BUSY", "PDF 转换并发已达上限，请稍后重试", nil)
 	case errors.Is(err, application.ErrForbidden):
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, application.ErrApprovalTargetForbidden):

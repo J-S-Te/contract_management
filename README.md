@@ -116,7 +116,7 @@ Compose 会先等待 MySQL 健康，再由一次性 `migrate` 服务按编号执
 
 审批节点角色编码必须与权限清单一致：`admin`、`sales_director`、`tech_director`、`finance_director`。同一合同版本最多只能存在一个运行中的关键状态变更审批。
 
-OIDC 浏览器 Client 与审计机器 Client 必须分离。浏览器登录使用 Keycloak realm `basic-platform`；Issuer 为 `http://47.111.20.119:18090/realms/basic-platform`，不能只填写 Keycloak 根地址。Keycloak Client 必须配置精确回调地址，并将 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 映射到 ID Token 和 UserInfo。审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。
+OIDC 浏览器 Client 与审计机器 Client 必须分离。浏览器登录使用 Keycloak realm `basic-platform`；Issuer 为 `http://203.0.113.10:18090/realms/basic-platform`，不能只填写 Keycloak 根地址。Keycloak Client 必须配置精确回调地址，并将 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 映射到 ID Token 和 UserInfo。审计凭据必须由密钥管理系统注入；未完整配置审计的四项环境变量时，审计投递保持禁用。
 
 平台管理员应通过“子系统一键接入”注册 `contract_management/dev`，公开 BaseURL 使用门户地址，UpstreamURL 使用 `http://contract-api:8081`，路径前缀使用 `/contract_management`。首次启用审计时，应另行创建 `service + client_secret_basic + client_credentials` 客户端并授予 `audit.ingest` scope。
 
@@ -135,20 +135,20 @@ make build
 
 ## 自动部署
 
-`main` 分支推送通过测试后，GitHub Actions 会构建 `linux/amd64` 镜像，推送到 GHCR，并使用镜像摘要自动部署到 `47.111.20.119`。部署任务固定使用 GitHub `test` Environment；仓库需要配置：
+`main` 分支推送通过测试后，GitHub Actions 会构建 `linux/amd64` 镜像，推送到 GHCR，并使用镜像摘要自动部署到 `203.0.113.10`。部署任务固定使用 GitHub `test` Environment；仓库需要配置：
 
 - Environment Secret `DEPLOY_USER`：服务器上的低权限发布用户。
 - Environment Secret `DEPLOY_SSH_KEY`：该用户的 Ed25519 SSH 私钥。
-- Environment Secret `DEPLOY_KNOWN_HOSTS`：预先核验的 `47.111.20.119` SSH 主机公钥，不能在流水线中临时信任。
+- Environment Secret `DEPLOY_KNOWN_HOSTS`：预先核验的 `203.0.113.10` SSH 主机公钥，不能在流水线中临时信任。
 - 可选 Environment Secret `DEPLOY_PORT`：SSH 端口，默认 `22`。
-- 可选 Environment Variable `DEPLOY_PATH`：集成部署目录，默认 `/opt/basic-platform`。
+- 可选 Environment Variable `DEPLOY_PATH`：集成部署目录，默认 `/opt/unified-identity-platform`。
 
 服务器部署目录必须已经由平台生产部署初始化，包含可执行的 `bin/deploy-service.sh`、`compose.yaml`、权限为 `600` 的 `.env` 和 `.release.env`。发布用户必须能够在该目录运行 Docker Compose；如果 GHCR 包为私有包，服务器还必须预先执行 `docker login ghcr.io`。流水线传递 `ghcr.io/...@sha256:...` 不可变镜像引用，远端脚本会先备份数据库，再执行 Compose 中的 `contract-migrate` 一次性服务；迁移非零退出时发布立即中止，不会替换正在运行的 API。迁移成功后才更新服务、执行健康检查，失败时恢复上一镜像。
 
 首次配置主机公钥时，应在可信网络中核验服务器指纹后生成 Secret，例如：
 
 ```bash
-ssh-keyscan -H -p 22 47.111.20.119
+ssh-keyscan -H -p 22 203.0.113.10
 ```
 
 为保持完全自动部署，`test` Environment 不应配置必需人工审批；如测试环境治理要求审批，可添加 Required reviewers，此时构建仍自动执行，但部署会等待批准。
