@@ -4,9 +4,22 @@ FROM golang:1.27.1-alpine AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+ARG GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOPROXY=${GOPROXY} \
+    GOSUMDB=${GOSUMDB}
+RUN set -eu; \
+    for attempt in 1 2 3 4 5; do \
+      if go mod download && go mod verify; then exit 0; fi; \
+      echo "go module download failed (attempt ${attempt}/5)" >&2; \
+      sleep $((attempt * 2)); \
+    done; \
+    exit 1
 
-COPY . ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY authz/ ./authz/
+COPY migrations/ ./migrations/
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/authz-catalog ./cmd/authz-catalog \

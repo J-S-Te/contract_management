@@ -105,6 +105,12 @@ type Config struct {
 	CRMReferenceClientID           string
 	CRMReferenceClientSecret       string
 	CRMReferenceScope              string
+	// CRMDelivery*：合同→CRM 签约回链（crm.Dispatcher / crm.LinkNotifier）凭据。
+	// AUD-2026-018：BaseURL 为空视为回链集成关闭（两处调用方均有该禁用语义）；
+	// 一旦配置必须是合法 HTTP(S) origin 且 Token 必填，避免回写请求缺失
+	// Authorization 后反复重试直至死信。
+	CRMDeliveryBaseURL string
+	CRMDeliveryToken   string
 	// StampedFile* 控制盖章 PDF 到平台文件网关的渐进迁移；默认 legacy 保留旧 BLOB。
 	StampedFileMode          string
 	StampedFileGatewayURL    string
@@ -176,6 +182,7 @@ func Load() (Config, error) {
 		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090")),
 		CRMReferenceTokenURL: os.Getenv("CRM_REFERENCE_TOKEN_URL"), CRMReferenceClientID: os.Getenv("CRM_REFERENCE_CLIENT_ID"),
 		CRMReferenceClientSecret: os.Getenv("CRM_REFERENCE_CLIENT_SECRET"), CRMReferenceScope: env("CRM_REFERENCE_SCOPE", "customer.contract_reference.read"),
+		CRMDeliveryBaseURL: os.Getenv("CRM_API_BASE_URL"), CRMDeliveryToken: os.Getenv("CRM_API_TOKEN"),
 		StampedFileMode: env("STAMPED_FILE_GATEWAY_MODE", "legacy"), StampedFileGatewayURL: env("FILE_GATEWAY_BASE_URL", ""),
 		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload"),
 	}
@@ -301,6 +308,18 @@ func (c Config) validate() error {
 		}
 		if c.CRMReferenceScope != "customer.contract_reference.read" {
 			return fmt.Errorf("CRM_REFERENCE_SCOPE must be customer.contract_reference.read")
+		}
+	}
+	// AUD-2026-018：CRM 回写凭据必须经启动校验。crm.Dispatcher.Run 与
+	// crm.LinkNotifier 对空 BaseURL 均按“集成关闭”返回，因此空 BaseURL 合法；
+	// 一旦配置 BaseURL，必须是合法 HTTP(S) origin 且 Token 必填，避免回写请求
+	// 不带 Authorization 被 CRM 拒绝后反复重试直至死信。
+	if strings.TrimSpace(c.CRMDeliveryBaseURL) != "" {
+		if !validHTTPOrigin(c.CRMDeliveryBaseURL) {
+			return fmt.Errorf("CRM_API_BASE_URL must be an HTTP(S) origin")
+		}
+		if strings.TrimSpace(c.CRMDeliveryToken) == "" {
+			return fmt.Errorf("CRM_API_TOKEN is required when CRM_API_BASE_URL is set")
 		}
 	}
 	if c.ProjectApprovalMachineEnabled {

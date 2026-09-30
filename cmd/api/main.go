@@ -53,7 +53,7 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
-	go (&crm.Dispatcher{Store: repository, BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
+	go (&crm.Dispatcher{Store: repository, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
 	personnelDirectory := platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout)
 	if cfg.PlatformNotificationClientID != "" && cfg.PlatformNotificationSecret != "" {
 		notificationDispatcher := &notificationintegration.Dispatcher{
@@ -99,7 +99,7 @@ func main() {
 		NodeTimeout:             cfg.NodeTimeout,
 		ReminderInterval:        cfg.ReminderInterval,
 		Personnel:               personnelDirectory,
-		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: os.Getenv("CRM_API_BASE_URL"), Token: os.Getenv("CRM_API_TOKEN"), Client: &http.Client{Timeout: 5 * time.Second}},
+		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
 		DetectionCategories:     projectDetectionCategories,
 		CRMContractReferences:   crmContractReferences,
 	}

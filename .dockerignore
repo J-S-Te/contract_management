@@ -1,5 +1,26 @@
-.git
-.env*
-data
-tmp
-*.log
+# Deny by default so COPY instructions cannot accidentally capture developer
+# configuration, keys, dumps, backups or generated business files.
+**
+!Dockerfile
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!authz/
+!authz/**
+!migrations/
+!migrations/**
+!docker-entrypoint.sh
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.jks
+**/*.bak
+**/*.backup
+**/*.dump
+**/dump*.sql
+**/.DS_Store
