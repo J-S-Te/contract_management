@@ -198,6 +198,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/contract-templates", h.listTemplates)
 	api.POST("/contract-templates", h.createTemplate)
 	api.PUT("/contract-templates/:templateID", h.updateTemplate)
+	api.PUT("/contract-templates/:templateID/source", h.replaceTemplateSource)
 	api.DELETE("/contract-templates/:templateID", h.deleteTemplate)
 	api.POST("/contract-templates/:templateID/preview", h.previewTemplate)
 	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)

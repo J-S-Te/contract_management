@@ -96,6 +96,26 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 
 DOCX 模板变量可直接使用中文字段，例如 `{{客户名称}}`；也兼容 `{{field_name:中文字段名}}`、带默认值的 `{{发票类型 '专票'}}` 和原型模板中的 `{{金额_大写 合同金额}}`。变量可位于正文、页眉或页脚，并允许被 Word 拆分为多个文本片段。创建合同请求通过 `template_id` 和 `template_values` 提交字段值，服务端会重新渲染，不能用客户端预览内容替代。
 
+### 收入合同模板导入
+
+`收入合同模版/` 的五份 DOCX 可直接在“合同模板 → 上传模板”中选择上传，无须改写正文或转换文件。上传后可编辑字段显示名称、默认值、管理员锁定值与合同编号格式。付款比例、税率、银行账号等占位符只是合同正文变量，不自动创建付款计划或结算业务字段。
+
+也可从本仓库运行批量工具，默认只做本地校验，不访问网络：
+
+```bash
+go run ./cmd/import-templates -dir ./收入合同模版
+```
+
+实际导入必须使用已有合同管理登录会话，指定预期租户 ID，并显式启用 `-apply`。`-cookie-file` 指向权限为 0600 的私有文件，仅保存现有合同会话的 Cookie 请求头值；不要把凭据写入命令行、仓库或日志。
+
+```bash
+go run ./cmd/import-templates -dir ./收入合同模版 \
+  -url http://localhost:8081/contract_management \
+  -tenant YOUR_TENANT_ID -cookie-file /absolute/private/session-cookie -apply
+```
+
+工具先验证所有文件，再检查当前用户的租户和模板管理权限，通过原有审计/同源校验/文件网关上传接口逐项导入。同名模板报告 SKIP，不比较正文、不覆盖已有配置；失败立即停止，之前成功的导入保留，重跑可跳过同名项。不要同时运行多个导入进程。工具不会绕过登录、直接写数据库或自动替所有租户安装模板。
+
 ## 本地运行
 
 要求 Go 1.25.4+、MySQL 8.4+ 和 Temporal Server。复制配置后启动基础依赖：
@@ -168,11 +188,27 @@ set +a
 
 ## 生产注意事项
 
+### 收入模板修正版
+
+原始 `收入合同模版/` 文件保留；运行 `scripts/repair_income_templates.py` 生成
+`收入合同模版/修正版/` 五份受控字段修正版。在部署新后端和前端后，管理员在
+“合同模板”卡片使用“替换模板文件”，上传对应修正版，保留模板ID、编号规则及同名字段设置。
+替换接口是 `PUT /api/v1/contract-templates/:templateID/source`，multipart字段为 `file`；
+仍要求模板管理权限、当前租户及同源请求。已有合同的正文快照不会被模板替换重写。
+
+`合同金额` 在保存时使用合同台账金额；中文大写由 `金额_大写` 模板辅助函数生成。
+`合同编号`/`系统合同编号` 是系统保留字段，不接受人工正式编号；草稿显示审批后生成提示，
+审批完成时在同一事务内写入正式编号、冻结DOCX及其哈希，不重新读取可变模板。
+付款金额、联系人和地点仅为正文模板字段，不新增付款计划模型。
+准确的模块开发/技术咨询交付分类依赖项目管理 migration27 和租户启用目录，部署后需再次验收。
+
 - 本服务的通知表采用 transactional outbox。需要由平台集成任务把 `pending` 记录投递到基础平台通知 API，并在成功后标为 `delivered`。
 - API 与 Worker 必须使用相同的 Temporal namespace/task queue 和兼容的 Workflow 代码。上线修改 Workflow 时保留 replay 测试历史；不要直接改动已经执行过的确定性分支。
 - `MYSQL_DSN` 必须包含 `parseTime=true`；数据库账号仅授予 `contract_management` 所需权限。
 - 审批命令的权限先由 HTTP 用例校验，Workflow 再校验当前处理人/申请人，形成双重业务约束。
 # 审批人员目录
+
+## 审批目录权限
 
 合同审批人不从 Keycloak Token 中读取业务角色。API 使用独立的基础平台机器客户端调用
 `/api/v1/internal/owner-directory`，按审批角色实时筛选可选人员。该客户端只能授予

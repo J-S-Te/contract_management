@@ -389,7 +389,7 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 		return c, ErrForbidden
 	}
 	if !external && c.TemplateID != "" {
-		rendered, normalizedValues, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues)
+		rendered, normalizedValues, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues, c.AmountMinor)
 		if err != nil {
 			return c, err
 		}
@@ -455,6 +455,7 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 		c.NumberFormat = contracttemplate.DefaultNumberFormat
 	}
 	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.DisplayName, contract.StatusDraft
+	c.Number = "" // Official numbers are assigned after approval, never supplied by a draft caller.
 	if c.OwnerIdentityID == "" && filter.AllowAll {
 		c.OwnerIdentityID = actor.IdentityID
 	}

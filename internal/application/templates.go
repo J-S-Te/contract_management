@@ -29,6 +29,9 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 	if s.Templates == nil {
 		return contracttemplate.Template{}, fmt.Errorf("template repository is not configured")
 	}
+	if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "required") && s.StampedFileGateway == nil {
+		return contracttemplate.Template{}, fmt.Errorf("required template file gateway is not configured")
+	}
 	if name == "" {
 		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能为空", ErrValidation)
 	}
@@ -80,6 +83,59 @@ func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contrac
 		return nil, nil
 	}
 	return s.Templates.ListTemplates(ctx, actor.TenantID)
+}
+
+// ReplaceTemplateSource updates future drafts only; existing contracts retain their frozen DOCX.
+func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id, filename string, content []byte) (contracttemplate.Template, error) {
+	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
+		return contracttemplate.Template{}, ErrForbidden
+	}
+	if s.Templates == nil {
+		return contracttemplate.Template{}, fmt.Errorf("template repository is not configured")
+	}
+	if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "required") && s.StampedFileGateway == nil {
+		return contracttemplate.Template{}, fmt.Errorf("required template file gateway is not configured")
+	}
+	filename = filepath.Base(strings.TrimSpace(filename))
+	if !strings.EqualFold(filepath.Ext(filename), ".docx") {
+		return contracttemplate.Template{}, ErrValidation
+	}
+	fields, err := docx.Fields(content)
+	if err != nil {
+		return contracttemplate.Template{}, fmt.Errorf("%w: DOCX 模板解析失败：%v", ErrValidation, err)
+	}
+	item, err := s.Templates.GetTemplate(ctx, actor.TenantID, strings.TrimSpace(id))
+	if err != nil {
+		return contracttemplate.Template{}, err
+	}
+	previous := make(map[string]contracttemplate.Field, len(item.Fields))
+	for _, field := range item.Fields {
+		previous[field.Name] = field
+	}
+	for index, field := range fields {
+		if old, ok := previous[field.Name]; ok {
+			fields[index] = old
+		}
+		if field.Name == "合同编号" || field.Name == "系统合同编号" {
+			fields[index].Default, fields[index].Locked = "", false
+		}
+	}
+	item.Fields, item.Content, item.OriginalFilename = fields, append([]byte(nil), content...), filename
+	item.PlatformFileID, item.FileGatewayState = "", ""
+	if s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
+		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-template-replace-"+item.ID+"-"+ulid.Make().String(), s.StampedFileApplicationID, "CONTRACT_TEMPLATE", filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(content))
+		if uploadErr != nil {
+			return contracttemplate.Template{}, fmt.Errorf("template file gateway: %w", uploadErr)
+		}
+		if err := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, fileID, "contract_template", item.ID, "TEMPLATE_SOURCE", filename); err != nil {
+			return contracttemplate.Template{}, fmt.Errorf("template file gateway bind: %w", err)
+		}
+		item.PlatformFileID, item.FileGatewayState = fileID, "READY"
+	}
+	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
+		return contracttemplate.Template{}, err
+	}
+	return item, nil
 }
 
 func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name, numberFormat string, fields []contracttemplate.Field) (contracttemplate.Template, error) {
@@ -172,13 +228,29 @@ func (s *Service) PreviewTemplate(ctx context.Context, actor Principal, id strin
 	return preview, nil
 }
 
-func (s *Service) renderTemplate(ctx context.Context, actor Principal, id string, values map[string]string) ([]byte, map[string]string, error) {
+func (s *Service) renderTemplate(ctx context.Context, actor Principal, id string, values map[string]string, ledgerAmountMinor ...int64) ([]byte, map[string]string, error) {
 	if !actor.Has("contract.create") || s.Templates == nil || strings.TrimSpace(id) == "" {
 		return nil, nil, ErrForbidden
 	}
 	item, err := s.Templates.GetTemplate(ctx, actor.TenantID, id)
 	if err != nil {
 		return nil, nil, err
+	}
+	// A saved contract uses the authoritative ledger amount even if the caller
+	// omits this template field. Preview retains ordinary field rendering.
+	if len(ledgerAmountMinor) > 0 {
+		for _, field := range item.Fields {
+			if field.Name != "合同金额" {
+				continue
+			}
+			copyValues := make(map[string]string, len(values)+1)
+			for key, value := range values {
+				copyValues[key] = value
+			}
+			copyValues[field.Name] = fmt.Sprintf("%d.%02d", ledgerAmountMinor[0]/100, ledgerAmountMinor[0]%100)
+			values = copyValues
+			break
+		}
 	}
 	normalized, err := normalizeTemplateValues(item.Fields, values, hasPermissionOrAdmin(actor, "contract.template.manage"))
 	if err != nil {
@@ -196,7 +268,15 @@ func normalizeTemplateValues(fields []contracttemplate.Field, values map[string]
 	normalized := make(map[string]string, len(fields))
 	for _, field := range fields {
 		expected[field.Name] = true
+		if field.Name == "合同编号" || field.Name == "系统合同编号" {
+			// This marker is replaced transactionally only after approval assigns the number.
+			normalized[field.Name] = docx.SystemContractNumberPending
+			continue
+		}
 		value, supplied := values[field.Name]
+		if strings.Contains(value, docx.SystemContractNumberPending) || strings.Contains(field.Default, docx.SystemContractNumberPending) {
+			return nil, fmt.Errorf("%w: 字段“%s”不能包含系统编号保留标记", ErrValidation, field.Label)
+		}
 		if field.Locked && !admin {
 			if supplied && value != field.Default {
 				return nil, fmt.Errorf("%w: 字段“%s”由管理员配置，不能修改", ErrValidation, field.Label)
@@ -206,6 +286,9 @@ func normalizeTemplateValues(fields []contracttemplate.Field, values map[string]
 		}
 		if !supplied {
 			value = field.Default
+		}
+		if strings.Contains(value, docx.SystemContractNumberPending) {
+			return nil, fmt.Errorf("%w: 字段“%s”不能包含系统编号保留标记", ErrValidation, field.Label)
 		}
 		if strings.TrimSpace(value) == "" && field.Default == "" {
 			return nil, fmt.Errorf("%w: missing template field %s", ErrValidation, field.Name)

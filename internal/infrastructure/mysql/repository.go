@@ -663,7 +663,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		}
 
 		var current contractRecord
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format").
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format", "rendered_document", "content", "template_values_json").
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
@@ -687,7 +687,11 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 			if in.Status == approval.StatusApproved {
 				if current.ContractNumber == nil {
 					number := formatContractNumber(current.ContractNumberFormat, current.ID, time.Now().UTC())
-					if err := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND contract_number IS NULL", in.TenantID, in.ContractID).Update("contract_number", number).Error; err != nil {
+					updates, err := approvedNumberUpdates(current, number)
+					if err != nil {
+						return err
+					}
+					if err := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND contract_number IS NULL", in.TenantID, in.ContractID).Updates(updates).Error; err != nil {
 						return err
 					}
 				}
