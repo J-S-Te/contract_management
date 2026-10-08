@@ -39,6 +39,8 @@ type Contract struct {
 	EndDate             *time.Time        `json:"end_date,omitempty"`
 	ContentHash         string            `json:"content_hash"`
 	CreatedAt           time.Time         `json:"created_at"`
+	CreatedBy           string            `json:"created_by"`
+	CanEditDraft        bool              `json:"can_edit_draft"`
 	UpdatedAt           time.Time         `json:"updated_at"`
 }
 

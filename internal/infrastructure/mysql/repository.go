@@ -663,7 +663,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		}
 
 		var current contractRecord
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format").
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format", "rendered_document", "content", "template_values_json").
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
@@ -687,7 +687,11 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 			if in.Status == approval.StatusApproved {
 				if current.ContractNumber == nil {
 					number := formatContractNumber(current.ContractNumberFormat, current.ID, time.Now().UTC())
-					if err := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND contract_number IS NULL", in.TenantID, in.ContractID).Update("contract_number", number).Error; err != nil {
+					updates, err := approvedNumberUpdates(current, number)
+					if err != nil {
+						return err
+					}
+					if err := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND contract_number IS NULL", in.TenantID, in.ContractID).Updates(updates).Error; err != nil {
 						return err
 					}
 				}
@@ -819,6 +823,7 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 
 func contractFromRecord(record contractRecord) contract.Contract {
 	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CRMCustomerID: uintValueOrZero(record.CRMCustomerID), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerIdentityID: valueOrEmpty(record.OwnerIdentityID), OwnerOrgID: valueOrEmpty(record.OwnerOrgID), ProjectID: valueOrEmpty(record.ProjectID), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, SourceFileID: record.SourceFileID, SourceFileStatus: record.SourceFileStatus, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+	result.CreatedBy = record.CreatedBy
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel
 	}

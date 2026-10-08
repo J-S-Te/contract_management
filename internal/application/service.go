@@ -372,7 +372,16 @@ func (s *Service) CreateExternalContract(ctx context.Context, actor Principal, c
 }
 
 func (s *Service) createContract(ctx context.Context, actor Principal, c contract.Contract, external bool) (contract.Contract, error) {
-	filter, ok := actor.Scope("contract.create")
+	c, err := s.prepareContract(ctx, actor, c, external, "contract.create")
+	if err != nil {
+		return c, err
+	}
+	filter, _ := actor.Scope("contract.create")
+	return s.persistNewContract(ctx, actor, c, external, filter)
+}
+
+func (s *Service) prepareContract(ctx context.Context, actor Principal, c contract.Contract, external bool, permission string) (contract.Contract, error) {
+	filter, ok := actor.Scope(permission)
 	if !ok {
 		return c, ErrForbidden
 	}
@@ -389,7 +398,7 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 		return c, ErrForbidden
 	}
 	if !external && c.TemplateID != "" {
-		rendered, normalizedValues, err := s.renderTemplate(ctx, actor, c.TemplateID, c.TemplateValues)
+		rendered, normalizedValues, err := s.renderTemplateForPermission(ctx, actor, permission, c.TemplateID, c.TemplateValues, c.AmountMinor)
 		if err != nil {
 			return c, err
 		}
@@ -454,7 +463,13 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 	if c.NumberFormat == "" {
 		c.NumberFormat = contracttemplate.DefaultNumberFormat
 	}
+	return c, nil
+}
+
+func (s *Service) persistNewContract(ctx context.Context, actor Principal, c contract.Contract, external bool, filter contract.ScopeFilter) (contract.Contract, error) {
 	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.DisplayName, contract.StatusDraft
+	c.CreatedBy = actor.UserID
+	c.Number = "" // A draft never accepts a caller-supplied official contract number.
 	if c.OwnerIdentityID == "" && filter.AllowAll {
 		c.OwnerIdentityID = actor.IdentityID
 	}
@@ -573,6 +588,10 @@ func flattenedSystems(items []contract.ServiceItem) []contract.SystemInfo {
 }
 
 func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractID string, termsIdentical bool) (StartResult, error) {
+	return s.SubmitContractVersion(ctx, actor, contractID, termsIdentical, 0)
+}
+
+func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, contractID string, termsIdentical bool, expectedVersion uint64) (StartResult, error) {
 	filter, ok := actor.Scope("contract.create")
 	if !ok {
 		return StartResult{}, ErrForbidden
@@ -583,6 +602,12 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	}
 	if c.Status != contract.StatusDraft {
 		return StartResult{}, apperrors.ErrStateConflict
+	}
+	if expectedVersion != 0 && c.Version != expectedVersion {
+		return StartResult{}, apperrors.ErrVersionConflict
+	}
+	if !draftActorAllowed(actor, c) {
+		return StartResult{}, ErrForbidden
 	}
 	rules, err := s.Repo.ListEnabledRules(ctx, actor.TenantID)
 	if err != nil {
@@ -773,7 +798,9 @@ func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (
 	if !ok {
 		return contract.Contract{}, ErrForbidden
 	}
-	return s.getContractScoped(ctx, filter, id)
+	item, err := s.getContractScoped(ctx, filter, id)
+	item.CanEditDraft = s.CanEditDraft(actor, item)
+	return item, err
 }
 
 func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id string) ([]contract.LifecycleEvent, error) {
@@ -792,7 +819,11 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, keyword st
 		limit = 50
 	}
 	if scoped, ok := s.Repo.(ScopedRepository); ok {
-		return scoped.ListContractsScoped(ctx, filter, keyword, status, limit)
+		items, err := scoped.ListContractsScoped(ctx, filter, keyword, status, limit)
+		for i := range items {
+			items[i].CanEditDraft = s.CanEditDraft(actor, items[i])
+		}
+		return items, err
 	}
 	if !filter.AllowAll && !filter.AllowSelf && len(filter.OrganizationIDs) == 0 && len(filter.ProjectIDs) == 0 {
 		return nil, ErrForbidden
@@ -802,6 +833,9 @@ func (s *Service) ListContracts(ctx context.Context, actor Principal, keyword st
 		ownerUserID = actor.UserID
 	}
 	items, err := s.Repo.ListContracts(ctx, actor.TenantID, keyword, ownerUserID, status, limit)
+	for i := range items {
+		items[i].CanEditDraft = s.CanEditDraft(actor, items[i])
+	}
 	return filterContracts(items, filter), err
 }
 

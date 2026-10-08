@@ -66,7 +66,7 @@ func (r *Repository) UpdateTemplate(ctx context.Context, item contracttemplate.T
 	}
 	result := r.db.WithContext(ctx).Model(&contractTemplateRecord{}).
 		Where("tenant_id = ? AND id = ?", item.TenantID, item.ID).
-		Updates(map[string]any{"name": item.Name, "number_format": item.NumberFormat, "fields_json": fields})
+		Updates(map[string]any{"name": item.Name, "number_format": item.NumberFormat, "fields_json": fields, "original_filename": item.OriginalFilename, "document": item.Content, "platform_file_id": item.PlatformFileID, "file_gateway_state": item.FileGatewayState})
 	if result.Error != nil {
 		return result.Error
 	}
