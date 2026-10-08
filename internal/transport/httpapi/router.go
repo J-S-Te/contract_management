@@ -177,6 +177,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/opportunity-intakes/:intakeID", h.getOpportunityIntake)
 	api.POST("/opportunity-intakes/:intakeID/reviews", h.reviewOpportunityIntake)
 	api.POST("/contracts", h.createContract)
+	api.PUT("/contracts/:contractID/draft", h.updateContractDraft)
 	api.POST("/contracts/external", h.createExternalContract)
 	api.GET("/detection-categories", h.listDetectionCategories)
 	api.GET("/contracts", h.listContracts)
@@ -198,6 +199,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/contract-templates", h.listTemplates)
 	api.POST("/contract-templates", h.createTemplate)
 	api.PUT("/contract-templates/:templateID", h.updateTemplate)
+	api.PUT("/contract-templates/:templateID/source", h.replaceTemplateSource)
 	api.DELETE("/contract-templates/:templateID", h.deleteTemplate)
 	api.POST("/contract-templates/:templateID/preview", h.previewTemplate)
 	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)
@@ -1205,12 +1207,13 @@ func (h *Handler) getProjectApprovedContractServiceItems(c *gin.Context) {
 
 func (h *Handler) submitApproval(c *gin.Context) {
 	var body struct {
-		TermsIdentical bool `json:"terms_identical"`
+		TermsIdentical  bool   `json:"terms_identical"`
+		ExpectedVersion uint64 `json:"expected_version"`
 	}
 	if !decode(c, &body) {
 		return
 	}
-	result, err := h.service.SubmitContract(c.Request.Context(), principal(c), c.Param("contractID"), body.TermsIdentical)
+	result, err := h.service.SubmitContractVersion(c.Request.Context(), principal(c), c.Param("contractID"), body.TermsIdentical, body.ExpectedVersion)
 	if err != nil {
 		writeError(c, err)
 		return
