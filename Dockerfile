@@ -4,6 +4,9 @@ FROM golang:1.26.6-alpine AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
+COPY third_party/license-core/ ./third_party/license-core/
+COPY scripts/license-core-sync.sh scripts/license-core.sha256 ./scripts/
+RUN sh scripts/license-core-sync.sh --check
 ARG GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct
 ARG GOSUMDB=sum.golang.google.cn
 ENV GOPROXY=${GOPROXY} \
@@ -29,8 +32,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./c
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
 
 FROM alpine:3.23
+ARG APP_VERSION
+LABEL org.opencontainers.image.version=${APP_VERSION} com.basic-platform.license.protocol="1"
 
-RUN apk add --no-cache ca-certificates tzdata wget libreoffice-writer font-noto-cjk
+RUN apk add --no-cache ca-certificates tzdata wget libreoffice-writer font-noto-cjk && mkdir -p /var/lib/commercial-license
 
 WORKDIR /app
 

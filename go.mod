@@ -1,5 +1,9 @@
 module github.com/j-s-te/contract-management
 
+replace github.com/J-S-Te/license-core => ./third_party/license-core
+
+require github.com/J-S-Te/license-core v0.0.0
+
 go 1.26.6
 
 require (

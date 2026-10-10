@@ -4,6 +4,7 @@ package notification
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -81,8 +82,12 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		// 角色在目录中已无符合条件的人员，无可送达对象，视为完成以避免无限重试。
 		return d.Store.MarkNotificationDelivered(ctx, delivery.ID)
 	}
+	identity, err := notificationDeliveryIdentity(delivery)
+	if err != nil {
+		return d.fail(ctx, delivery, err)
+	}
 	payload := ingestionEventPayload{
-		EventID:           delivery.DedupeKey,
+		EventID:           identity,
 		EventType:         delivery.NotificationType,
 		NotificationScope: "CROSS_SYSTEM",
 		Priority:          priorityFor(delivery.NotificationType),
@@ -91,7 +96,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		TargetURL:         targetURLFor(delivery),
 		ReferenceType:     referenceTypeFor(delivery),
 		ReferenceID:       referenceIDFor(delivery),
-		IdempotencyKey:    delivery.DedupeKey,
+		IdempotencyKey:    identity,
 		Recipients:        recipients,
 		OccurredAt:        delivery.CreatedAt,
 	}
@@ -126,6 +131,25 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		return d.Store.MarkNotificationDelivered(ctx, delivery.ID)
 	}
 	return d.fail(ctx, delivery, fmt.Errorf("platform notification API returned %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody))))
+}
+
+// A workflow dedupe key identifies a business event, not its recipient outbox
+// row. JSON frames the tuple without concatenation ambiguity; the versioned
+// domain isolates this hash from other integrations. The alphabetic prefix
+// satisfies platform event codes even when a workflow ULID begins with digits.
+// Its fixed 68 bytes also leave room for contract_management:prod: in the
+// platform's 128-byte canonical idempotency key. Attempts and resolved role
+// members are intentionally excluded, so retries retain the same identity.
+func notificationDeliveryIdentity(delivery Delivery) (string, error) {
+	if delivery.TenantID == "" || delivery.DedupeKey == "" || delivery.RecipientKey == "" {
+		return "", fmt.Errorf("notification delivery identity is incomplete")
+	}
+	framed, err := json.Marshal([]string{"contract-notification-delivery-v1", delivery.TenantID, delivery.DedupeKey, delivery.RecipientKey})
+	if err != nil {
+		return "", fmt.Errorf("encode notification delivery identity: %w", err)
+	}
+	digest := sha256.Sum256(framed)
+	return fmt.Sprintf("CN1_%X", digest), nil
 }
 
 func (d *Dispatcher) resolveRecipients(ctx context.Context, delivery Delivery) ([]string, error) {

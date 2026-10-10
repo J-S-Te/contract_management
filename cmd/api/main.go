@@ -25,6 +25,11 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	splitProcess, err := bootstrap.RuntimeProcessMode("contract-api")
+	if err != nil {
+		logger.Error("contract process configuration failed", "error", err)
+		os.Exit(1)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("configuration failed", "error", err)
@@ -32,6 +37,11 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	licenseGate, err := bootstrap.StartCommercialLicense(ctx, logger)
+	if err != nil {
+		logger.Error("commercial license configuration failed")
+		os.Exit(1)
+	}
 	if err := platform.SyncAuthorizationCatalog(ctx, platform.CatalogSyncOptions{
 		Enabled: cfg.PlatformCatalogSync, BaseURL: cfg.PlatformBaseURL,
 		ApplicationID: cfg.PlatformApplicationID, ClientID: cfg.PlatformCatalogClientID,
@@ -53,7 +63,9 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
-	go (&crm.Dispatcher{Store: repository, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
+	if !splitProcess {
+		go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
+	}
 	personnelDirectory := platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout)
 	if cfg.PlatformNotificationClientID != "" && cfg.PlatformNotificationSecret != "" {
 		notificationDispatcher := &notificationintegration.Dispatcher{
@@ -82,9 +94,11 @@ func main() {
 	var crmContractReferences application.CRMContractReferenceDirectory
 	if cfg.ProjectIntegrationEnabled {
 		tokenSource := projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)
-		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
+		dispatcher := &projectintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
 			TokenSource: tokenSource}
-		go dispatcher.Run(ctx)
+		if !splitProcess {
+			go dispatcher.Run(ctx)
+		}
 		projectDetectionCategories = &projectintegration.DetectionCategoryDirectory{BaseURL: cfg.ProjectAPIBaseURL, TokenSource: tokenSource}
 	}
 	if cfg.CRMReferenceEnabled {
@@ -92,6 +106,7 @@ func main() {
 		crmContractReferences = &crm.ContractReferenceDirectory{BaseURL: cfg.CRMReferenceBaseURL, TokenSource: crmTokenSource}
 	}
 	service := &application.Service{
+		LicenseGate:             licenseGate,
 		Repo:                    repository,
 		Templates:               repository,
 		Temporal:                temporalClient,
@@ -99,7 +114,7 @@ func main() {
 		NodeTimeout:             cfg.NodeTimeout,
 		ReminderInterval:        cfg.ReminderInterval,
 		Personnel:               personnelDirectory,
-		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
+		OpportunityLinkNotifier: &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
 		DetectionCategories:     projectDetectionCategories,
 		CRMContractReferences:   crmContractReferences,
 	}

@@ -104,6 +104,7 @@ type ScopedRepository interface {
 }
 
 type Service struct {
+	LicenseGate              LicenseChecker
 	Repo                     Repository
 	Templates                TemplateRepository
 	Temporal                 client.Client
@@ -187,7 +188,13 @@ func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, 
 }
 
 func (s *Service) SaveStampedDocument(ctx context.Context, actor Principal, id, filename string, document []byte) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.stamped_pdf.upload"); err != nil {
+		return err
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
 	}
 	if err := s.Repo.SaveStampedDocument(ctx, actor.TenantID, contract.StampedDocument{ContractID: id, OriginalFilename: filename, Document: document, UploadedAt: time.Now().UTC(), UploadedBy: actor.UserID}); err != nil {
@@ -283,6 +290,9 @@ func (s *Service) GetSigningRecord(ctx context.Context, actor Principal, id stri
 }
 
 func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id string, shipment contract.SigningShipment) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
 		return err
 	}
@@ -299,29 +309,50 @@ func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id s
 	if current.Status == contract.SigningPendingReview || current.Status == contract.SigningCompleted {
 		return apperrors.ErrStateConflict
 	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	return s.Repo.SaveSigningShipment(ctx, actor.TenantID, id, actor.UserID, shipment)
 }
 
 func (s *Service) MarkSigningReceived(ctx context.Context, actor Principal, id string) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
+		return err
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
 	}
 	return s.Repo.MarkSigningReceived(ctx, actor.TenantID, id, actor.UserID)
 }
 
 func (s *Service) RecordSigningReminder(ctx context.Context, actor Principal, id string) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
+		return err
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
 	}
 	return s.Repo.RecordSigningReminder(ctx, actor.TenantID, id, actor.UserID)
 }
 
 func (s *Service) ConfirmSigning(ctx context.Context, actor Principal, id string, confirmation contract.SigningConfirmation) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if _, err := s.GetApprovedContract(ctx, actor, id, "contract.signing.manage"); err != nil {
 		return err
 	}
 	if !confirmation.SealVerified || !confirmation.SignatureVerified || confirmation.SignedAt.IsZero() {
 		return ErrValidation
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
 	}
 	return s.Repo.ConfirmSigning(ctx, actor.TenantID, id, actor.UserID, confirmation)
 }
@@ -372,6 +403,9 @@ func (s *Service) CreateExternalContract(ctx context.Context, actor Principal, c
 }
 
 func (s *Service) createContract(ctx context.Context, actor Principal, c contract.Contract, external bool) (contract.Contract, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
+	}
 	c, err := s.prepareContract(ctx, actor, c, external, "contract.create")
 	if err != nil {
 		return c, err
@@ -467,6 +501,9 @@ func (s *Service) prepareContract(ctx context.Context, actor Principal, c contra
 }
 
 func (s *Service) persistNewContract(ctx context.Context, actor Principal, c contract.Contract, external bool, filter contract.ScopeFilter) (contract.Contract, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
+	}
 	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName, c.Status = ulid.Make().String(), actor.TenantID, actor.UserID, actor.DisplayName, contract.StatusDraft
 	c.CreatedBy = actor.UserID
 	c.Number = "" // A draft never accepts a caller-supplied official contract number.
@@ -489,6 +526,9 @@ func (s *Service) persistNewContract(ctx context.Context, actor Principal, c con
 		} else {
 			c.SourceFileID, c.SourceFileStatus = fileID, "PENDING"
 		}
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
 	}
 	if err := s.Repo.CreateContract(ctx, c, actor.UserID); err != nil {
 		return c, err
@@ -592,6 +632,9 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 }
 
 func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, contractID string, termsIdentical bool, expectedVersion uint64) (StartResult, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return StartResult{}, err
+	}
 	filter, ok := actor.Scope("contract.create")
 	if !ok {
 		return StartResult{}, ErrForbidden
@@ -629,6 +672,9 @@ func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, co
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("contract-approval:%s:%s:v%d", actor.TenantID, contractID, c.Version)
 	in := workflows.ContractApprovalInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: c.Version, ApplicantUserID: actor.UserID, ApplicantDisplayName: actor.DisplayName, ContentHash: c.ContentHash, RuleID: ruleID, RuleVersion: ruleVersion, Nodes: nodes, DefaultNodeTimeout: s.NodeTimeout, ReminderInterval: s.ReminderInterval}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return StartResult{}, err
+	}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.ContractApprovalWorkflowName, in)
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
@@ -641,6 +687,9 @@ func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, co
 }
 
 func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID string, version uint64, target contract.Status, reason string) (StartResult, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return StartResult{}, err
+	}
 	filter, ok := actor.Scope("contract.edit")
 	if !ok {
 		return StartResult{}, ErrForbidden
@@ -660,6 +709,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	}
 	if !target.RequiresApproval() {
 		key := ulid.Make().String()
+		if err := s.checkBusinessLicense(ctx); err != nil {
+			return StartResult{}, err
+		}
 		return StartResult{}, s.Repo.TransitionDirect(ctx, actor.TenantID, contractID, version, target, actor.UserID, reason, key)
 	}
 	directory, directoryErr := s.loadPersonnel(ctx, actor, []string{"admin"})
@@ -673,6 +725,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	approvalID := ulid.Make().String()
 	workflowID := fmt.Sprintf("status-change:%s:%s:v%d", actor.TenantID, contractID, version)
 	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, ApplicantDisplayName: actor.DisplayName, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return StartResult{}, err
+	}
 	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.StatusChangeWorkflowName, in)
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
@@ -685,6 +740,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 }
 
 func (s *Service) Command(ctx context.Context, actor Principal, approvalID string, command workflows.ApprovalCommand) (string, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return "", err
+	}
 	meta, _, err := s.queryApprovalState(ctx, actor, approvalID)
 	if err != nil {
 		return "", err
@@ -724,6 +782,9 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	// decisions rewritten when this behavior is introduced.
 	command.RoleNodeOrSign = command.Action == workflows.ActionApprove
 	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return "", err
+	}
 	if err := s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command); err != nil {
 		return "", fmt.Errorf("%w: signal approval workflow %s: %v", ErrApprovalWorkflowUnavailable, meta.WorkflowID, err)
 	}
@@ -879,6 +940,9 @@ func (s *Service) ListRules(ctx context.Context, actor Principal) ([]approval.Ru
 }
 
 func (s *Service) CreateRule(ctx context.Context, actor Principal, rule approval.Rule) (approval.Rule, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return approval.Rule{}, err
+	}
 	if !actor.Has("approval_rule.manage") {
 		return rule, ErrForbidden
 	}
@@ -886,6 +950,9 @@ func (s *Service) CreateRule(ctx context.Context, actor Principal, rule approval
 		return rule, err
 	}
 	rule.ID, rule.TenantID, rule.Version = ulid.Make().String(), actor.TenantID, 1
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return approval.Rule{}, err
+	}
 	if err := s.Repo.CreateRule(ctx, rule, actor.UserID); err != nil {
 		return rule, err
 	}
@@ -893,6 +960,9 @@ func (s *Service) CreateRule(ctx context.Context, actor Principal, rule approval
 }
 
 func (s *Service) UpdateRule(ctx context.Context, actor Principal, rule approval.Rule) (approval.Rule, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return approval.Rule{}, err
+	}
 	if !actor.Has("approval_rule.manage") {
 		return rule, ErrForbidden
 	}
@@ -903,6 +973,9 @@ func (s *Service) UpdateRule(ctx context.Context, actor Principal, rule approval
 		return rule, err
 	}
 	rule.TenantID = actor.TenantID
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return approval.Rule{}, err
+	}
 	if err := s.Repo.UpdateRule(ctx, rule, actor.UserID); err != nil {
 		return rule, err
 	}
@@ -911,11 +984,17 @@ func (s *Service) UpdateRule(ctx context.Context, actor Principal, rule approval
 }
 
 func (s *Service) DeleteRule(ctx context.Context, actor Principal, id string, version uint64) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if !actor.Has("approval_rule.manage") {
 		return ErrForbidden
 	}
 	if id == "" || version == 0 {
 		return ErrValidation
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
 	}
 	return s.Repo.DeleteRule(ctx, actor.TenantID, id, version)
 }

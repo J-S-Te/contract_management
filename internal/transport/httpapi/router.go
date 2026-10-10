@@ -146,17 +146,17 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	})
 	if dashboardOptions != nil && dashboardOptions.Enabled {
 		internal := r.Group("/internal/v1")
-		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions))
+		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions), h.licenseOperation())
 		internal.GET("/dashboard", h.dashboard)
 	}
 	if settlementOptions != nil && settlementOptions.Enabled {
 		internal := r.Group("/internal/v1/settlement")
-		internal.Use(h.authenticateServiceIntegration(*settlementOptions, "结算系统"))
+		internal.Use(h.authenticateServiceIntegration(*settlementOptions, "结算系统"), h.licenseOperation())
 		internal.GET("/completed-contracts", h.listSettlementCompletedContracts)
 	}
 	if projectOptions != nil && projectOptions.Enabled {
 		internal := r.Group("/internal/v1/project")
-		internal.Use(h.authenticateServiceIntegration(*projectOptions, "项目管理系统"))
+		internal.Use(h.authenticateServiceIntegration(*projectOptions, "项目管理系统"), h.licenseOperation())
 		internal.GET("/approved-contracts", h.listProjectApprovedContracts)
 		internal.GET("/approved-contract-references", h.listProjectApprovedContractReferences)
 		internal.GET("/approved-contracts/:contractID", h.getProjectApprovedContract)
@@ -164,12 +164,12 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	}
 	if crmSignedCountOptions != nil && crmSignedCountOptions.Enabled {
 		internal := r.Group("/contract_management/internal/opportunity-contract-counts")
-		internal.Use(h.authenticateServiceIntegration(*crmSignedCountOptions, "客户与商机管理系统"))
+		internal.Use(h.authenticateServiceIntegration(*crmSignedCountOptions, "客户与商机管理系统"), h.licenseOperation())
 		internal.POST("/query", h.countSignedContractsByOpportunity)
 	}
 	// SEC-D11：cookie 会话写请求必须通过同源 Origin 校验（失败关闭）；
 	// 放在 auditWrites 之后使跨站拒绝尝试同样进入审计。
-	api := r.Group("/api/v1", h.authenticate(), h.auditWrites(), h.requireSameOriginWrite())
+	api := r.Group("/api/v1", h.authenticate(), h.auditWrites(), h.requireSameOriginWrite(), h.licenseOperation())
 	api.GET("/auth/me", h.me)
 	api.GET("/dashboard", h.dashboard)
 	api.POST("/opportunity-intakes", h.acceptOpportunityIntake)
@@ -1425,6 +1425,8 @@ func writeData(c *gin.Context, status int, data any) {
 }
 func writeError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, application.ErrCommercialLicense):
+		writeEnvelopeError(c, http.StatusForbidden, "COMMERCIAL_LICENSE_RESTRICTED", "商业授权不允许此操作；历史查询与导出仍可使用", nil)
 	case errors.Is(err, platform.ErrUnauthenticated):
 		writeEnvelopeError(c, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
 	case errors.Is(err, platform.ErrAuthorizationServiceUnavailable), errors.Is(err, application.ErrPersonnelDirectoryUnavailable):

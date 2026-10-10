@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -8,6 +9,24 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
+
+const commercialLicenseErrorType = "COMMERCIAL_LICENSE_RESTRICTED"
+
+// A revoked/expired license pauses pending business work durably. Returning the
+// denial as an ordinary activity failure would exhaust MaximumAttempts and lose
+// the workflow. Other failures retain the existing bounded retry policy.
+func executeLicensedActivity(ctx, actx workflow.Context, name string, input, output any) error {
+	for {
+		err := workflow.ExecuteActivity(actx, name, input).Get(ctx, output)
+		var licenseErr *temporal.ApplicationError
+		if !errors.As(err, &licenseErr) || licenseErr.Type() != commercialLicenseErrorType {
+			return err
+		}
+		if err := workflow.Sleep(ctx, 30*time.Second); err != nil {
+			return err
+		}
+	}
+}
 
 func activityContext(ctx workflow.Context) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -70,12 +89,12 @@ func notifyCurrentNode(ctx, actx workflow.Context, tenantID string, state Approv
 	}
 	node := state.Nodes[state.CurrentNodeIndex]
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, Recipients: node.Node.AssigneeIDs, Title: title, Content: content, DedupeKey: fmt.Sprintf("%s:%s:%s:%d", state.ApprovalID, node.Node.ID, typ, workflow.Now(ctx).Unix()/3600)}
-	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
+	return executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil)
 }
 
 func notifyRecipients(ctx, actx workflow.Context, tenantID string, state ApprovalState, typ, title, content, keySuffix string, recipients []string) error {
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, Recipients: unique(recipients), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
-	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
+	return executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil)
 }
 
 // notifyAssignedUsers informs only the users added by the current command. This is
@@ -90,5 +109,5 @@ func notifyAssignedUsers(ctx, actx workflow.Context, tenantID string, state Appr
 
 func notifyRoles(ctx, actx workflow.Context, tenantID string, state ApprovalState, typ, title, content, keySuffix string, roles []string) error {
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, RoleRecipients: unique(roles), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
-	return workflow.ExecuteActivity(actx, ActivityCreateNotification, in).Get(ctx, nil)
+	return executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil)
 }

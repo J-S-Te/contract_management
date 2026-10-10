@@ -38,7 +38,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 
 func TestContractReferenceDirectorySendsLeastPrivilegeReplayHeaders(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/internal/contract-references/customers/7" || request.URL.Query().Get("opportunity_id") != "9" {
+		if request.Method != http.MethodGet || request.URL.Path != "/customer-opportunity/api/v1/internal/contract-references/customers/7" || request.URL.Query().Get("opportunity_id") != "9" {
 			t.Fatalf("request=%s %s", request.Method, request.URL)
 		}
 		if request.Header.Get("Authorization") != "Bearer machine-token" || request.Header.Get("X-Integration-Timestamp") != "2026-09-20T01:02:03Z" || request.Header.Get("X-Integration-Nonce") != "nonce-1" || request.Header.Get("X-Actor-Identity-ID") != "identity-1" {
@@ -46,7 +46,7 @@ func TestContractReferenceDirectorySendsLeastPrivilegeReplayHeaders(t *testing.T
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"code":"OK","message":"success","request_id":"r1","data":{"customer":{"id":7,"name":"权威客户","status":"ACTIVE"},"opportunity":{"id":9,"name":"权威商机","customer_id":7,"status":"FOLLOWING"}}}`)), Header: make(http.Header)}, nil
 	})}
-	directory := &ContractReferenceDirectory{BaseURL: "https://crm.example", Client: client,
+	directory := &ContractReferenceDirectory{BaseURL: "https://crm.example/customer-opportunity/", Client: client,
 		TokenSource: func(context.Context) (string, error) { return "machine-token", nil },
 		Now:         func() time.Time { return time.Date(2026, 9, 20, 1, 2, 3, 0, time.UTC) }, Nonce: func() (string, error) { return "nonce-1", nil }}
 	result, err := directory.Resolve(context.Background(), 7, "9", "identity-1")
@@ -61,7 +61,7 @@ func TestContractReferenceDirectoryClassifiesInvalidAndDependencyFailures(t *tes
 		want   error
 	}{
 		{status: http.StatusUnprocessableEntity, want: application.ErrCRMReferenceInvalid},
-		{status: http.StatusNotFound, want: application.ErrCRMReferenceInvalid},
+		{status: http.StatusNotFound},
 		{status: http.StatusUnauthorized},
 	} {
 		directory := &ContractReferenceDirectory{BaseURL: "https://crm.example", TokenSource: func(context.Context) (string, error) { return "token", nil }, Nonce: func() (string, error) { return "nonce", nil }, Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {

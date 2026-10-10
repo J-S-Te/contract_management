@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	core "github.com/J-S-Te/license-core"
 	"net/http"
 	"strings"
 	"time"
@@ -58,6 +59,7 @@ func EncodeOpportunityLinkCallback(item application.OpportunityIntake) ([]byte, 
 // Dispatcher durably delivers confirmed contract links. Claimed rows are
 // recoverable after a process crash and failed calls use exponential backoff.
 type Dispatcher struct {
+	LicenseGate    application.LicenseChecker
 	Store          LinkStore
 	BaseURL, Token string
 	MaxAttempts    uint
@@ -88,6 +90,11 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 func (d *Dispatcher) dispatchOne(ctx context.Context) error {
+	if d.LicenseGate != nil {
+		if err := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
+			return err
+		}
+	}
 	delivery, found, err := d.Store.ClaimOpportunityLink(ctx)
 	if err != nil || !found {
 		return err
@@ -102,6 +109,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		client := d.Client
 		if client == nil {
 			client = &http.Client{Timeout: 15 * time.Second}
+		}
+		if d.LicenseGate != nil {
+			if licenseErr := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); licenseErr != nil {
+				return licenseErr
+			}
 		}
 		resp, callErr := client.Do(req)
 		if callErr == nil {
@@ -139,12 +151,18 @@ func eventIDFromPayload(payload []byte) string {
 // The bounded retry keeps transient CRM failures recoverable without making
 // the review request hang indefinitely; a durable outbox can wrap this seam.
 type LinkNotifier struct {
-	BaseURL string
-	Token   string
-	Client  *http.Client
+	LicenseGate application.LicenseChecker
+	BaseURL     string
+	Token       string
+	Client      *http.Client
 }
 
 func (n *LinkNotifier) NotifyOpportunityLink(ctx context.Context, item application.OpportunityIntake) error {
+	if n.LicenseGate != nil {
+		if err := n.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(n.BaseURL) == "" {
 		return nil
 	}
@@ -154,6 +172,11 @@ func (n *LinkNotifier) NotifyOpportunityLink(ctx context.Context, item applicati
 	}
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
+		if n.LicenseGate != nil {
+			if err := n.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
+				return err
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(n.BaseURL, "/")+"/api/v1/internal/opportunities/"+fmt.Sprint(item.OpportunityID)+"/contract-link", bytes.NewReader(body))
 		if err != nil {
 			return err

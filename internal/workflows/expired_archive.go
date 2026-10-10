@@ -14,6 +14,6 @@ func ExpiredContractArchiveWorkflow(ctx workflow.Context, input ExpiredArchiveIn
 		input.AsOfDate = workflow.Now(ctx).In(chinaStandardTime).Format(time.DateOnly)
 	}
 	var result ExpiredArchiveResult
-	err := workflow.ExecuteActivity(activityContext(ctx), ActivityArchiveExpired, input).Get(ctx, &result)
+	err := executeLicensedActivity(ctx, activityContext(ctx), ActivityArchiveExpired, input, &result)
 	return result, err
 }

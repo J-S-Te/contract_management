@@ -9,7 +9,8 @@ x-contract-environment: &contract-environment
     OIDC_BACKCHANNEL_BASE_URL: ${CONTRACT_KEYCLOAK_BACKCHANNEL_BASE_URL:-http://keycloak:8080}
     TEMPORAL_ADDRESS: temporal:7233
     PROJECT_API_BASE_URL: http://project-api:8082
-    CONTRACT_RUN_WORKER_WITH_API: "true"
+    CONTRACT_PROCESS_MODE: split
+    CONTRACT_RUN_WORKER_WITH_API: "false"
     GIN_MODE: release
 
 services:
@@ -70,6 +71,13 @@ services:
 
   api:
     <<: *contract-environment
+    env_file:
+      - ${CONTRACT_RUNTIME_ENV_FILE:-./.env.local}
+      - path: runtime/license-contract-api.env
+        required: false
+    volumes:
+      - license-state-contract-api:/var/lib/commercial-license
+      - ${PLATFORM_LICENSE_PUBLIC_KEY_PATH:-../platform/data/keys/jwt-ed25519-public.pem}:/app/data/keys/jwt-ed25519-public.pem:ro
     build:
       context: .
     image: contract-management:local
@@ -94,15 +102,33 @@ services:
     restart: unless-stopped
 
   worker:
-    profiles: ["split-runtime"]
     <<: *contract-environment
+    env_file:
+      - ${CONTRACT_RUNTIME_ENV_FILE:-./.env.local}
+      - path: runtime/license-contract-worker.env
+        required: false
+    volumes:
+      - license-state-contract-worker:/var/lib/commercial-license
+      - ${PLATFORM_LICENSE_PUBLIC_KEY_PATH:-../platform/data/keys/jwt-ed25519-public.pem}:/app/data/keys/jwt-ed25519-public.pem:ro
     image: contract-management:local
+    build:
+      context: .
     command: ["./worker"]
     depends_on:
       migrate:
         condition: service_completed_successfully
       temporal:
         condition: service_healthy
+    networks:
+      default:
+      portal:
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9091/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+    stop_grace_period: 40s
     restart: unless-stopped
 
   temporal-ui:
@@ -115,6 +141,8 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
 
 volumes:
+  license-state-contract-api:
+  license-state-contract-worker:
   mysql-data:
 
 networks:

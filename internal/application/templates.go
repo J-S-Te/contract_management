@@ -22,6 +22,9 @@ type TemplateRepository interface {
 }
 
 func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, filename string, content []byte) (contracttemplate.Template, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contracttemplate.Template{}, err
+	}
 	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
@@ -58,6 +61,9 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 			item.PlatformFileID, item.FileGatewayState = fileID, "PENDING"
 		}
 	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contracttemplate.Template{}, err
+	}
 	if err := s.Templates.CreateTemplate(ctx, item); err != nil {
 		return contracttemplate.Template{}, err
 	}
@@ -87,6 +93,9 @@ func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contrac
 
 // ReplaceTemplateSource updates future drafts only; existing contracts retain their frozen DOCX.
 func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id, filename string, content []byte) (contracttemplate.Template, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contracttemplate.Template{}, err
+	}
 	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
@@ -132,6 +141,9 @@ func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id
 		}
 		item.PlatformFileID, item.FileGatewayState = fileID, "READY"
 	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contracttemplate.Template{}, err
+	}
 	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
 		return contracttemplate.Template{}, err
 	}
@@ -139,6 +151,9 @@ func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id
 }
 
 func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name, numberFormat string, fields []contracttemplate.Field) (contracttemplate.Template, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contracttemplate.Template{}, err
+	}
 	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return contracttemplate.Template{}, ErrForbidden
 	}
@@ -185,6 +200,9 @@ func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name,
 		updatedFields = append(updatedFields, field)
 	}
 	item.Name, item.NumberFormat, item.Fields = name, numberFormat, updatedFields
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contracttemplate.Template{}, err
+	}
 	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
 		return contracttemplate.Template{}, err
 	}
@@ -207,11 +225,17 @@ func normalizeNumberFormat(value string) (string, error) {
 }
 
 func (s *Service) DeleteTemplate(ctx context.Context, actor Principal, id string) error {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
+	}
 	if !hasPermissionOrAdmin(actor, "contract.template.manage") {
 		return ErrForbidden
 	}
 	if s.Templates == nil {
 		return fmt.Errorf("template repository is not configured")
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return err
 	}
 	return s.Templates.DeleteTemplate(ctx, actor.TenantID, strings.TrimSpace(id))
 }

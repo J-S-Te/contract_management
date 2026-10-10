@@ -179,7 +179,7 @@ func Load() (Config, error) {
 		TemporalMetricsAddress:         env("TEMPORAL_METRICS_ADDRESS", ":9091"),
 		TemporalAPIKey:                 os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 		ProjectAPIBaseURL:    env("PROJECT_API_BASE_URL", "http://localhost:8082"),
-		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090")),
+		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090/customer-opportunity")),
 		CRMReferenceTokenURL: os.Getenv("CRM_REFERENCE_TOKEN_URL"), CRMReferenceClientID: os.Getenv("CRM_REFERENCE_CLIENT_ID"),
 		CRMReferenceClientSecret: os.Getenv("CRM_REFERENCE_CLIENT_SECRET"), CRMReferenceScope: env("CRM_REFERENCE_SCOPE", "customer.contract_reference.read"),
 		CRMDeliveryBaseURL: os.Getenv("CRM_API_BASE_URL"), CRMDeliveryToken: os.Getenv("CRM_API_TOKEN"),
@@ -290,8 +290,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("PROJECT_INTEGRATION_POLL_INTERVAL must be positive")
 	}
 	if c.CRMReferenceEnabled {
-		if !validHTTPOrigin(c.CRMReferenceBaseURL) {
-			return fmt.Errorf("CRM_REFERENCE_BASE_URL must be an HTTP(S) origin")
+		if !validCRMReferenceBaseURL(c.CRMReferenceBaseURL) {
+			return fmt.Errorf("CRM_REFERENCE_BASE_URL must be an HTTP(S) origin with optional /customer-opportunity prefix, without credentials, query or fragment")
 		}
 		for _, item := range []struct{ name, value string }{
 			{"CRM_REFERENCE_TOKEN_URL", c.CRMReferenceTokenURL},
@@ -499,6 +499,13 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+// CRM mounts its reference API under this prefix; retain root-only compatibility
+// for deployments whose gateway strips it, without accepting arbitrary paths.
+func validCRMReferenceBaseURL(value string) bool {
+	parsed, err := url.ParseRequestURI(value)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && parsed.RawPath == "" && (parsed.Path == "" || parsed.Path == "/" || parsed.Path == "/customer-opportunity" || parsed.Path == "/customer-opportunity/")
 }
 
 func validHTTPOrigin(value string) bool {

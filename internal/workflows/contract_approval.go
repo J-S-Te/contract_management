@@ -30,7 +30,7 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 
 	info, actx := workflow.GetInfo(ctx), activityContext(ctx)
 	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindContract, FromStatus: contract.StatusDraft, TargetStatus: contract.StatusPending, RuleID: input.RuleID, RuleVersion: input.RuleVersion, ContentHash: input.ContentHash, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: input.Nodes}
-	if err := workflow.ExecuteActivity(actx, ActivityStartApproval, start).Get(ctx, nil); err != nil {
+	if err := executeLicensedActivity(ctx, actx, ActivityStartApproval, start, nil); err != nil {
 		return state, err
 	}
 
@@ -40,7 +40,7 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 			now = workflow.Now(ctx)
 			state.Status, state.CompletedAt, state.UpdatedAt = approval.StatusApproved, now, now
 			complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, Status: state.Status, Reason: "all approval nodes passed", WorkflowID: info.WorkflowExecution.ID, TargetStatus: contract.StatusActive}
-			if err := workflow.ExecuteActivity(actx, ActivityCompleteApproval, complete).Get(ctx, nil); err != nil {
+			if err := executeLicensedActivity(ctx, actx, ActivityCompleteApproval, complete, nil); err != nil {
 				return state, err
 			}
 			if err := notifyRecipients(ctx, actx, input.TenantID, state, "approved", "合同审批已通过", "合同已批准并生效", "approved", []string{input.ApplicantUserID}); err != nil {
@@ -96,7 +96,7 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 				if !now.Before(deadline) {
 					state.Status, state.FailureReason, state.CompletedAt, state.UpdatedAt = approval.StatusExpired, "current approval node timed out", now, now
 					complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, Status: state.Status, Reason: state.FailureReason, WorkflowID: info.WorkflowExecution.ID, TargetStatus: contract.StatusDraft}
-					if err := workflow.ExecuteActivity(actx, ActivityCompleteApproval, complete).Get(ctx, nil); err != nil {
+					if err := executeLicensedActivity(ctx, actx, ActivityCompleteApproval, complete, nil); err != nil {
 						return state, err
 					}
 					if err := notifyRecipients(ctx, actx, input.TenantID, state, "rejected", "合同审批已超时", state.FailureReason, "expired", []string{input.ApplicantUserID}); err != nil {
@@ -126,7 +126,7 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 			}
 			if changed {
 				record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.Node.ID, Command: command, State: state}
-				if err := workflow.ExecuteActivity(actx, ActivityRecordCommand, record).Get(ctx, nil); err != nil {
+				if err := executeLicensedActivity(ctx, actx, ActivityRecordCommand, record, nil); err != nil {
 					return state, err
 				}
 			}
@@ -148,7 +148,7 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 			if terminal {
 				state.CompletedAt = workflow.Now(ctx)
 				complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ActorUserID: command.ActorUserID, Status: state.Status, Reason: command.Comment, WorkflowID: info.WorkflowExecution.ID, TargetStatus: contract.StatusDraft}
-				if err := workflow.ExecuteActivity(actx, ActivityCompleteApproval, complete).Get(ctx, nil); err != nil {
+				if err := executeLicensedActivity(ctx, actx, ActivityCompleteApproval, complete, nil); err != nil {
 					return state, err
 				}
 				typ, title := "rejected", "合同审批已拒绝"

@@ -38,6 +38,9 @@ func (s *Service) CanEditDraft(actor Principal, c contract.Contract) bool {
 }
 
 func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id string, expectedVersion uint64, input contract.Contract) (contract.Contract, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
+	}
 	filter, ok := actor.Scope("contract.edit")
 	if !ok {
 		return contract.Contract{}, ErrForbidden
@@ -111,6 +114,9 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 	repository, ok := s.Repo.(DraftRepository)
 	if !ok {
 		return current, apperrors.ErrStateConflict
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
 	}
 	if err := repository.UpdateContractDraft(ctx, prepared, expectedVersion, actor.UserID); err != nil {
 		return current, err

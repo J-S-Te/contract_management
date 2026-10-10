@@ -5,6 +5,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	core "github.com/J-S-Te/license-core"
+	"github.com/J-S-Te/license-core/consumer"
 	"log"
 	"net/http"
 	"os"
@@ -33,6 +35,10 @@ type templateRow struct {
 func (templateRow) TableName() string { return "con_contract_template" }
 
 func main() {
+	licenseGate, licenseErr := consumer.FromEnvironment("contract_management")
+	if licenseErr != nil {
+		log.Fatal("commercial license configuration failed")
+	}
 	limit := flag.Int("limit", 100, "maximum rows per table")
 	interval := flag.Duration("interval", 250*time.Millisecond, "delay between gateway writes")
 	flag.Parse()
@@ -70,6 +76,9 @@ func main() {
 		log.Fatal(err)
 	}
 	for _, row := range contracts {
+		if licenseGate.Check(ctx, core.MUTATE_BUSINESS) != nil {
+			log.Fatal("commercial license blocks file backfill")
+		}
 		fileID, uploadErr := gateway.Upload(ctx, "backfill-contract-"+row.ID, applicationID, "CONTRACT_EXTERNAL_SOURCE", safeName(row.Title, row.ID)+".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(row.RenderedDocument))
 		if uploadErr == nil {
 			uploadErr = gateway.Bind(ctx, applicationID, fileID, "contract", row.ID, "EXTERNAL_SOURCE", safeName(row.Title, row.ID)+".docx")
@@ -94,6 +103,9 @@ func main() {
 		log.Fatal(err)
 	}
 	for _, row := range templates {
+		if licenseGate.Check(ctx, core.MUTATE_BUSINESS) != nil {
+			log.Fatal("commercial license blocks file backfill")
+		}
 		fileID, uploadErr := gateway.Upload(ctx, "backfill-template-"+row.ID, applicationID, "CONTRACT_TEMPLATE", row.OriginalFilename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(row.Document))
 		if uploadErr == nil {
 			uploadErr = gateway.Bind(ctx, applicationID, fileID, "contract_template", row.ID, "TEMPLATE_SOURCE", row.OriginalFilename)

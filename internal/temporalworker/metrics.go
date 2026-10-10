@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -150,12 +151,36 @@ func (registry *MetricsRegistry) ServeHTTP(writer http.ResponseWriter, _ *http.R
 
 // StartMetricsServer 启动 Worker 私有指标端口，并在上下文取消时优雅关闭。
 func StartMetricsServer(ctx context.Context, address string, registry *MetricsRegistry, logger *slog.Logger) error {
+	return StartMetricsServerWithReadiness(ctx, address, registry, logger, func() bool { return true })
+}
+
+func workerMetricsMux(registry *MetricsRegistry, ready func() bool) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", registry)
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready() {
+			http.Error(w, "worker not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	return mux
+}
+
+// Readiness reflects successful Temporal polling startup, not whether new
+// business is licensed. Expiry pauses Activities while keeping recovery alive.
+func StartMetricsServerWithReadiness(ctx context.Context, address string, registry *MetricsRegistry, logger *slog.Logger, ready func() bool) error {
 	if registry == nil || logger == nil || strings.TrimSpace(address) == "" {
 		return fmt.Errorf("Temporal metrics server requires address, registry and logger")
 	}
-	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", registry)
-	server := &http.Server{Addr: address, Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	if ready == nil {
+		return fmt.Errorf("Temporal metrics server requires readiness callback")
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("Temporal metrics server listen: %w", err)
+	}
+	server := &http.Server{Addr: address, Handler: workerMetricsMux(registry, ready), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -165,7 +190,7 @@ func StartMetricsServer(ctx context.Context, address string, registry *MetricsRe
 		}
 	}()
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Error("Temporal metrics server failed", "error", err)
 		}
 	}()
