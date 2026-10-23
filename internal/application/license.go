@@ -12,8 +12,8 @@ type LicenseChecker interface {
 	Check(context.Context, core.Operation) error
 }
 
-// The executable always supplies a gate, including an explicit compatibility
-// gate when rollout is disabled. Nil retains existing in-process callers/tests.
+// 可执行程序始终提供门禁，禁用灰度启用时也提供显式兼容
+// 门禁。nil 保留现有进程内调用方及测试的行为。
 func (s *Service) CheckLicense(ctx context.Context, op core.Operation) error {
 	if s == nil || s.LicenseGate == nil {
 		return nil

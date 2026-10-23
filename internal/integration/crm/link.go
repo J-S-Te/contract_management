@@ -56,8 +56,8 @@ func EncodeOpportunityLinkCallback(item application.OpportunityIntake) ([]byte, 
 	})
 }
 
-// Dispatcher durably delivers confirmed contract links. Claimed rows are
-// recoverable after a process crash and failed calls use exponential backoff.
+// Dispatcher 持久投递已确认合同关联。已认领记录可在
+// 进程崩溃后恢复，失败调用使用指数退避。
 type Dispatcher struct {
 	LicenseGate    application.LicenseChecker
 	Store          LinkStore
@@ -147,9 +147,9 @@ func eventIDFromPayload(payload []byte) string {
 	return v.EventID
 }
 
-// LinkNotifier posts confirmed contract links to the CRM callback endpoint.
-// The bounded retry keeps transient CRM failures recoverable without making
-// the review request hang indefinitely; a durable outbox can wrap this seam.
+// LinkNotifier 向 CRM 回调端点发送已确认合同关联。
+// 有界重试使暂时性 CRM 故障可恢复，避免
+// 审核请求无限挂起；此边界可由持久化 Outbox 包裹。
 type LinkNotifier struct {
 	LicenseGate application.LicenseChecker
 	BaseURL     string

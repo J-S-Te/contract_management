@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,8 @@ type recordingRepository struct {
 	approvedReferenceTenant    string
 	approvedReferenceAfter     string
 	approvedReferenceLimit     int
+	approvalSnapshot           contract.Contract
+	hasApprovalSnapshot        bool
 }
 
 type personnelStub struct {
@@ -120,8 +123,8 @@ func (r *recordingRepository) ListApprovedContractReferences(_ context.Context, 
 	r.approvedReferenceLimit = limit
 	return r.approvedContractReferences, nil
 }
-func (r *recordingRepository) SaveStampedDocument(context.Context, string, contract.StampedDocument) error {
-	return nil
+func (r *recordingRepository) SaveStampedDocument(_ context.Context, tenantID string, upload contract.StampedDocumentUpload) (contract.StampedDocument, error) {
+	return contract.StampedDocument{ContractID: upload.ContractID, Version: 1, OriginalFilename: upload.OriginalFilename, ContentSHA256: "hash", Document: upload.Document}, nil
 }
 func (r *recordingRepository) GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error) {
 	return contract.StampedDocument{}, nil
@@ -186,6 +189,10 @@ func (r *recordingRepository) DeleteRule(context.Context, string, string, uint64
 
 func (r *recordingRepository) GetApprovalMeta(context.Context, string, string) (approval.Meta, error) {
 	return r.approvalMeta, nil
+}
+
+func (r *recordingRepository) GetApprovalSnapshot(context.Context, string, string) (contract.Contract, bool, error) {
+	return r.approvalSnapshot, r.hasApprovalSnapshot, nil
 }
 
 func (r *recordingRepository) ListApprovalActions(context.Context, string, string) ([]approval.Action, error) {
@@ -556,7 +563,7 @@ func TestListContractsIgnoresRequestedOwnerEvenWithLegacyManagerPermission(t *te
 	actor := Principal{
 		TenantID: "tenant-1",
 		UserID:   "manager-1",
-		// Keep legacy manager permission while enforcing scope-based checks.
+		// 保留旧版经理权限，同时强制执行基于范围的检查。
 		Permissions: map[string]bool{
 			"contract.read":   true,
 			"contract.manage": true,
@@ -612,10 +619,25 @@ func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) 
 }
 
 func TestResolveNodesRejectsRoleWithoutActivePlatformHolder(t *testing.T) {
-	service := &Service{Personnel: personnelStub{}}
-	nodes := []approval.Node{{ID: "finance", RoleCode: "finance_director"}}
-	if err := service.resolveNodes(context.Background(), Principal{}, nodes); err == nil {
-		t.Fatal("resolveNodes() error = nil")
+	service := &Service{Personnel: personnelStub{users: []UserReference{{UserID: "sales-1", Roles: []string{"sales_director"}}}}}
+	nodes := []approval.Node{
+		{ID: "sales", RoleCode: "sales_director"},
+		{ID: "finance", RoleCode: "finance_director"},
+		{ID: "tech", RoleCode: "tech_director"},
+	}
+	err := service.resolveNodes(context.Background(), Principal{}, nodes)
+	if !errors.Is(err, ErrApprovalAssigneeUnavailable) {
+		t.Fatalf("resolveNodes() error = %v, want ErrApprovalAssigneeUnavailable", err)
+	}
+	var unavailable *ApprovalAssigneeUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("resolveNodes() error type = %T, want *ApprovalAssigneeUnavailableError", err)
+	}
+	if got := strings.Join(unavailable.RoleCodes, ","); got != "finance_director,tech_director" {
+		t.Fatalf("unresolved roles = %q, want finance_director,tech_director", got)
+	}
+	if len(nodes[0].AssigneeIDs) != 1 || nodes[0].AssigneeIDs[0] != "sales-1" {
+		t.Fatalf("resolved assignees = %#v, want [sales-1]", nodes[0].AssigneeIDs)
 	}
 }
 
@@ -685,6 +707,44 @@ func TestGetApprovalDetailReturnsContractToAssignedApprover(t *testing.T) {
 	}
 	if detail.Contract.Content != "contract body" || detail.State.ApprovalID != "approval-1" || len(detail.Actions) != 1 {
 		t.Fatalf("detail = %#v", detail)
+	}
+}
+
+// 拒绝后修改草稿再发起新审批，旧审批详情必须展示旧快照，而不是当前草稿。
+func TestGetApprovalDetailPrefersImmutableSubmissionSnapshot(t *testing.T) {
+	state := workflows.ApprovalState{ApprovalID: "approval-old", ContractID: "contract-1", Status: approval.StatusRejected}
+	encoded := temporalmocks.NewEncodedValue(t)
+	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
+		target := arguments.Get(0).(*workflows.ApprovalState)
+		*target = state
+	}).Return(nil)
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).Return(encoded, nil)
+	repository := &recordingRepository{
+		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", AmountMinor: 20000, Version: 9, Content: "new draft body"},
+		approvalMeta: approval.Meta{
+			ID: "approval-old", TenantID: "tenant-1", ContractID: "contract-1",
+			ApplicantUserID: "applicant-1", WorkflowID: "workflow-1", RunID: "run-1",
+		},
+		approvalSnapshot:    contract.Contract{ID: "contract-1", TenantID: "tenant-1", AmountMinor: 10000, Version: 3, Content: "submitted body"},
+		hasApprovalSnapshot: true,
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{
+		TenantID: "tenant-1", UserID: "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
+
+	detail, err := service.GetApprovalDetail(context.Background(), actor, "approval-old")
+	if err != nil {
+		t.Fatalf("GetApprovalDetail() error = %v", err)
+	}
+	if detail.Contract.AmountMinor != 10000 || detail.Contract.Version != 3 || detail.Contract.Content != "submitted body" {
+		t.Fatalf("approval detail leaked current draft: %+v", detail.Contract)
+	}
+	if !detail.SnapshotAvailable {
+		t.Fatal("approval snapshot must be reported as available")
 	}
 }
 
@@ -852,5 +912,47 @@ func TestGetApprovalDetailRejectsDifferentContractScope(t *testing.T) {
 
 	if _, err := service.GetApprovalDetail(context.Background(), actor, "approval-1"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("GetApprovalDetail() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestGetApprovalDetailFallsBackToSnapshotWhenWorkflowExpired(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-old", "run-old", workflows.StateQueryName).
+		Return(nil, errors.New("workflow history unavailable"))
+	repository := &recordingRepository{
+		contract: contract.Contract{ID: "contract-old", TenantID: "tenant-1", Content: "current draft"},
+		approvalMeta: approval.Meta{
+			ID: "approval-old", TenantID: "tenant-1", ContractID: "contract-old",
+			ApplicantUserID: "applicant-1", WorkflowID: "workflow-old", RunID: "run-old",
+		},
+		approvalSnapshot:    contract.Contract{ID: "contract-old", TenantID: "tenant-1", Content: "submitted snapshot", Version: 4},
+		hasApprovalSnapshot: true,
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true, "contract.read": true}, PermissionScopes: allowAllScope("contract.read")}
+	detail, err := service.GetApprovalDetail(context.Background(), actor, "approval-old")
+	if err != nil {
+		t.Fatalf("GetApprovalDetail() error = %v", err)
+	}
+	if !detail.StateUnavailable || !detail.SnapshotAvailable || detail.Contract.Content != "submitted snapshot" {
+		t.Fatalf("detail = %#v, want snapshot-only fallback", detail)
+	}
+}
+
+func TestGetApprovalDetailDoesNotInventSnapshotWhenWorkflowAndSnapshotMissing(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-gone", "run-gone", workflows.StateQueryName).
+		Return(nil, errors.New("workflow history unavailable"))
+	repository := &recordingRepository{
+		contract: contract.Contract{ID: "contract-gone", TenantID: "tenant-1"},
+		approvalMeta: approval.Meta{
+			ID: "approval-gone", TenantID: "tenant-1", ContractID: "contract-gone",
+			ApplicantUserID: "applicant-1", WorkflowID: "workflow-gone", RunID: "run-gone",
+		},
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true, "contract.read": true}, PermissionScopes: allowAllScope("contract.read")}
+	if _, err := service.GetApprovalDetail(context.Background(), actor, "approval-gone"); !errors.Is(err, ErrApprovalWorkflowUnavailable) {
+		t.Fatalf("err=%v, want ErrApprovalWorkflowUnavailable without snapshot", err)
 	}
 }

@@ -167,8 +167,8 @@ func workerMetricsMux(registry *MetricsRegistry, ready func() bool) *http.ServeM
 	return mux
 }
 
-// Readiness reflects successful Temporal polling startup, not whether new
-// business is licensed. Expiry pauses Activities while keeping recovery alive.
+// 就绪状态反映 Temporal 轮询成功启动，而非新业务
+// 是否获许可。过期暂停活动，同时保留恢复能力。
 func StartMetricsServerWithReadiness(ctx context.Context, address string, registry *MetricsRegistry, logger *slog.Logger, ready func() bool) error {
 	if registry == nil || logger == nil || strings.TrimSpace(address) == "" {
 		return fmt.Errorf("Temporal metrics server requires address, registry and logger")

@@ -52,10 +52,10 @@ func projectDeliveryEligibleStatuses() []contract.Status {
 	}
 }
 
-// ReconcileProjectDeliveries backfills contracts that reached an effective or
-// terminal post-effective state before project integration was enabled. It
-// also refreshes legacy deliveries that predate the stamped-contract flag;
-// the same outbox row is reused so a second project cannot be created.
+// ReconcileProjectDeliveries 回填项目集成启用前已进入生效状态
+// 或生效后终态的合同。
+// 同时刷新早于盖章合同标记的历史投递；
+// 复用同一 Outbox 行，防止创建第二个项目。
 func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error) {
 	created := 0
 	var legacyDeliveries []legacyProjectDeliveryCandidate
@@ -163,10 +163,10 @@ func newProjectActivationPayload(row contractRecord, effectiveAt time.Time, stam
 	}
 }
 
-// markProjectDeliveryStamped refreshes an existing activation delivery after
-// the stamped contract is uploaded. Reusing the original outbox row preserves
-// the contract-version idempotency key while allowing project management to
-// clear its non-blocking upload warning.
+// markProjectDeliveryStamped 在上传盖章合同后，
+// 刷新既有生效投递。复用原 Outbox 行，保留
+// 合同版本幂等键，同时允许项目管理
+// 清除不阻塞业务的上传警告。
 func markProjectDeliveryStamped(tx *gorm.DB, tenantID, contractID string) error {
 	var record projectDeliveryOutboxRecord
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).

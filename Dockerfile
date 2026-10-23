@@ -1,5 +1,5 @@
 
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
 
 WORKDIR /src
 
@@ -31,7 +31,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./c
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker-rollout ./cmd/worker-rollout \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
 
-FROM alpine:3.23
+FROM alpine:3.23@sha256:21f3e19bafab57a9ff7aa9dd571dac72f868370472c10f450cc0416cc1aca553
 ARG APP_VERSION
 LABEL org.opencontainers.image.version=${APP_VERSION} com.basic-platform.license.protocol="1"
 

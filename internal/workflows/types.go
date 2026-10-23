@@ -43,8 +43,15 @@ const (
 	ActionComment  CommandAction = "comment"
 )
 
+// AuditMeta 让工作流启动时把 HTTP 请求来源带入异步 Activity；Temporal 上下文
+// 不会自动继承请求 context。
+type AuditMeta struct {
+	LoginIP, ClientIP, IPSource, RequestID string
+}
+
 type ContractApprovalInput struct {
 	ApprovalID           string          `json:"approval_id"`
+	Audit                AuditMeta       `json:"audit,omitempty"`
 	TenantID             string          `json:"tenant_id"`
 	ContractID           string          `json:"contract_id"`
 	ContractVersion      uint64          `json:"contract_version"`
@@ -60,6 +67,7 @@ type ContractApprovalInput struct {
 
 type StatusChangeInput struct {
 	ApprovalID           string          `json:"approval_id"`
+	Audit                AuditMeta       `json:"audit,omitempty"`
 	TenantID             string          `json:"tenant_id"`
 	ContractID           string          `json:"contract_id"`
 	ContractVersion      uint64          `json:"contract_version"`
@@ -107,6 +115,8 @@ type ApprovalState struct {
 	UpdatedAt            time.Time       `json:"updated_at"`
 	CompletedAt          time.Time       `json:"completed_at,omitempty"`
 	FailureReason        string          `json:"failure_reason,omitempty"`
+	// ProcessedCommandIDs 让重复投递的稳定命令 ID 保持幂等；交接重试不会二次转派。
+	ProcessedCommandIDs []string `json:"processed_command_ids,omitempty"`
 }
 
 type StartApprovalActivityInput struct {
@@ -118,6 +128,7 @@ type StartApprovalActivityInput struct {
 	RuleVersion                                                             uint64
 	ContentHash, WorkflowID, RunID                                          string
 	Nodes                                                                   []approval.Node
+	Audit                                                                   AuditMeta
 }
 
 type RecordCommandActivityInput struct {
@@ -131,6 +142,7 @@ type CompleteApprovalActivityInput struct {
 	Status                                        approval.Status
 	Reason, WorkflowID                            string
 	TargetStatus                                  contract.Status
+	Audit                                         AuditMeta
 }
 
 type NotifyActivityInput struct {

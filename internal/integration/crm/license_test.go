@@ -13,7 +13,7 @@ type deniedLicense struct{}
 func (deniedLicense) Check(context.Context, core.Operation) error { return core.ErrDenied }
 
 func TestCRMDeliveryDeniesBeforeClaimAndCallback(t *testing.T) {
-	// Nil store/client would panic if either business delivery bypassed the gate.
+	// 若任一业务投递绕过门禁，nil 存储或客户端会导致 panic。
 	d := &Dispatcher{LicenseGate: deniedLicense{}}
 	if err := d.dispatchOne(context.Background()); !errors.Is(err, core.ErrDenied) {
 		t.Fatal(err)

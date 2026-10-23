@@ -5,17 +5,22 @@ import (
 	"errors"
 	core "github.com/J-S-Te/license-core"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/bootstrap"
 	"github.com/j-s-te/contract-management/internal/config"
+	"github.com/j-s-te/contract-management/internal/filegatewayclient"
 	store "github.com/j-s-te/contract-management/internal/infrastructure/mysql"
 	"github.com/j-s-te/contract-management/internal/integration/crm"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
+	settlementintegration "github.com/j-s-te/contract-management/internal/integration/settlement"
 	"github.com/j-s-te/contract-management/internal/temporalworker"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"go.temporal.io/api/serviceerror"
@@ -72,6 +77,15 @@ func main() {
 	// workflow.GetVersion，二者不能互相替代。
 	w := worker.New(temporalClient, cfg.TemporalTaskQueue, workerOptions)
 	repository := store.NewRepository(db)
+	if cfg.StampedFileMode != "legacy" {
+		token := filegatewayclient.NewClientCredentialsTokenSource(ctx, strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token", cfg.StampedFileClientID, cfg.StampedFileClientSecret, cfg.StampedFileScope)
+		gateway, err := filegatewayclient.New(cfg.StampedFileGatewayURL, &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, token)
+		if err != nil {
+			logger.Error("file gateway initialization failed", "error", err)
+			os.Exit(1)
+		}
+		go (&application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}).Run(ctx)
+	}
 	go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
 	workflows.Register(w, &workflows.Activities{Store: repository, LicenseGate: licenseGate})
 	if cfg.ProjectIntegrationEnabled {
@@ -79,8 +93,15 @@ func main() {
 			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)}
 		go dispatcher.Run(ctx)
 	}
-	// Keep polling alive for recovery; expiry pauses new scheduling and every
-	// activity rechecks entitlement, including workflows created before expiry.
+	// 合同 → 结算 财务生效事件投递。与项目投递相互独立：项目投递可因来源校验未就绪而停用，
+	// 财务事件仍须按结算侧要求的机器令牌投递。
+	if cfg.SettlementIntegrationEnabled {
+		settlementDispatcher := &settlementintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.SettlementAPIBaseURL, MaxAttempts: cfg.SettlementIntegrationRetries, Poll: cfg.SettlementIntegrationPoll, Logger: logger,
+			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.SettlementIntegrationTokenURL, cfg.SettlementIntegrationClientID, cfg.SettlementIntegrationClientSecret, cfg.SettlementIntegrationAudience)}
+		go settlementDispatcher.Run(ctx)
+	}
+	// 保持轮询以支持恢复；过期会暂停新调度，且每个
+	// 活动均重检权益，包括过期前创建的工作流。
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()

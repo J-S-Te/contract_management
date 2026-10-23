@@ -9,7 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// StatusChangeWorkflow implements APP-002 for critical lifecycle targets.
+// StatusChangeWorkflow 为关键生命周期目标实现 APP-002。
 func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (ApprovalState, error) {
 	if err := validateStatusChange(input); err != nil {
 		return ApprovalState{}, err
@@ -25,9 +25,10 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		return state, err
 	}
 
-	info, actx := workflow.GetInfo(ctx), activityContext(ctx)
-	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindStatusChange, FromStatus: input.FromStatus, TargetStatus: input.TargetStatus, Reason: input.Reason, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: []approval.Node{node}}
-	if err := executeLicensedActivity(ctx, actx, ActivityStartApproval, start, nil); err != nil {
+	info := workflow.GetInfo(ctx)
+	actx, cctx := activityContext(ctx), criticalActivityContext(ctx)
+	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindStatusChange, FromStatus: input.FromStatus, TargetStatus: input.TargetStatus, Reason: input.Reason, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: []approval.Node{node}, Audit: input.Audit}
+	if err := executeLicensedActivity(ctx, cctx, ActivityStartApproval, start, nil); err != nil {
 		return state, err
 	}
 	if err := notifyCurrentNode(ctx, actx, input.TenantID, state, "pending_approval", "合同状态变更待审批", input.Reason); err != nil {
@@ -45,8 +46,8 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		if expired {
 			now = workflow.Now(ctx)
 			state.Status, state.FailureReason, state.CompletedAt, state.UpdatedAt = approval.StatusExpired, "status change approval timed out", now, now
-			complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, Status: state.Status, Reason: state.FailureReason, WorkflowID: info.WorkflowExecution.ID}
-			if err := executeLicensedActivity(ctx, actx, ActivityCompleteApproval, complete, nil); err != nil {
+			complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, Status: state.Status, Reason: state.FailureReason, WorkflowID: info.WorkflowExecution.ID, Audit: input.Audit}
+			if err := executeLicensedActivity(ctx, cctx, ActivityCompleteApproval, complete, nil); err != nil {
 				return state, err
 			}
 			if err := notifyRecipients(ctx, actx, input.TenantID, state, "rejected", "状态变更审批已超时", state.FailureReason, "expired", []string{input.ApplicantUserID}); err != nil {
@@ -59,7 +60,7 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		}
 		if command.Action == ActionUrge || command.Action == ActionComment {
 			record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.ID, Command: command, State: state}
-			if err := executeLicensedActivity(ctx, actx, ActivityRecordCommand, record, nil); err != nil {
+			if err := executeLicensedActivity(ctx, cctx, ActivityRecordCommand, record, nil); err != nil {
 				return state, err
 			}
 			if command.Action == ActionUrge {
@@ -81,15 +82,15 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		}
 		state.CompletedAt, state.UpdatedAt = workflow.Now(ctx), workflow.Now(ctx)
 		record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.ID, Command: command, State: state}
-		if err := executeLicensedActivity(ctx, actx, ActivityRecordCommand, record, nil); err != nil {
+		if err := executeLicensedActivity(ctx, cctx, ActivityRecordCommand, record, nil); err != nil {
 			return state, err
 		}
 		target := input.FromStatus
 		if state.Status == approval.StatusApproved {
 			target = input.TargetStatus
 		}
-		complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ActorUserID: command.ActorUserID, Status: state.Status, Reason: command.Comment, WorkflowID: info.WorkflowExecution.ID, TargetStatus: target}
-		if err := executeLicensedActivity(ctx, actx, ActivityCompleteApproval, complete, nil); err != nil {
+		complete := CompleteApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ActorUserID: command.ActorUserID, Status: state.Status, Reason: command.Comment, WorkflowID: info.WorkflowExecution.ID, TargetStatus: target, Audit: input.Audit}
+		if err := executeLicensedActivity(ctx, cctx, ActivityCompleteApproval, complete, nil); err != nil {
 			return state, err
 		}
 		typ, title := "rejected", "状态变更申请已拒绝"

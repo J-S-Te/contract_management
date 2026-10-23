@@ -105,8 +105,8 @@ func (directory *ContractReferenceDirectory) Resolve(ctx context.Context, custom
 	if len(body) > 1<<20 {
 		return application.CRMContractReference{}, errors.New("CRM response exceeds 1 MiB")
 	}
-	// CRM reports invalid customer/actor references as 422. A route-level 404
-	// can indicate a missing deployment prefix, not an invalid customer.
+	// CRM 将无效客户或操作者引用报告为 422。路由级 404
+	// 可能表示部署前缀缺失，而非客户无效。
 	if response.StatusCode == http.StatusUnprocessableEntity {
 		return application.CRMContractReference{}, application.ErrCRMReferenceInvalid
 	}

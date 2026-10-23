@@ -41,7 +41,7 @@ run_api_with_worker() {
     }
     trap stop_children INT TERM HUP
 
-    # Legacy compatibility only. Licensed deployments use separate components.
+    # 仅用于旧版兼容；启用授权的部署使用独立组件。
     while kill -0 "$api_pid" 2>/dev/null && kill -0 "$worker_pid" 2>/dev/null; do
         sleep 1
     done

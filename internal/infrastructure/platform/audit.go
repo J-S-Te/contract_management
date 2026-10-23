@@ -17,15 +17,22 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// AuditEvent deliberately excludes request bodies and credentials. It is the
-// minimum business summary accepted by the platform audit ingestion contract.
+// AuditEvent 有意排除请求体和凭据，是平台
+// 审计摄取契约接受的最小业务摘要。
 type AuditEvent struct {
+	// EventID/OccurredAt 由事务内 outbox 提供；为空时兼容旧调用方现场生成。
+	EventID                                              string
+	OccurredAt                                           time.Time
 	ActorID, ActorName, Action, ResourceType, ResourceID string
 	RequestID, CorrelationID, Result, ReasonCode         string
 	// RiskLevel 为 LOW/MEDIUM/HIGH/CRITICAL；为空时按 LOW 上报。
 	RiskLevel string
-	// UserLoginIP 是被审计用户的原始客户端地址；缺少该字段时，平台只能记录
-	// 合同服务投递请求的容器地址。
+	// 统一审计来源协议（AUD-IP-2026）：
+	//   LoginIP  创建会话时观察到的客户端地址（登录态固定，可能为空）
+	//   ClientIP 本次业务操作的客户端地址
+	//   IPSource 地址来源：TRUSTED_PROXY / DIRECT / UNKNOWN
+	LoginIP, ClientIP, IPSource string
+	// UserLoginIP 是旧协议字段，继续按"登录地址"语义上报以保证滚动升级兼容。
 	UserLoginIP string
 }
 
@@ -65,8 +72,16 @@ func (c *AuditClient) Report(ctx context.Context, event AuditEvent) error {
 	if err != nil {
 		return err
 	}
+	eventID := event.EventID
+	if eventID == "" {
+		eventID = ulid.Make().String()
+	}
+	occurredAt := event.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
 	payload := map[string]any{
-		"event_id": ulid.Make().String(), "occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"event_id": eventID, "occurred_at": occurredAt.UTC().Format(time.RFC3339Nano),
 		"application_code": c.applicationCode, "environment_code": c.environmentCode,
 		"actor_type": actorType(event.ActorID), "action": event.Action, "resource_type": event.ResourceType,
 		"request_id": requestID, "trace_id": traceID, "correlation_id": correlationID,
@@ -84,8 +99,19 @@ func (c *AuditClient) Report(ctx context.Context, event AuditEvent) error {
 	if event.ReasonCode != "" {
 		payload["reason_code"] = event.ReasonCode
 	}
-	if event.UserLoginIP != "" {
-		payload["user_login_ip"] = event.UserLoginIP
+	loginIP := event.LoginIP
+	if loginIP == "" {
+		loginIP = event.UserLoginIP
+	}
+	if loginIP != "" {
+		payload["login_ip"] = loginIP
+		payload["user_login_ip"] = loginIP
+	}
+	if event.ClientIP != "" {
+		payload["client_ip"] = event.ClientIP
+	}
+	if event.IPSource != "" {
+		payload["ip_source"] = event.IPSource
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

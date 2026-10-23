@@ -16,7 +16,7 @@ type restrictedLicense struct{}
 func (restrictedLicense) Check(context.Context, core.Operation) error { return core.ErrDenied }
 
 func TestActivitiesDenyBeforeAnyStoreMutation(t *testing.T) {
-	a := &Activities{LicenseGate: restrictedLicense{}} // nil Store would panic on bypass
+	a := &Activities{LicenseGate: restrictedLicense{}} // 若发生绕过，nil Store 会导致 panic。
 	ctx := context.Background()
 	for _, f := range []func() error{
 		func() error { return a.StartApproval(ctx, StartApprovalActivityInput{}) },

@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// ProjectServiceItem is the smallest approved-contract projection required by
-// Project Management. It intentionally excludes contract content, pricing,
-// contacts and document bytes.
+// ProjectServiceItem 是项目管理所需的最小已审批合同
+// 投影，有意排除合同正文、价格、
+// 联系人及文档字节。
 type ProjectServiceItem struct {
 	SourceID    string `json:"source_id"`
 	Name        string `json:"name"`
@@ -21,10 +21,10 @@ type ProjectServiceItem struct {
 	TestMode    string `json:"test_mode"`
 }
 
-// ProjectServiceItems expands a contract service with multiple systems into
-// stable, individually selectable project service items. The same projection
-// is used by automatic contract delivery and the manual project-creation
-// picker, so both paths preserve identical source identifiers and defaults.
+// ProjectServiceItems 将涉及多个系统的合同服务展开为
+// 稳定且可独立选择的项目服务项。同一投影
+// 用于自动合同交付及人工建项
+// 选择器，保证两条路径保留相同源标识及默认值。
 func ProjectServiceItems(contractID string, items []ServiceItem) []ProjectServiceItem {
 	result := make([]ProjectServiceItem, 0, len(items))
 	for itemIndex, item := range items {

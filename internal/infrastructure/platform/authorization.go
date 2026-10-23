@@ -156,8 +156,8 @@ func validateDataScopes(input []AuthorizationDataScope, roles map[string]struct{
 			if raw.EnvironmentCode != "" {
 				return nil, nil, fmt.Errorf("%s scope must not carry environment_code", raw.ScopeType)
 			}
-			// The platform intentionally emits APPLICATION with an empty scope_id for
-			// tenant-wide application access. TENANT is accepted for compatibility.
+			// 平台有意使用 scope_id 为空的 APPLICATION 表示
+			// 租户内全应用访问。兼容接受 TENANT。
 		case "ENVIRONMENT":
 			if raw.EnvironmentCode != environmentCode || raw.ScopeID == "" {
 				return nil, nil, errors.New("environment scope does not bind the configured environment")

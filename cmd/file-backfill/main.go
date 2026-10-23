@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/filegatewayclient"
+	store "github.com/j-s-te/contract-management/internal/infrastructure/mysql"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 	"gorm.io/driver/mysql"
@@ -47,10 +49,11 @@ func main() {
 	}
 	dsn, baseURL, tokenURL := os.Getenv("MYSQL_DSN"), os.Getenv("FILE_GATEWAY_BASE_URL"), os.Getenv("FILE_GATEWAY_TOKEN_URL")
 	clientID, secret, applicationID := os.Getenv("FILE_GATEWAY_CLIENT_ID"), os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), os.Getenv("FILE_GATEWAY_APPLICATION_ID")
+	tenantID := strings.TrimSpace(os.Getenv("OIDC_TENANT_ID"))
 	if tokenURL == "" {
 		tokenURL = strings.TrimRight(os.Getenv("PLATFORM_BASE_URL"), "/") + "/oauth2/token"
 	}
-	if dsn == "" || baseURL == "" || tokenURL == "" || clientID == "" || secret == "" || applicationID == "" {
+	if dsn == "" || baseURL == "" || tokenURL == "" || clientID == "" || secret == "" || applicationID == "" || tenantID == "" {
 		log.Fatal("database and file gateway configuration are required")
 	}
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
@@ -99,28 +102,33 @@ func main() {
 		}
 	}
 	var templates []templateRow
-	if err = db.WithContext(ctx).Where("document IS NOT NULL AND OCTET_LENGTH(document) > 0 AND (file_gateway_state = '' OR file_gateway_state <> 'READY')").Order("id").Limit(*limit).Find(&templates).Error; err != nil {
+	if err = db.WithContext(ctx).Where("tenant_id = ? AND document IS NOT NULL AND OCTET_LENGTH(document) > 0 AND gateway_source_id = ''", tenantID).Order("id").Limit(*limit).Find(&templates).Error; err != nil {
 		log.Fatal(err)
 	}
+	repository := store.NewRepository(db)
 	for _, row := range templates {
 		if licenseGate.Check(ctx, core.MUTATE_BUSINESS) != nil {
 			log.Fatal("commercial license blocks file backfill")
 		}
-		fileID, uploadErr := gateway.Upload(ctx, "backfill-template-"+row.ID, applicationID, "CONTRACT_TEMPLATE", row.OriginalFilename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(row.Document))
-		if uploadErr == nil {
-			uploadErr = gateway.Bind(ctx, applicationID, fileID, "contract_template", row.ID, "TEMPLATE_SOURCE", row.OriginalFilename)
-		}
-		state, detail := "READY", ""
-		if uploadErr != nil {
-			state, detail, failed = "FAILED", uploadErr.Error(), failed+1
-		}
-		if len(detail) > 512 {
-			detail = detail[:512]
-		}
-		if updateErr := db.WithContext(ctx).Model(&templateRow{}).Where("tenant_id = ? AND id = ?", row.TenantID, row.ID).Updates(map[string]any{"platform_file_id": fileID, "file_gateway_state": state, "file_gateway_last_error": detail}).Error; updateErr != nil {
-			log.Fatal(updateErr)
+		if queueErr := repository.QueueTemplateFileBackfill(ctx, row.TenantID, row.ID); queueErr != nil {
+			log.Fatal(queueErr)
 		}
 		processed++
+		if *interval > 0 {
+			time.Sleep(*interval)
+		}
+	}
+	// 仅投递已持久化意图，使用与 API 和工作器相同的恢复路径。
+	dispatcher := application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: applicationID, TenantID: tenantID, LicenseGate: licenseGate}
+	for count := 0; count < *limit; count++ {
+		found, deliveryErr := dispatcher.DeliverOnce(ctx)
+		if deliveryErr != nil {
+			failed++
+			break
+		}
+		if !found {
+			break
+		}
 		if *interval > 0 {
 			time.Sleep(*interval)
 		}

@@ -1,7 +1,7 @@
-// Command authz-catalog publishes the authorization catalog embedded in the
-// contract-management image. Deployment tooling uses this one-shot command so
-// the platform catalog is upgraded before a new API process starts accepting
-// sign-ins.
+// Command authz-catalog 发布合同管理镜像中嵌入的
+// 授权目录。部署工具使用该一次性命令，确保
+// 新 API 进程开始接受登录前，平台目录
+// 已完成升级。
 package main
 
 import (

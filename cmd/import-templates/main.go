@@ -1,5 +1,5 @@
-// import-templates validates a DOCX directory and optionally imports it through
-// the same authenticated, audited endpoint used by the contract template UI.
+// import-templates 校验 DOCX 目录，并可通过合同模板界面使用的
+// 同一认证和审计端点导入。
 package main
 
 import (

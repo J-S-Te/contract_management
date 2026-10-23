@@ -50,6 +50,13 @@ func (r *incomeHTTPTemplateRepository) UpdateTemplate(ctx context.Context, item 
 	r.items[item.ID] = item
 	return nil
 }
+func (r *incomeHTTPTemplateRepository) UpdateTemplateSource(ctx context.Context, item contracttemplate.Template) error {
+	if _, err := r.GetTemplate(ctx, item.TenantID, item.ID); err != nil {
+		return err
+	}
+	r.items[item.ID] = item
+	return nil
+}
 func (r *incomeHTTPTemplateRepository) DeleteTemplate(ctx context.Context, tenant, id string) error {
 	if _, err := r.GetTemplate(ctx, tenant, id); err != nil {
 		return err

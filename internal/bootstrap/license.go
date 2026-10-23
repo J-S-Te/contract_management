@@ -21,8 +21,8 @@ func StartCommercialLicense(ctx context.Context, logger *slog.Logger) (*consumer
 	return gate, nil
 }
 
-// RuntimeProcessMode prevents an independently enrolled API from spawning or
-// acknowledging the Worker using the API's runtime credential.
+// RuntimeProcessMode 防止独立注册的 API 使用自身运行时凭据
+// 启动工作器或替工作器确认。
 func RuntimeProcessMode(component string) (bool, error) {
 	return runtimeProcessMode(component, os.Getenv)
 }

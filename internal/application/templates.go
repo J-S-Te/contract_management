@@ -1,7 +1,6 @@
 package application
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -18,7 +17,15 @@ type TemplateRepository interface {
 	ListTemplates(context.Context, string) ([]contracttemplate.Template, error)
 	GetTemplate(context.Context, string, string) (contracttemplate.Template, error)
 	UpdateTemplate(context.Context, contracttemplate.Template) error
+	UpdateTemplateSource(context.Context, contracttemplate.Template) error
 	DeleteTemplate(context.Context, string, string) error
+}
+
+// TemplateFileIntentRepository 原子提交模板及其网关投递
+// 意图。不支持该能力的适配器必须安全拒绝。
+type TemplateFileIntentRepository interface {
+	CreateTemplateWithFile(context.Context, contracttemplate.Template) error
+	UpdateTemplateSourceWithFile(context.Context, contracttemplate.Template) error
 }
 
 func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, filename string, content []byte) (contracttemplate.Template, error) {
@@ -38,6 +45,9 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 	if name == "" {
 		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能为空", ErrValidation)
 	}
+	if len([]rune(name)) > 160 || len([]rune(filename)) > 255 {
+		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能超过 160 个字符，文件名不能超过 255 个字符", ErrValidation)
+	}
 	if filename == "." || !strings.EqualFold(filepath.Ext(filename), ".docx") {
 		return contracttemplate.Template{}, fmt.Errorf("%w: 仅支持 .docx 模板文件", ErrValidation)
 	}
@@ -48,35 +58,23 @@ func (s *Service) CreateTemplate(ctx context.Context, actor Principal, name, fil
 	item := contracttemplate.Template{
 		ID: ulid.Make().String(), TenantID: actor.TenantID, Name: name,
 		OriginalFilename: filename, NumberFormat: contracttemplate.DefaultNumberFormat, Fields: fields, Content: append([]byte(nil), content...),
-		CreatedAt: time.Now().UTC(), CreatedBy: actor.UserID,
-	}
-	if s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
-		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-template-"+item.ID, s.StampedFileApplicationID, "CONTRACT_TEMPLATE", filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(content))
-		if uploadErr != nil {
-			if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "required") {
-				return contracttemplate.Template{}, fmt.Errorf("template file gateway: %w", uploadErr)
-			}
-			item.FileGatewayState = "FAILED"
-		} else {
-			item.PlatformFileID, item.FileGatewayState = fileID, "PENDING"
-		}
+		Version: 1, CreatedAt: time.Now().UTC(), CreatedBy: actor.UserID,
 	}
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return contracttemplate.Template{}, err
 	}
-	if err := s.Templates.CreateTemplate(ctx, item); err != nil {
-		return contracttemplate.Template{}, err
+	if s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
+		repository, ok := s.Templates.(TemplateFileIntentRepository)
+		if !ok {
+			return contracttemplate.Template{}, fmt.Errorf("durable template file lifecycle is not configured")
+		}
+		item.FileGatewayState = "PENDING"
+		err = repository.CreateTemplateWithFile(ctx, item)
+	} else {
+		err = s.Templates.CreateTemplate(ctx, item)
 	}
-	if item.PlatformFileID != "" {
-		bindErr := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, item.PlatformFileID, "contract_template", item.ID, "TEMPLATE_SOURCE", item.OriginalFilename)
-		state, detail := "READY", ""
-		if bindErr != nil {
-			state, detail = "FAILED", bindErr.Error()
-		}
-		item.FileGatewayState = state
-		if repository, ok := s.Templates.(SourceFileGatewayStateRepository); ok {
-			_ = repository.MarkTemplateGatewayResult(ctx, item.TenantID, item.ID, item.PlatformFileID, state, detail)
-		}
+	if err != nil {
+		return contracttemplate.Template{}, err
 	}
 	return item, nil
 }
@@ -91,7 +89,7 @@ func (s *Service) ListTemplates(ctx context.Context, actor Principal) ([]contrac
 	return s.Templates.ListTemplates(ctx, actor.TenantID)
 }
 
-// ReplaceTemplateSource updates future drafts only; existing contracts retain their frozen DOCX.
+// ReplaceTemplateSource 仅影响未来草稿；既有合同保留已冻结的 DOCX。
 func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id, filename string, content []byte) (contracttemplate.Template, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return contracttemplate.Template{}, err
@@ -106,7 +104,7 @@ func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id
 		return contracttemplate.Template{}, fmt.Errorf("required template file gateway is not configured")
 	}
 	filename = filepath.Base(strings.TrimSpace(filename))
-	if !strings.EqualFold(filepath.Ext(filename), ".docx") {
+	if !strings.EqualFold(filepath.Ext(filename), ".docx") || len([]rune(filename)) > 255 {
 		return contracttemplate.Template{}, ErrValidation
 	}
 	fields, err := docx.Fields(content)
@@ -131,22 +129,23 @@ func (s *Service) ReplaceTemplateSource(ctx context.Context, actor Principal, id
 	}
 	item.Fields, item.Content, item.OriginalFilename = fields, append([]byte(nil), content...), filename
 	item.PlatformFileID, item.FileGatewayState = "", ""
-	if s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
-		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-template-replace-"+item.ID+"-"+ulid.Make().String(), s.StampedFileApplicationID, "CONTRACT_TEMPLATE", filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(content))
-		if uploadErr != nil {
-			return contracttemplate.Template{}, fmt.Errorf("template file gateway: %w", uploadErr)
-		}
-		if err := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, fileID, "contract_template", item.ID, "TEMPLATE_SOURCE", filename); err != nil {
-			return contracttemplate.Template{}, fmt.Errorf("template file gateway bind: %w", err)
-		}
-		item.PlatformFileID, item.FileGatewayState = fileID, "READY"
-	}
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return contracttemplate.Template{}, err
 	}
-	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
+	if s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
+		repository, ok := s.Templates.(TemplateFileIntentRepository)
+		if !ok {
+			return contracttemplate.Template{}, fmt.Errorf("durable template file lifecycle is not configured")
+		}
+		item.FileGatewayState = "PENDING"
+		err = repository.UpdateTemplateSourceWithFile(ctx, item)
+	} else {
+		err = s.Templates.UpdateTemplateSource(ctx, item)
+	}
+	if err != nil {
 		return contracttemplate.Template{}, err
 	}
+	item.Version++
 	return item, nil
 }
 
@@ -168,6 +167,9 @@ func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name,
 	if name == "" {
 		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能为空", ErrValidation)
 	}
+	if len([]rune(name)) > 160 {
+		return contracttemplate.Template{}, fmt.Errorf("%w: 模板名称不能超过 160 个字符", ErrValidation)
+	}
 	numberFormat, err = normalizeNumberFormat(numberFormat)
 	if err != nil {
 		return contracttemplate.Template{}, err
@@ -182,6 +184,9 @@ func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name,
 		field.Default = strings.TrimSpace(field.Default)
 		if field.Name == "" || field.Label == "" {
 			return contracttemplate.Template{}, fmt.Errorf("%w: 字段名称和显示名称不能为空", ErrValidation)
+		}
+		if len([]rune(field.Name)) > 160 || len([]rune(field.Label)) > 160 || len([]rune(field.Default)) > 1000 {
+			return contracttemplate.Template{}, fmt.Errorf("%w: 字段名称和显示名称不能超过 160 个字符，默认值不能超过 1000 个字符", ErrValidation)
 		}
 		if _, exists := configured[field.Name]; exists {
 			return contracttemplate.Template{}, fmt.Errorf("%w: 模板字段重复：%s", ErrValidation, field.Name)
@@ -206,6 +211,7 @@ func (s *Service) UpdateTemplate(ctx context.Context, actor Principal, id, name,
 	if err := s.Templates.UpdateTemplate(ctx, item); err != nil {
 		return contracttemplate.Template{}, err
 	}
+	item.Version++
 	return item, nil
 }
 
@@ -264,8 +270,8 @@ func (s *Service) renderTemplateForPermission(ctx context.Context, actor Princip
 	if err != nil {
 		return nil, nil, err
 	}
-	// A saved contract uses the authoritative ledger amount even if the caller
-	// omits this template field. Preview retains ordinary field rendering.
+	// 已保存合同采用权威台账金额，即使调用方
+	// 省略该模板字段。预览仍按普通字段渲染。
 	if len(ledgerAmountMinor) > 0 {
 		for _, field := range item.Fields {
 			if field.Name != "合同金额" {
@@ -297,7 +303,7 @@ func normalizeTemplateValues(fields []contracttemplate.Field, values map[string]
 	for _, field := range fields {
 		expected[field.Name] = true
 		if field.Name == "合同编号" || field.Name == "系统合同编号" {
-			// This marker is replaced transactionally only after approval assigns the number.
+			// 只有审批分配编号后，才在事务中替换此标记。
 			normalized[field.Name] = docx.SystemContractNumberPending
 			continue
 		}
@@ -320,6 +326,9 @@ func normalizeTemplateValues(fields []contracttemplate.Field, values map[string]
 		}
 		if strings.TrimSpace(value) == "" && field.Default == "" {
 			return nil, fmt.Errorf("%w: missing template field %s", ErrValidation, field.Name)
+		}
+		if len([]rune(value)) > 2000 {
+			return nil, fmt.Errorf("%w: 模板字段“%s”不能超过 2000 个字符", ErrValidation, field.Name)
 		}
 		normalized[field.Name] = value
 	}

@@ -133,13 +133,13 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 	return d.fail(ctx, delivery, fmt.Errorf("platform notification API returned %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody))))
 }
 
-// A workflow dedupe key identifies a business event, not its recipient outbox
-// row. JSON frames the tuple without concatenation ambiguity; the versioned
-// domain isolates this hash from other integrations. The alphabetic prefix
-// satisfies platform event codes even when a workflow ULID begins with digits.
-// Its fixed 68 bytes also leave room for contract_management:prod: in the
-// platform's 128-byte canonical idempotency key. Attempts and resolved role
-// members are intentionally excluded, so retries retain the same identity.
+// 工作流去重键标识业务事件，而非接收者 Outbox
+// 行。JSON 编码元组，避免拼接歧义；版本化
+// 域将此哈希与其他集成隔离。字母前缀
+// 使工作流 ULID 以数字开头时也符合平台事件编码要求。
+// 固定 68 字节还为平台 128 字节规范幂等键中的
+// contract_management:prod: 留出空间。有意排除尝试次数和解析后的角色
+// 成员，确保重试保留相同身份。
 func notificationDeliveryIdentity(delivery Delivery) (string, error) {
 	if delivery.TenantID == "" || delivery.DedupeKey == "" || delivery.RecipientKey == "" {
 		return "", fmt.Errorf("notification delivery identity is incomplete")

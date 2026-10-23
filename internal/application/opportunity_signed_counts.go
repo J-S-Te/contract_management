@@ -8,8 +8,8 @@ import (
 
 var ErrSignedContractCounterUnavailable = errors.New("signed contract counter is unavailable")
 
-// OpportunitySignedContractCounter is implemented by repositories that can
-// aggregate approval-passed contracts by their CRM opportunity reference.
+// OpportunitySignedContractCounter 由可按 CRM 商机引用
+// 聚合审批通过合同的仓储实现。
 type OpportunitySignedContractCounter interface {
 	CountSignedContractsByOpportunityIDs(context.Context, string, []string) (map[string]uint64, error)
 }

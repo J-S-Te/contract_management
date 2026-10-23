@@ -46,7 +46,7 @@ func draftHTTPActor(role string) application.Principal {
 
 func TestDraftUpdateHTTPSuccessDecodesFullPayload(t *testing.T) {
 	r := &draftHTTPRepository{current: contract.Contract{ID: "C", TenantID: "tenant", TemplateID: "template", CreatedBy: "user", OwnerUserID: "user", OwnerIdentityID: "identity", Status: contract.StatusDraft, Version: 7}}
-	s := &application.Service{Repo: r, Templates: draftHTTPTemplates{item: contracttemplate.Template{ID: "template", TenantID: "tenant", Content: externalContractDOCX(t)}}}
+	s := &application.Service{Repo: r, Templates: draftHTTPTemplates{item: contracttemplate.Template{ID: "template", TenantID: "tenant", Content: externalContractDOCX(t)}}, CRMContractReferences: externalCRMReferenceDirectory{}}
 	identity := identityFunc(func(context.Context, *http.Request) (application.Principal, error) {
 		return draftHTTPActor("sales"), nil
 	})

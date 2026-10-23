@@ -14,8 +14,8 @@ import (
 	"github.com/j-s-te/contract-management/internal/application"
 )
 
-// PersonnelDirectoryClient uses the platform's machine-only owner directory.
-// Its client credential must have only owner_directory.read.
+// PersonnelDirectoryClient 使用平台仅供机器调用的负责人目录。
+// 其客户端凭据只能拥有 owner_directory.read。
 type PersonnelDirectoryClient struct {
 	baseURL, clientID, clientSecret string
 	client                          *http.Client
@@ -108,6 +108,54 @@ func (c *PersonnelDirectoryClient) ListEligibleUsers(ctx context.Context, actor 
 		return result[i].DisplayName < result[j].DisplayName
 	})
 	return result, nil
+}
+
+// ResolveOwner 按 user_id 精确解析有效负责人；交接承接人必须来自平台权威目录，
+// 不能只凭调用方传入的展示名或 ID 改合同责任人。
+func (c *PersonnelDirectoryClient) ResolveOwner(ctx context.Context, tenantID, userID string) (application.UserReference, error) {
+	tenantID, userID = strings.TrimSpace(tenantID), strings.TrimSpace(userID)
+	if c == nil || c.client == nil || tenantID == "" || userID == "" {
+		return application.UserReference{}, fmt.Errorf("owner directory request is invalid")
+	}
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return application.UserReference{}, err
+	}
+	query := url.Values{"user_id": {userID}, "page": {"1"}, "page_size": {"1"}}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/internal/owner-directory?"+query.Encode(), nil)
+	if err != nil {
+		return application.UserReference{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/json")
+	response, err := c.client.Do(request)
+	if err != nil {
+		return application.UserReference{}, fmt.Errorf("query owner directory: %w", err)
+	}
+	defer response.Body.Close()
+	var envelope struct {
+		Data struct {
+			Items []struct {
+				UserID      string `json:"user_id"`
+				DisplayName string `json:"display_name"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope)
+	if response.StatusCode != http.StatusOK {
+		return application.UserReference{}, fmt.Errorf("platform owner directory returned %d", response.StatusCode)
+	}
+	if decodeErr != nil {
+		return application.UserReference{}, fmt.Errorf("decode owner directory: %w", decodeErr)
+	}
+	if len(envelope.Data.Items) != 1 {
+		return application.UserReference{}, fmt.Errorf("owner directory returned %d users for %s", len(envelope.Data.Items), userID)
+	}
+	item := envelope.Data.Items[0]
+	if strings.TrimSpace(item.UserID) != userID || strings.TrimSpace(item.DisplayName) == "" {
+		return application.UserReference{}, fmt.Errorf("owner directory returned an invalid user for %s", userID)
+	}
+	return application.UserReference{UserID: item.UserID, DisplayName: item.DisplayName}, nil
 }
 
 func (c *PersonnelDirectoryClient) accessToken(ctx context.Context) (string, error) {

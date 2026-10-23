@@ -105,6 +105,8 @@ type contractTemplateRecord struct {
 	PlatformFileID       string
 	FileGatewayState     string
 	FileGatewayLastError string
+	GatewaySourceID      string
+	Version              uint64
 	CreatedAt            time.Time
 	CreatedBy            string
 }
@@ -116,7 +118,7 @@ func templateFromRecord(record contractTemplateRecord) contracttemplate.Template
 		ID: record.ID, TenantID: record.TenantID, Name: record.Name,
 		OriginalFilename: record.OriginalFilename, NumberFormat: record.NumberFormat, Content: record.Document,
 		PlatformFileID: record.PlatformFileID, FileGatewayState: record.FileGatewayState,
-		CreatedAt: record.CreatedAt, CreatedBy: record.CreatedBy,
+		Version: record.Version, CreatedAt: record.CreatedAt, CreatedBy: record.CreatedBy,
 	}
 }
 
@@ -138,10 +140,13 @@ func (lifecycleEventRecord) TableName() string { return "con_contract_lifecycle_
 
 type stampedDocumentRecord struct {
 	ContractID, TenantID, OriginalFilename, ContentSHA256  string
+	Version                                                uint64
 	Document                                               []byte `gorm:"type:longblob"`
 	UploadedAt                                             time.Time
 	UploadedBy                                             string
 	PlatformFileID, FileGatewayState, FileGatewayLastError string
+	SupersededAt                                           *time.Time
+	SupersededBy                                           *string
 }
 
 func (stampedDocumentRecord) TableName() string { return "con_contract_stamped_document" }
@@ -150,6 +155,8 @@ type signingRecord struct {
 	ContractID, TenantID, Method, Status                           string
 	CourierNumber, RecipientName, RecipientPhone, RecipientAddress *string
 	MailedAt, CustomerReceivedAt, SignedAt, ConfirmedAt            *time.Time
+	ConfirmedDocumentVersion                                       *uint64
+	ConfirmedContentSHA256                                         *string
 	SealVerified, SignatureVerified                                bool
 	ReminderCount                                                  uint
 	LastRemindedAt                                                 *time.Time
@@ -204,6 +211,21 @@ type approvalInstanceRecord struct {
 }
 
 func (approvalInstanceRecord) TableName() string { return "con_approval_instance" }
+
+type approvalSnapshotRecord struct {
+	ApprovalID       string `gorm:"primaryKey"`
+	TenantID         string
+	ContractID       string
+	ContractVersion  uint64
+	ContentHash      *string
+	ContractJSON     []byte `gorm:"type:json"`
+	RenderedDocument []byte `gorm:"type:longblob"`
+	RuleID           *string
+	RuleVersion      *uint64
+	CreatedAt        time.Time
+}
+
+func (approvalSnapshotRecord) TableName() string { return "con_approval_snapshot" }
 
 type approvalTaskRecord struct {
 	ApprovalID     string `gorm:"primaryKey"`

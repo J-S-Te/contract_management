@@ -1,9 +1,9 @@
-"""Build corrected copies without touching the supplied DOCX originals.
+"""生成修正后的副本，不修改所提供的原始 DOCX。
 
-Only explicit, reviewed text spans change. Signature lines and other Zip parts
-are retained. Payment-body runs override accidental 36pt inherited styles;
-this does not introduce payment business models.
-Run with the bundled artifact Python runtime.
+仅修改明确且已审核的文本片段，保留签名行及其他 ZIP 部件。
+付款正文显式覆盖意外继承的 36 磅样式，不引入付款业务模型。
+
+使用随包提供的文档工具 Python 运行时执行。
 """
 from pathlib import Path
 from zipfile import ZipFile
@@ -52,7 +52,7 @@ def sub(p, pattern, replacement, count=1):
 
 
 def payment_blanks(p, first):
-    # Existing clauses retain their original payment-choice wording.
+    # 已有条款保留原有付款方式的表述。
     sub(p, r"RMB¥\s*_?元", "{{"+first+"}}元")
     sub(p, r"人民币\s*元整", "{{金额_大写 "+first+"}}")
 
@@ -60,9 +60,9 @@ def payment_blanks(p, first):
 def correct(index, tree):
     ps = tree.xpath("//w:p", namespaces=NS)
     if index in (1, 2, 3):
-        # These body clauses inherited a 36pt cover-title style in the supplied
-        # documents. Set only the reviewed payment block to normal 12pt body
-        # size, leaving covers and all other paragraph styles untouched.
+        # 所提供文档中的这些正文条款继承了封面标题的 36 磅样式。
+        # 仅将已审核的付款条款块调整为正常的 12 磅正文，
+        # 保留封面及其他段落样式。
         body_rows = {1: range(42, 47), 2: range(126, 139), 3: range(53, 59)}[index]
         for row in body_rows:
             for run in ps[row].xpath("./w:r", namespaces=NS):

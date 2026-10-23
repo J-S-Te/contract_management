@@ -21,6 +21,7 @@ type Template struct {
 	Content          []byte    `json:"-"`
 	PlatformFileID   string    `json:"file_id,omitempty"`
 	FileGatewayState string    `json:"file_status,omitempty"`
+	Version          uint64    `json:"version"`
 	CreatedAt        time.Time `json:"created_at"`
 	CreatedBy        string    `json:"created_by"`
 }

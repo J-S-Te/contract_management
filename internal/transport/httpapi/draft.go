@@ -20,7 +20,7 @@ func (h *Handler) updateContractDraft(c *gin.Context) {
 		OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CRMCustomerID: body.CRMCustomerID,
 		CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
 		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
-		AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID,
+		AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID,
 		TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate,
 	})
 	if err != nil {

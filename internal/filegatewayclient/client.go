@@ -135,6 +135,82 @@ func (c *Client) Bind(ctx context.Context, applicationID, fileID, resourceType, 
 	return c.doJSON(ctx, http.MethodPost, "/api/v1/files/"+url.PathEscape(fileID)+"/bindings", "", bytes.NewReader(data), "application/json", nil)
 }
 
+// ReleaseBinding 仅退役此源代次的业务引用。
+// 网关保留文件字节及其 LONG_TERM 保留类别。
+func (c *Client) ReleaseBinding(ctx context.Context, applicationID, fileID, resourceType, resourceID, bindingType string) error {
+	if strings.TrimSpace(applicationID) == "" || strings.TrimSpace(fileID) == "" || strings.TrimSpace(resourceType) == "" || strings.TrimSpace(resourceID) == "" || strings.TrimSpace(bindingType) == "" {
+		return errors.New("complete file binding identity is required")
+	}
+	payload, err := json.Marshal(map[string]string{"application_id": applicationID, "resource_type": resourceType, "resource_id": resourceID, "binding_type": bindingType})
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/files/"+url.PathEscape(fileID)+"/bindings/release", "", bytes.NewReader(payload), "application/json", nil)
+}
+
+// ResolveUploadRequest 读取不可变 v1 请求结果，不发送
+// 字节。NOT_FOUND 表示该租户及应用没有已提交预留。
+func (c *Client) ResolveUploadRequest(ctx context.Context, requestID string) (string, string, error) {
+	return c.uploadRequestState(ctx, requestID, false)
+}
+
+// RetireUploadRequest 即使尚未预留上传，也会隔离该请求。
+// 保留既有文件字节，之后必须释放其引用。
+func (c *Client) RetireUploadRequest(ctx context.Context, requestID string) (string, string, error) {
+	return c.uploadRequestState(ctx, requestID, true)
+}
+
+func (c *Client) uploadRequestState(ctx context.Context, requestID string, retire bool) (string, string, error) {
+	if strings.TrimSpace(requestID) == "" {
+		return "", "", errors.New("upload request identity is required")
+	}
+	token, err := c.token(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("get file gateway token: %w", err)
+	}
+	method, path := http.MethodGet, c.baseURL+"/api/v1/file-upload-requests/"+url.PathEscape(requestID)
+	if retire {
+		method, path = http.MethodPost, path+"/retire"
+	}
+	req, err := http.NewRequestWithContext(ctx, method, path, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve file gateway request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound && !retire {
+		return "", "NOT_FOUND", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("file gateway returned HTTP %d", resp.StatusCode)
+	}
+	var response struct {
+		Data struct {
+			RequestID string `json:"request_id"`
+			FileID    string `json:"file_id"`
+			Status    string `json:"status"`
+			Retired   bool   `json:"retired"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&response); err != nil {
+		return "", "", fmt.Errorf("decode upload resolution: %w", err)
+	}
+	if response.Data.RequestID != requestID || (response.Data.FileID == "" && response.Data.Status != "CANCELLED") || (retire && !response.Data.Retired) {
+		return "", "", errors.New("upload resolution identity mismatch")
+	}
+	switch response.Data.Status {
+	case "READY", "FAILED", "REJECTED", "WRITING", "CANCELLED":
+		return response.Data.FileID, response.Data.Status, nil
+	default:
+		return "", "", errors.New("unknown upload resolution status")
+	}
+}
+
 // Download 读取本应用上传的 READY 文件。调用方仍需在本地业务服务中先校验合同归属和下载权限。
 func (c *Client) Download(ctx context.Context, fileID string) ([]byte, error) {
 	fileID = strings.TrimSpace(fileID)

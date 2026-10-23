@@ -68,7 +68,7 @@ CRM link and project activation are business handoffs: license is checked before
 claim and immediately before the external call. Denial does not consume a business
 retry or mark the delivery terminal; a previously acquired lease may expire and be
 retried after recovery. Existing audit and notification delivery continue normally.
-File backfill CLI checks each row. Template importer uses the authenticated API,
+Financial-effective delivery and template file lifecycle work are also rechecked by their respective execution gates. File backfill CLI checks each row. Template importer uses the authenticated API,
 so template writes are governed by the same HTTP/service gate.
 
 Standalone repository builds include only reviewed root/runtime/syncclient/consumer
@@ -76,3 +76,13 @@ sources in `third_party/license-core`; `scripts/license-core-sync.sh --check`
 validates the exact file allowlist and digest manifest. Docker performs that check
 before module download/build. Runtime enabling, full installation evidence and
 browser/deployment acceptance are separate release gates, not implied by tests.
+
+## 操作步骤与验收（2026-10-22 源码核验）
+
+部署管理员通过固定批准和受控接入登记 contract-api/contract-worker，平台许可管理员导入同实例商业许可后在“运行时授权执行”选“合同管理”、刷新并确认激活。不要手工把 API 凭据给 Worker。成功按部署 READY、ENFORCED、snapshot_current=true及两个成员当期修订 ACK判断，进程 readyz 只证明准备状态。
+
+到期立即暂停新合同、审批推进、上传、CRM/项目交接及自动归档，不追加写入宽限；原授权项仍存在且已生效、可信快照和原业务权限正常时才可查询及导出历史。合同页面已有 DOCX/PDF/签章下载走前端 contract_management/api → router.go 认证/同源/操作分类 → application Service 及仓储/文件网关，不能用“GET一律只读”推断。审批命令经 Service 再检查、Temporal Activities 在 Store持久化前复核；许可暂停走30秒持久timer，不假成功、不消耗业务重试。
+
+失败查真实合同权限/角色、当前许可证、两个进程独立机器配置与状态卷、Temporal和外部集成，不停整个Worker来实现只读。许可恢复后由原工作流/队列重试，外部回执仍需核对。
+
+依据：cmd/api及cmd/worker main → internal/bootstrap/license.go → internal/transport/httpapi/router.go和license.go → internal/application/service.go、license.go → internal/workflows/activities.go、工作流timer及repository持久化；生产contract_management-prod.yaml/Compose分离装配。本次未部署、执行审批或动态验收。

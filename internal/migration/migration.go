@@ -28,7 +28,7 @@ type item struct {
 	checksum [sha256.Size]byte
 }
 
-// Run applies every pending embedded migration in numeric order and rejects changed history.
+// Run 按数字顺序应用全部待执行嵌入迁移，并拒绝历史变更。
 func Run(ctx context.Context, dsn string, files embed.FS) error {
 	config, err := driver.ParseDSN(dsn)
 	if err != nil {

@@ -20,6 +20,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/auditctx"
+	"github.com/j-s-te/contract-management/internal/auditoutbox"
 	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
@@ -53,9 +55,20 @@ type PublicPathResolver interface {
 }
 
 type Handler struct {
-	service  *application.Service
-	identity Identity
-	audit    platform.AuditReporter
+	service     *application.Service
+	identity    Identity
+	audit       platform.AuditReporter
+	auditOutbox *auditoutbox.GORMStore
+	// handover 仅在启用人员交接机器协议时非空；未启用时不注册该组路由。
+	handover *HandoverIntegration
+}
+
+// HandoverIntegrationOptions 配置基础平台调用的人员交接机器协议端点。
+// 与结算/项目集成一致：租户边界只来自令牌绑定，请求体不能覆盖。
+type HandoverIntegrationOptions struct {
+	Enabled        bool
+	RequireBearer  bool
+	BearerVerifier platform.ClientCredentialsTokenVerifier
 }
 
 // DashboardIntegrationOptions 数据看板系统（服务器到服务器）机器接入配置。
@@ -83,32 +96,45 @@ type CRMSignedCountIntegrationOptions struct {
 	Enabled        bool
 	RequireBearer  bool
 	BearerVerifier platform.ClientCredentialsTokenVerifier
+	// 商机接收是 CRM → 合同写入路径，有意
+	// 使用独立校验器和范围，不复用只读签约计数的
+	// 机器身份。
+	OpportunityIntakeEnabled        bool
+	OpportunityIntakeRequireBearer  bool
+	OpportunityIntakeBearerVerifier platform.ClientCredentialsTokenVerifier
 }
 
 // NewRouter 创建兼容现有调用方的合同管理路由。
 func NewRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, nil, nil, nil, audits...)
+	return newRouter(service, identity, dashboardOptions, nil, nil, nil, nil, nil, nil, audits...)
 }
 
 // NewRouterWithSettlement 创建包含结算系统内部读取接口的路由。
 func NewRouterWithSettlement(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, settlementOptions, nil, nil, audits...)
+	return newRouter(service, identity, dashboardOptions, settlementOptions, nil, nil, nil, nil, nil, audits...)
 }
 
 func NewRouterWithIntegrations(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, nil, audits...)
+	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, nil, nil, nil, nil, audits...)
 }
 
-func NewRouterWithAllIntegrations(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
-	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, crmSignedCountOptions, audits...)
+func NewRouterWithAllIntegrations(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, handoverService *application.HandoverService, handoverOptions *HandoverIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, crmSignedCountOptions, handoverService, handoverOptions, nil, audits...)
 }
 
-func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, audits ...platform.AuditReporter) *gin.Engine {
+func NewRouterWithAuditOutbox(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, handoverService *application.HandoverService, handoverOptions *HandoverIntegrationOptions, auditOutbox *auditoutbox.GORMStore, audits ...platform.AuditReporter) *gin.Engine {
+	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, crmSignedCountOptions, handoverService, handoverOptions, auditOutbox, audits...)
+}
+
+func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, handoverService *application.HandoverService, handoverOptions *HandoverIntegrationOptions, auditOutbox *auditoutbox.GORMStore, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
 		audit = audits[0]
 	}
-	h := &Handler{service: service, identity: identity, audit: audit}
+	h := &Handler{service: service, identity: identity, audit: audit, auditOutbox: auditOutbox}
+	if handoverOptions != nil && handoverOptions.Enabled && handoverService != nil {
+		h.handover = &HandoverIntegration{service: handoverService, options: *handoverOptions}
+	}
 	r := gin.New()
 	r.Use(requestID(), recoverer())
 	if oidcFlow, ok := identity.(OIDCFlow); ok {
@@ -164,13 +190,45 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	}
 	if crmSignedCountOptions != nil && crmSignedCountOptions.Enabled {
 		internal := r.Group("/contract_management/internal/opportunity-contract-counts")
-		internal.Use(h.authenticateServiceIntegration(*crmSignedCountOptions, "客户与商机管理系统"), h.licenseOperation())
+		internal.Use(h.authenticateServiceIntegration(struct {
+			Enabled        bool
+			RequireBearer  bool
+			BearerVerifier platform.ClientCredentialsTokenVerifier
+		}{crmSignedCountOptions.Enabled, crmSignedCountOptions.RequireBearer, crmSignedCountOptions.BearerVerifier}, "客户与商机管理系统"), h.licenseOperation())
 		internal.POST("/query", h.countSignedContractsByOpportunity)
+	}
+	if crmSignedCountOptions != nil && crmSignedCountOptions.OpportunityIntakeEnabled {
+		internal := r.Group("/internal/opportunity-signed-events")
+		internal.Use(
+			h.authenticateServiceIntegration(struct {
+				Enabled        bool
+				RequireBearer  bool
+				BearerVerifier platform.ClientCredentialsTokenVerifier
+			}{crmSignedCountOptions.OpportunityIntakeEnabled, crmSignedCountOptions.OpportunityIntakeRequireBearer, crmSignedCountOptions.OpportunityIntakeBearerVerifier}, "客户与商机管理系统"),
+			h.licenseOperation(),
+			h.grantOpportunityIntakePermission(),
+		)
+		internal.POST("", h.acceptOpportunityIntake)
+	}
+	if h.handover != nil {
+		// 人员离职交接机器协议：租户边界来自令牌绑定，与结算/项目集成同一模式。
+		internal := r.Group("/internal/v1/handover")
+		internal.Use(
+			h.authenticateServiceIntegration(struct {
+				Enabled        bool
+				RequireBearer  bool
+				BearerVerifier platform.ClientCredentialsTokenVerifier
+			}{Enabled: h.handover.options.Enabled, RequireBearer: h.handover.options.RequireBearer, BearerVerifier: h.handover.options.BearerVerifier}, "基础平台交接"),
+			h.licenseOperation(),
+		)
+		h.registerHandoverRoutes(internal)
 	}
 	// SEC-D11：cookie 会话写请求必须通过同源 Origin 校验（失败关闭）；
 	// 放在 auditWrites 之后使跨站拒绝尝试同样进入审计。
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites(), h.requireSameOriginWrite(), h.licenseOperation())
 	api.GET("/auth/me", h.me)
+	api.GET("/audit-outbox/failed", h.listFailedAuditEvents)
+	api.POST("/audit-outbox/failed/:id/retry", h.retryFailedAuditEvent)
 	api.GET("/dashboard", h.dashboard)
 	api.POST("/opportunity-intakes", h.acceptOpportunityIntake)
 	api.GET("/opportunity-intakes", h.listOpportunityIntakes)
@@ -208,6 +266,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/approvals/tasks", h.listTasks)
 	api.GET("/approvals/:approvalID", h.getApproval)
 	api.GET("/approvals/:approvalID/contract-preview", h.previewApprovalContract)
+	api.POST("/approvals/:approvalID/recover", h.recoverApproval)
 	api.GET("/approval-rules", h.listRules)
 	api.POST("/approval-rules", h.createRule)
 	api.PUT("/approval-rules/:ruleID", h.updateRule)
@@ -372,13 +431,13 @@ func (h *Handler) listContractLifecycle(c *gin.Context) {
 
 // auditWrites 在业务 handler 完成后把写请求（与敏感读）的结果上报平台审计。
 //
-// 安全理由（SEC-D4b）：原实现对审计管道 fail-open —— reporter 为 nil 直接放行、
+// 安全理由（SEC-D4b）：原实现对审计管道 失败时放行 —— reporter 为 nil 直接放行、
 // Report 错误被空白标识符丢弃，凭据失效或 ingest 故障时合同审批/签署/状态变更等
 // 所有写入都没有审计且不可见。现在：
 //  1. 上报失败一律 error 日志（含路由与请求 id），不再静默；
 //  2. 强制审计模式（PLATFORM_AUDIT_REQUIRED 或 PLATFORM_ENVIRONMENT_CODE=prod）下：
 //     - reporter 缺失 => 在执行业务 handler 之前就拒绝请求（503），不产生无审计的写；
-//     - 写请求先缓冲响应，Report 成功才提交给客户端；失败则丢弃业务响应并返回
+//     - 写请求与敏感读先隔离响应，Report 成功才提交；失败则丢弃业务响应并返回
 //     503，保证“审计写不进去 ⇒ 客户端拿不到成功”。
 //
 // 非强制模式保持原有放行语义，仅补上可告警的错误日志。
@@ -401,27 +460,37 @@ func (h *Handler) auditWrites() gin.HandlerFunc {
 				"request_id", requestID,
 			)
 			c.Abort()
-			writeEnvelopeError(c, http.StatusServiceUnavailable, "AUDIT_UNAVAILABLE", "审计服务不可用，操作已被拒绝", nil)
+			writeAuditError(c, "AUDIT_UNAVAILABLE", "审计服务不可用，操作已被拒绝")
 			return
 		}
 		required := auditRequired()
 		origWriter := c.Writer
 		var buffered *auditBuffer
-		if required && isUnsafeMethod(c.Request.Method) {
+		if required {
 			buffered = newAuditBuffer(origWriter)
+			buffered.head = c.Request.Method == http.MethodHead
 			c.Writer = buffered
 		}
 		// handler panic 展平时先恢复真实 writer，外层 recoverer 才能把 500 写出去；
 		// 缓冲中的半成品响应被直接丢弃，不会被当成成功提交。
 		defer func() { c.Writer = origWriter }()
+		// 来源信息必须在业务 handler 执行前注入：事务内审计在 handler 内部读取它，
+		// 放到 c.Next() 之后只能得到空值。
+		clientIP, ipSource := requestClientIP(c.Request), requestIPSource(c.Request)
+		c.Request = c.Request.WithContext(auditctx.WithMeta(c.Request.Context(), auditctx.Meta{
+			ClientIP: clientIP, IPSource: ipSource, RequestID: requestID,
+		}))
 		c.Next()
 		status := c.Writer.Status()
 		if status == 0 {
 			status = http.StatusOK
 		}
+		if buffered != nil && buffered.err != nil {
+			status = http.StatusServiceUnavailable
+		}
 		p := principal(c)
 		resourceType, resourceID := auditResource(c)
-		event := platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: auditResult(status), RiskLevel: auditRiskLevel(c.Request.Method, c.Request.URL.Path, status), ReasonCode: strconv.Itoa(status), UserLoginIP: requestClientIP(c.Request)}
+		event := platform.AuditEvent{ActorID: p.UserID, Action: auditAction(c.Request), ResourceType: resourceType, ResourceID: resourceID, RequestID: requestID, CorrelationID: requestID, Result: auditResult(status), RiskLevel: auditRiskLevel(c.Request.Method, c.Request.URL.Path, status), ReasonCode: strconv.Itoa(status), ClientIP: clientIP, IPSource: ipSource}
 		if err := h.audit.Report(c.Request.Context(), event); err != nil {
 			slog.ErrorContext(c.Request.Context(), "report platform audit failed",
 				"route", route,
@@ -432,18 +501,34 @@ func (h *Handler) auditWrites() gin.HandlerFunc {
 			if required {
 				// 强制审计模式：审计事件写入失败必须拒绝该请求，不能静默成功。
 				c.Writer = origWriter
-				writeEnvelopeError(c, http.StatusServiceUnavailable, "AUDIT_WRITE_REJECTED", "审计记录写入失败，操作未被确认", nil)
+				writeAuditError(c, "AUDIT_WRITE_REJECTED", "审计记录写入失败，操作未被确认")
 			}
 			return
 		}
 		if buffered != nil {
+			if buffered.err != nil {
+				c.Writer = origWriter
+				slog.ErrorContext(c.Request.Context(), "audited response capture failed", "route", route, "request_id", requestID, "error", buffered.err)
+				writeAuditError(c, "AUDIT_RESPONSE_UNAVAILABLE", "响应超出安全审计交付范围，请联系管理员")
+				return
+			}
 			buffered.flushTo(origWriter)
 		}
 	}
 }
 
-// isUnsafeMethod 判定需要缓冲响应的不安全方法（写请求）；读请求不缓冲，
-// 避免把大文件下载整包压进内存。
+// HEAD须遵守无响应体语义；失败时只使用原始writer，不能保留文档响应头。
+func writeAuditError(c *gin.Context, code, message string) {
+	if c.Request.Method == http.MethodHead {
+		c.Header("Content-Type", "application/json; charset=utf-8")
+		c.Status(http.StatusServiceUnavailable)
+		c.Writer.WriteHeaderNow()
+		return
+	}
+	writeEnvelopeError(c, http.StatusServiceUnavailable, code, message, nil)
+}
+
+// isUnsafeMethod 判定产生业务副作用的不安全HTTP方法。
 func isUnsafeMethod(method string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -502,17 +587,29 @@ func skipAudit(method, path string) bool {
 }
 
 // sensitiveRead 识别会暴露数据的读操作（下载、导出、嵌入令牌签发）。
+//
+// AUD-IP-2026：合同正文的实际下载路由是 /approved-contracts/:id/docx、/pdf 与
+// /stamped-pdf，路径里并不会有 "download" 字样；只按关键词匹配会让这些导出完全
+// 绕过审计（包括强制审计模式下"审计写不进去就拒绝"的保护）。
 func sensitiveRead(path string) bool {
 	lowered := strings.ToLower(path)
-	return containsAnyAudit(lowered, "embed", "download", "export")
+	if containsAnyAudit(lowered, "embed", "download", "export") {
+		return true
+	}
+	for _, suffix := range []string{"/docx", "/pdf", "/stamped-pdf"} {
+		if strings.HasSuffix(lowered, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
-// requestClientIP extracts a public client address from the managed frontend
-// proxy. X-Real-IP is authoritative; the right-most XFF value is used as a
-// fallback so a client-supplied left-most value cannot spoof audit records.
-// Forwarding headers are only honoured when the direct peer is the trusted
-// reverse proxy, so a directly reachable service cannot have its audit source
-// address spoofed by client-supplied headers.
+// requestClientIP 从受管前端代理提取公开客户端
+// 地址。X-Real-IP 为权威值，最右侧 XFF 值作为
+// 回退，防止客户端提供的最左值伪造审计记录。
+// 仅在直接对端是可信反向代理时信任转发头，
+// 确保可直接访问的服务不会被客户端请求头
+// 伪造审计源地址。
 func requestClientIP(request *http.Request) string {
 	if request == nil {
 		return ""
@@ -538,10 +635,10 @@ func requestClientIP(request *http.Request) string {
 	return ""
 }
 
-// trustedProxyPeer reports whether the direct peer address belongs to the
-// trusted reverse proxy (loopback or private/link-local Docker gateway).
-// A public peer means the service is directly reachable, so client-supplied
-// forwarding headers must not be trusted.
+// trustedProxyPeer 判断直接对端地址是否属于
+// 可信反向代理（回环或私有、链路本地 Docker 网关）。
+// 公网对端表示服务可被直接访问，因此不能信任
+// 客户端提供的转发头。
 func trustedProxyPeer(remoteAddr string) bool {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
 	if err != nil {
@@ -554,12 +651,33 @@ func trustedProxyPeer(remoteAddr string) bool {
 	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
 }
 
-func publicClientIP(value string) *netip.Addr {
+// clientIPAddress 接受任意合法单播地址（含办公网/VPN/回环）。
+//
+// AUD-IP-2026：按地址段过滤会把真实办公网地址丢掉，审计只能显示"未采集"；
+// 是否可信由"从哪个入口观察到"决定，见 trustedProxyPeer。
+func clientIPAddress(value string) *netip.Addr {
 	addr, err := netip.ParseAddr(strings.TrimSpace(value))
-	if err != nil || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+	if err != nil || addr.IsUnspecified() || addr.IsMulticast() {
 		return nil
 	}
 	return &addr
+}
+
+// publicClientIP 保留旧名称以兼容既有调用点，口径已放宽为任意合法单播地址。
+func publicClientIP(value string) *netip.Addr { return clientIPAddress(value) }
+
+// requestIPSource 标记操作地址的来源：经可信代理解析还是直连观察。
+func requestIPSource(request *http.Request) string {
+	if request == nil {
+		return "UNKNOWN"
+	}
+	if trustedProxyPeer(request.RemoteAddr) {
+		return "TRUSTED_PROXY"
+	}
+	if requestClientIP(request) != "" {
+		return "DIRECT"
+	}
+	return "UNKNOWN"
 }
 
 func auditAction(r *http.Request) string {
@@ -653,6 +771,7 @@ type createContractRequest struct {
 	CustomerCreditLevel string                 `json:"customer_credit_level"`
 	AmountMinor         int64                  `json:"amount_minor"`
 	Currency            string                 `json:"currency"`
+	PaymentTerms        []contract.PaymentTerm `json:"payment_terms"`
 	Content             string                 `json:"content"`
 	TemplateID          string                 `json:"template_id"`
 	TemplateValues      map[string]string      `json:"template_values"`
@@ -676,8 +795,15 @@ type externalContractMetadata struct {
 	CustomerCreditLevel string                 `json:"customer_credit_level"`
 	AmountMinor         int64                  `json:"amount_minor"`
 	Currency            string                 `json:"currency"`
-	StartDate           *time.Time             `json:"start_date"`
-	EndDate             *time.Time             `json:"end_date"`
+	PaymentTerms        []contract.PaymentTerm `json:"payment_terms"`
+	// Content 仅用于兼容前端共享的 buildNewContractPayload()：模板路径会发送
+	// content，外部合同路径复用同一构造函数。外部合同的正文来自上传的 DOCX
+	// （contract.Contract.Document），因此该字段收下即丢弃，不参与建单。
+	// 缺少本字段时 DisallowUnknownFields 会以 json: unknown field "content"
+	// 失败（HTTP 422 CON_VALIDATION_ERROR「外部合同元数据不合法」）。
+	Content   string     `json:"content"`
+	StartDate *time.Time `json:"start_date"`
+	EndDate   *time.Time `json:"end_date"`
 }
 
 func (h *Handler) createContract(c *gin.Context) {
@@ -685,7 +811,7 @@ func (h *Handler) createContract(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -729,7 +855,8 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 	decoder := json.NewDecoder(strings.NewReader(metadata))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同元数据不合法", err.Error())
+		message, details := externalMetadataDecodeError(err)
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", message, details)
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
@@ -771,7 +898,7 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 		CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName,
 		CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
 		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
-		AmountMinor: body.AmountMinor, Currency: body.Currency, Document: document,
+		AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Document: document,
 		StartDate: body.StartDate, EndDate: body.EndDate,
 	})
 	if err != nil {
@@ -779,6 +906,33 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusCreated, created)
+}
+
+// 仅暴露已知字段名及错误类别。解码器错误可能包含
+// 用户提供的 JSON 值，不适合用作面向用户的诊断。
+func externalMetadataDecodeError(err error) (string, map[string]string) {
+	var fieldError *json.UnmarshalTypeError
+	if errors.As(err, &fieldError) {
+		labels := map[string]string{
+			"title": "合同名称", "contract_type": "合同类型", "crm_customer_id": "CRM 客户",
+			"opportunity_id": "关联商机", "amount_minor": "合同金额", "currency": "币种",
+			"service_items": "服务项", "systems": "系统信息", "payment_terms": "付款计划",
+			"start_date": "开始日期", "end_date": "结束日期",
+		}
+		field := strings.Split(fieldError.Field, ".")[0]
+		if label, ok := labels[field]; ok {
+			return label + "格式不正确，请检查后重试", map[string]string{"reason": "invalid_type", "field": field}
+		}
+		return "外部合同字段格式不正确，请检查表单后重试", map[string]string{"reason": "invalid_type"}
+	}
+	var dateError *time.ParseError
+	if errors.As(err, &dateError) {
+		return "合同开始或结束日期格式不正确，请重新选择日期", map[string]string{"reason": "invalid_date"}
+	}
+	if strings.HasPrefix(err.Error(), "json: unknown field ") {
+		return "外部合同包含不支持的字段，请刷新页面并确认前后端版本一致", map[string]string{"reason": "unknown_field"}
+	}
+	return "外部合同表单数据格式不正确，请刷新后重新填写", map[string]string{"reason": "invalid_json"}
 }
 
 func (h *Handler) getContract(c *gin.Context) {
@@ -938,6 +1092,18 @@ func (h *Handler) downloadApprovedPDF(c *gin.Context) {
 	h.download(c, found.Number, ".pdf", "application/pdf", document)
 }
 
+func parseStampedExpectedVersion(raw string) (uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, errors.New("expected_version is required")
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, errors.New("expected_version is invalid: " + err.Error())
+	}
+	return value, nil
+}
+
 func (h *Handler) uploadStampedPDF(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (20<<20)+(1<<20))
 	file, header, err := c.Request.FormFile("file")
@@ -951,11 +1117,25 @@ func (h *Handler) uploadStampedPDF(c *gin.Context) {
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "盖章合同必须是有效且不超过 20MB 的 PDF", nil)
 		return
 	}
-	if err := h.service.SaveStampedDocument(c.Request.Context(), principal(c), c.Param("contractID"), filepath.Base(header.Filename), document); err != nil {
+	expectedVersion, versionErr := parseStampedExpectedVersion(c.PostForm("expected_version"))
+	if versionErr != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "盖章文件上传必须携带当前修订号", map[string]string{"expected_version": "缺失或格式不正确"})
+		return
+	}
+	replacementReason := strings.TrimSpace(c.PostForm("replacement_reason"))
+	var saved contract.StampedDocument
+	if replacementReason != "" {
+		saved, err = h.service.ReplaceStampedDocument(c.Request.Context(), principal(c), c.Param("contractID"), filepath.Base(header.Filename), document, expectedVersion, replacementReason)
+	} else {
+		saved, err = h.service.SaveStampedDocument(c.Request.Context(), principal(c), c.Param("contractID"), filepath.Base(header.Filename), document, expectedVersion)
+	}
+	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusOK, map[string]any{"original_filename": filepath.Base(header.Filename)})
+	writeData(c, http.StatusOK, map[string]any{
+		"original_filename": saved.OriginalFilename, "version": saved.Version, "content_sha256": saved.ContentSHA256,
+	})
 }
 
 func (h *Handler) downloadStampedPDF(c *gin.Context) {
@@ -969,12 +1149,16 @@ func (h *Handler) downloadStampedPDF(c *gin.Context) {
 
 func (h *Handler) listSigningRecords(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	items, err := h.service.ListSigningRecords(c.Request.Context(), principal(c), limit)
+	offset, _ := strconv.Atoi(c.Query("offset"))
+	page, err := h.service.ListSigningRecords(c.Request.Context(), principal(c), contract.SigningRecordQuery{
+		Keyword: c.Query("keyword"), Status: c.Query("status"), Method: c.Query("method"),
+		Offset: offset, Limit: limit,
+	})
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusOK, items)
+	writeData(c, http.StatusOK, page)
 }
 
 func (h *Handler) getSigningRecord(c *gin.Context) {
@@ -1031,6 +1215,8 @@ func (h *Handler) confirmSigning(c *gin.Context) {
 		SealVerified      bool   `json:"seal_verified"`
 		SignatureVerified bool   `json:"signature_verified"`
 		SignedAt          string `json:"signed_at"`
+		DocumentVersion   uint64 `json:"document_version"`
+		ContentSHA256     string `json:"content_sha256"`
 	}
 	if !decode(c, &body) {
 		return
@@ -1040,7 +1226,10 @@ func (h *Handler) confirmSigning(c *gin.Context) {
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择有效的签署日期", nil)
 		return
 	}
-	err = h.service.ConfirmSigning(c.Request.Context(), principal(c), c.Param("contractID"), contract.SigningConfirmation{SealVerified: body.SealVerified, SignatureVerified: body.SignatureVerified, SignedAt: signedAt.UTC()})
+	err = h.service.ConfirmSigning(c.Request.Context(), principal(c), c.Param("contractID"), contract.SigningConfirmation{
+		SealVerified: body.SealVerified, SignatureVerified: body.SignatureVerified, SignedAt: signedAt.UTC(),
+		DocumentVersion: body.DocumentVersion, ContentSHA256: body.ContentSHA256,
+	})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -1090,19 +1279,17 @@ func (h *Handler) listContracts(c *gin.Context) {
 // settlementCompletedContract 是合同管理向结算系统提供的稳定读取契约。
 // 不直接暴露合同正文、模板和渲染文档，避免跨系统同步时传输无关敏感内容。
 type settlementCompletedContract struct {
-	ID             string          `json:"id"`
-	ContractNumber string          `json:"contract_number"`
-	Title          string          `json:"title"`
-	CRMCustomerID  uint64          `json:"crm_customer_id,omitempty"`
-	CustomerName   string          `json:"customer_name,omitempty"`
-	Currency       string          `json:"currency"`
-	AmountMinor    int64           `json:"amount_minor"`
-	Status         contract.Status `json:"status"`
-	Version        uint64          `json:"version"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	// 当前合同模型尚未保存可生成应收计划的付款条款，暂返回空数组。
-	// 结算侧不得据此自动生成分期应收，待合同侧补齐条款模型后再扩展。
-	PaymentTerms []any `json:"payment_terms"`
+	ID             string                 `json:"id"`
+	ContractNumber string                 `json:"contract_number"`
+	Title          string                 `json:"title"`
+	CRMCustomerID  uint64                 `json:"crm_customer_id,omitempty"`
+	CustomerName   string                 `json:"customer_name,omitempty"`
+	Currency       string                 `json:"currency"`
+	AmountMinor    int64                  `json:"amount_minor"`
+	Status         contract.Status        `json:"status"`
+	Version        uint64                 `json:"version"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	PaymentTerms   []contract.PaymentTerm `json:"payment_terms"`
 }
 
 // listSettlementCompletedContracts 返回当前租户状态为 completed 的合同摘要。
@@ -1117,10 +1304,14 @@ func (h *Handler) listSettlementCompletedContracts(c *gin.Context) {
 	}
 	result := make([]settlementCompletedContract, 0, len(items))
 	for _, item := range items {
+		terms := item.PaymentTerms
+		if terms == nil {
+			terms = []contract.PaymentTerm{}
+		}
 		result = append(result, settlementCompletedContract{
 			ID: item.ID, ContractNumber: item.Number, Title: item.Title, CRMCustomerID: item.CRMCustomerID,
 			CustomerName: item.CustomerName, Currency: item.Currency, AmountMinor: item.AmountMinor,
-			Status: item.Status, Version: item.Version, UpdatedAt: item.UpdatedAt, PaymentTerms: []any{},
+			Status: item.Status, Version: item.Version, UpdatedAt: item.UpdatedAt, PaymentTerms: terms,
 		})
 	}
 	writeData(c, http.StatusOK, result)
@@ -1189,9 +1380,9 @@ func (h *Handler) getProjectApprovedContract(c *gin.Context) {
 	writeData(c, http.StatusOK, projectApprovedContractView(item))
 }
 
-// getProjectApprovedContractServiceItems exposes only the structured service
-// scope required to create a project. Contract text, prices, contacts and files
-// remain outside the Project Management integration boundary.
+// getProjectApprovedContractServiceItems 仅暴露建项所需的结构化
+// 服务范围。合同正文、价格、联系人及文件
+// 均不属于项目管理集成边界。
 func (h *Handler) getProjectApprovedContractServiceItems(c *gin.Context) {
 	item, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.approved.read")
 	if err != nil {
@@ -1262,6 +1453,49 @@ func (h *Handler) listApprovals(c *gin.Context) {
 	writeData(c, http.StatusOK, approvals)
 }
 
+func (h *Handler) listFailedAuditEvents(c *gin.Context) {
+	if !principal(c).Has("approval.manage") {
+		writeEnvelopeError(c, http.StatusForbidden, "CON_FORBIDDEN", "当前用户没有执行此操作的权限", nil)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if h.auditOutbox == nil {
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_UNAVAILABLE", "审计队列运维未配置", nil)
+		return
+	}
+	rows, err := h.auditOutbox.ListFailed(c.Request.Context(), principal(c).TenantID, limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, map[string]any{"id": row.ID, "event_id": row.EventID, "action": row.Action, "resource_type": row.ResourceType, "resource_id": row.ResourceID, "request_id": row.RequestID, "last_error": row.LastError, "attempts": row.Attempts, "created_at": row.CreatedAt.Format(time.RFC3339)})
+	}
+	writeData(c, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) retryFailedAuditEvent(c *gin.Context) {
+	if !principal(c).Has("approval.manage") {
+		writeEnvelopeError(c, http.StatusForbidden, "CON_FORBIDDEN", "当前用户没有执行此操作的权限", nil)
+		return
+	}
+	if h.auditOutbox == nil {
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_UNAVAILABLE", "审计队列运维未配置", nil)
+		return
+	}
+	ok, err := h.auditOutbox.RetryFailed(c.Request.Context(), principal(c).TenantID, c.Param("id"), time.Now().UTC())
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if !ok {
+		writeEnvelopeError(c, http.StatusNotFound, "CON_NOT_FOUND", "未找到可重试的审计事件", nil)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]string{"id": c.Param("id"), "status": "retry"})
+}
+
 func (h *Handler) getApproval(c *gin.Context) {
 	detail, err := h.service.GetApprovalDetail(c.Request.Context(), principal(c), c.Param("approvalID"))
 	if err != nil {
@@ -1269,6 +1503,14 @@ func (h *Handler) getApproval(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, detail)
+}
+
+func (h *Handler) recoverApproval(c *gin.Context) {
+	if err := h.service.RecoverApproval(c.Request.Context(), principal(c), c.Param("approvalID")); err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]bool{"recovered": true})
 }
 
 func (h *Handler) previewApprovalContract(c *gin.Context) {
@@ -1391,6 +1633,18 @@ func (h *Handler) authenticateServiceIntegration(options struct {
 		c.Next()
 	}
 }
+func (h *Handler) grantOpportunityIntakePermission() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		p := principal(c)
+		if p.Permissions == nil {
+			p.Permissions = map[string]bool{}
+		}
+		p.Permissions["opportunity_intake.receive"] = true
+		c.Set(principalKey, p)
+		c.Next()
+	}
+}
+
 func principal(c *gin.Context) application.Principal {
 	value, _ := c.Get(principalKey)
 	p, _ := value.(application.Principal)
@@ -1424,6 +1678,7 @@ func writeData(c *gin.Context, status int, data any) {
 	writeJSON(c, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(c.Request.Context()), Data: data})
 }
 func writeError(c *gin.Context, err error) {
+	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
 	switch {
 	case errors.Is(err, application.ErrCommercialLicense):
 		writeEnvelopeError(c, http.StatusForbidden, "COMMERCIAL_LICENSE_RESTRICTED", "商业授权不允许此操作；历史查询与导出仍可使用", nil)
@@ -1433,6 +1688,10 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "AUTH_DEPENDENCY_UNAVAILABLE", "身份或授权服务暂时不可用", nil)
 	case errors.Is(err, application.ErrApprovalWorkflowUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_APPROVAL_WORKFLOW_UNAVAILABLE", "审批流程服务暂时不可用，请稍后重试", nil)
+	case errors.As(err, &assigneeUnavailable):
+		// 审批人解析发生在合同状态和审批实例写入之前，必须明确告知“本次未提交”。
+		// 若按 5xx 返回，客户端只会提示写入结果未知，诱发重复提交。
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_APPROVAL_ASSIGNEE_UNAVAILABLE", approvalAssigneeMessage(assigneeUnavailable.RoleCodes), gin.H{"role_codes": assigneeUnavailable.RoleCodes})
 	case errors.Is(err, application.ErrDetectionCategoryDirectoryUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DETECTION_CATEGORY_DIRECTORY_UNAVAILABLE", "检测类别目录暂时不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrCRMReferenceDirectoryUnavailable):
@@ -1461,6 +1720,42 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusInternalServerError, "CON_INTERNAL_ERROR", "服务暂时不可用", nil)
 	}
 }
+
+// contractApprovalRoleLabels 与合同权限清单的角色名称保持一致，仅用于把
+// 审批人缺失这一配置问题翻译成可执行的用户提示；未知角色保留原始编码。
+var contractApprovalRoleLabels = map[string]string{
+	"admin":               "超级管理员",
+	"sales_director":      "销售总监",
+	"tech_director":       "技术总监",
+	"finance_director":    "财务总监",
+	"sales":               "销售人员",
+	"contract_specialist": "合同专员",
+	"audit_admin":         "审计管理员",
+}
+
+func approvalAssigneeMessage(roleCodes []string) string {
+	labels := make([]string, 0, len(roleCodes))
+	for _, code := range roleCodes {
+		code = strings.TrimSpace(code)
+		if code == "" {
+			continue
+		}
+		label, known := contractApprovalRoleLabels[code]
+		if !known {
+			label = code
+		}
+		labels = append(labels, label)
+	}
+	const guidance = "本次未提交。请先在基础平台为合同应用分配相应角色的人员，或调整审批规则后重试。"
+	if len(labels) == 0 {
+		return "审批流程缺少可用审批人。" + guidance
+	}
+	if len(labels) > 5 {
+		labels = append(labels[:5], "等")
+	}
+	return "审批流程缺少可用审批人：" + strings.Join(labels, "、") + "。" + guidance
+}
+
 func writeEnvelopeError(c *gin.Context, status int, code, message string, details any) {
 	writeJSON(c, status, envelope{Code: code, Message: message, RequestID: requestIDFrom(c.Request.Context()), Details: details})
 }

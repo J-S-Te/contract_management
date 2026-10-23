@@ -12,9 +12,9 @@ import (
 
 const commercialLicenseErrorType = "COMMERCIAL_LICENSE_RESTRICTED"
 
-// A revoked/expired license pauses pending business work durably. Returning the
-// denial as an ordinary activity failure would exhaust MaximumAttempts and lose
-// the workflow. Other failures retain the existing bounded retry policy.
+// 撤销或过期许可证会持久暂停待处理业务。若将
+// 拒绝视为普通活动失败，会耗尽 MaximumAttempts 并丢失
+// 工作流。其他失败保留既有有界重试策略。
 func executeLicensedActivity(ctx, actx workflow.Context, name string, input, output any) error {
 	for {
 		err := workflow.ExecuteActivity(actx, name, input).Get(ctx, output)
@@ -32,6 +32,19 @@ func activityContext(ctx workflow.Context) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 30 * time.Second, MaximumAttempts: 8},
+	})
+}
+
+// criticalActivityContext 用于状态流转本身。数据库/网络类故障不应在有限重试后把
+// 工作流打成失败、让合同永久停在“待审批”；非可重试的业务冲突由 Activity 层
+// 包装为 NonRetryable，仍会立即失败。通知等旁路 Activity 继续使用有限重试。
+func criticalActivityContext(ctx workflow.Context) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: time.Minute,
+			MaximumAttempts: 0,
+		},
 	})
 }
 
@@ -89,17 +102,27 @@ func notifyCurrentNode(ctx, actx workflow.Context, tenantID string, state Approv
 	}
 	node := state.Nodes[state.CurrentNodeIndex]
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, Recipients: node.Node.AssigneeIDs, Title: title, Content: content, DedupeKey: fmt.Sprintf("%s:%s:%s:%d", state.ApprovalID, node.Node.ID, typ, workflow.Now(ctx).Unix()/3600)}
-	return executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil)
+	return notifyBestEffort(ctx, actx, in)
+}
+
+// notifyBestEffort 把通知视为旁路：通知写入失败不能阻断已经完成或正在进行的审批
+// 状态流转，但必须留下工作流日志供追踪；事务通知 Outbox 仍由独立投递器重试。
+func notifyBestEffort(ctx, actx workflow.Context, in NotifyActivityInput) error {
+	if err := executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil); err != nil {
+		workflow.GetLogger(ctx).Error("contract notification activity failed; approval state continues",
+			"approval_id", in.ApprovalID, "contract_id", in.ContractID, "type", in.Type, "error", err)
+	}
+	return nil
 }
 
 func notifyRecipients(ctx, actx workflow.Context, tenantID string, state ApprovalState, typ, title, content, keySuffix string, recipients []string) error {
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, Recipients: unique(recipients), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
-	return executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil)
+	return notifyBestEffort(ctx, actx, in)
 }
 
-// notifyAssignedUsers informs only the users added by the current command. This is
-// intentionally separate from notifyCurrentNode: existing assignees should not receive
-// duplicate messages when a transfer or add-sign operation changes the same node.
+// notifyAssignedUsers 仅通知当前命令新增的用户，有意
+// 独立于 notifyCurrentNode：转交或加签改变同一节点时，
+// 既有受理人不应收到重复消息。
 func notifyAssignedUsers(ctx, actx workflow.Context, tenantID string, state ApprovalState, command ApprovalCommand, recipients []string) error {
 	if len(unique(recipients)) == 0 {
 		return nil
@@ -109,5 +132,5 @@ func notifyAssignedUsers(ctx, actx workflow.Context, tenantID string, state Appr
 
 func notifyRoles(ctx, actx workflow.Context, tenantID string, state ApprovalState, typ, title, content, keySuffix string, roles []string) error {
 	in := NotifyActivityInput{TenantID: tenantID, ApprovalID: state.ApprovalID, ContractID: state.ContractID, Type: typ, RoleRecipients: unique(roles), Title: title, Content: content, DedupeKey: state.ApprovalID + ":" + keySuffix}
-	return executeLicensedActivity(ctx, actx, ActivityCreateNotification, in, nil)
+	return notifyBestEffort(ctx, actx, in)
 }

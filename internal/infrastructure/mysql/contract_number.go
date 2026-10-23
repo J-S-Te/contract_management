@@ -9,7 +9,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/docx"
 )
 
-// Use the approved snapshot, never a template that an administrator may have replaced.
+// 使用已审批快照，绝不使用管理员可能已替换的模板。
 func approvedNumberUpdates(current contractRecord, number string) (map[string]any, error) {
 	updates := map[string]any{"contract_number": number}
 	if len(current.RenderedDocument) == 0 {

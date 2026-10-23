@@ -148,9 +148,9 @@ func TestDispatchOnePostsIngestionEvent(t *testing.T) {
 }
 
 func TestNotificationIdentityMatchesIndependentPlatformContract(t *testing.T) {
-	// Primary platform application/template.go contract, independent of the
-	// implementation's hash helper: event codes start with a letter and the
-	// application/environment-prefixed storage key must fit 128 bytes.
+	// 平台 application/template.go 的原始契约独立于
+	// 实现中的哈希辅助方法：事件编码以字母开头，
+	// 带应用及环境前缀的存储键必须不超过 128 字节。
 	platformCode := regexp.MustCompile(`^[A-Z][A-Z0-9_:-]{0,127}$`)
 	for _, recipient := range []string{"user:01M4HVMMS8VPV95ZV6ZNGDME9R", "role:contract_specialist"} {
 		for _, key := range []string{"01M4JCXT8BHT6WTV28EFAA8S5N:approved", strings.Repeat("很长:业务:key\x00", 1000)} {
