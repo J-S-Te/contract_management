@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/auditoutbox"
 	"github.com/j-s-te/contract-management/internal/bootstrap"
 	"github.com/j-s-te/contract-management/internal/config"
 	"github.com/j-s-te/contract-management/internal/filegatewayclient"
@@ -20,11 +21,18 @@ import (
 	"github.com/j-s-te/contract-management/internal/integration/crm"
 	notificationintegration "github.com/j-s-te/contract-management/internal/integration/notification"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
+	settlementintegration "github.com/j-s-te/contract-management/internal/integration/settlement"
 	"github.com/j-s-te/contract-management/internal/transport/httpapi"
+	"github.com/oklog/ulid/v2"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	splitProcess, err := bootstrap.RuntimeProcessMode("contract-api")
+	if err != nil {
+		logger.Error("contract process configuration failed", "error", err)
+		os.Exit(1)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("configuration failed", "error", err)
@@ -32,6 +40,11 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	licenseGate, err := bootstrap.StartCommercialLicense(ctx, logger)
+	if err != nil {
+		logger.Error("commercial license configuration failed")
+		os.Exit(1)
+	}
 	if err := platform.SyncAuthorizationCatalog(ctx, platform.CatalogSyncOptions{
 		Enabled: cfg.PlatformCatalogSync, BaseURL: cfg.PlatformBaseURL,
 		ApplicationID: cfg.PlatformApplicationID, ClientID: cfg.PlatformCatalogClientID,
@@ -53,8 +66,23 @@ func main() {
 	}
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
-	go (&crm.Dispatcher{Store: repository, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
+	if !splitProcess {
+		go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
+	}
 	personnelDirectory := platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout)
+	// 事务内审计 outbox 的投递循环独立于通知配置：通知关闭、审计开启时仍必须消费，
+	// 否则事务审计只落库不投递。
+	auditReporter := platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)
+	var auditStore *auditoutbox.GORMStore
+	if auditReporter != nil {
+		auditStore = &auditoutbox.GORMStore{DB: db, Lease: 2 * time.Minute, MaxTries: 20}
+		auditDispatcher := &auditoutbox.Dispatcher{
+			Store:    auditStore,
+			Reporter: auditReporter, WorkerID: "contract-api-audit", Poll: 2 * time.Second, BatchSize: 50,
+			MaxAttempts: 20, MaxBackoff: 5 * time.Minute, Logger: logger,
+		}
+		go auditDispatcher.Run(ctx)
+	}
 	if cfg.PlatformNotificationClientID != "" && cfg.PlatformNotificationSecret != "" {
 		notificationDispatcher := &notificationintegration.Dispatcher{
 			Store: repository, BaseURL: cfg.PlatformBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
@@ -82,16 +110,26 @@ func main() {
 	var crmContractReferences application.CRMContractReferenceDirectory
 	if cfg.ProjectIntegrationEnabled {
 		tokenSource := projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)
-		dispatcher := &projectintegration.Dispatcher{Store: repository, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
+		dispatcher := &projectintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
 			TokenSource: tokenSource}
-		go dispatcher.Run(ctx)
+		if !splitProcess {
+			go dispatcher.Run(ctx)
+		}
 		projectDetectionCategories = &projectintegration.DetectionCategoryDirectory{BaseURL: cfg.ProjectAPIBaseURL, TokenSource: tokenSource}
+	}
+	if cfg.SettlementIntegrationEnabled {
+		settlementDispatcher := &settlementintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.SettlementAPIBaseURL, MaxAttempts: cfg.SettlementIntegrationRetries, Poll: cfg.SettlementIntegrationPoll, Logger: logger,
+			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.SettlementIntegrationTokenURL, cfg.SettlementIntegrationClientID, cfg.SettlementIntegrationClientSecret, cfg.SettlementIntegrationAudience)}
+		if !splitProcess {
+			go settlementDispatcher.Run(ctx)
+		}
 	}
 	if cfg.CRMReferenceEnabled {
 		crmTokenSource := crm.NewClientCredentialsTokenSource(ctx, cfg.CRMReferenceTokenURL, cfg.CRMReferenceClientID, cfg.CRMReferenceClientSecret, cfg.CRMReferenceScope)
 		crmContractReferences = &crm.ContractReferenceDirectory{BaseURL: cfg.CRMReferenceBaseURL, TokenSource: crmTokenSource}
 	}
 	service := &application.Service{
+		LicenseGate:             licenseGate,
 		Repo:                    repository,
 		Templates:               repository,
 		Temporal:                temporalClient,
@@ -99,7 +137,7 @@ func main() {
 		NodeTimeout:             cfg.NodeTimeout,
 		ReminderInterval:        cfg.ReminderInterval,
 		Personnel:               personnelDirectory,
-		OpportunityLinkNotifier: &crm.LinkNotifier{BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
+		OpportunityLinkNotifier: &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
 		DetectionCategories:     projectDetectionCategories,
 		CRMContractReferences:   crmContractReferences,
 	}
@@ -113,6 +151,9 @@ func main() {
 		service.StampedFileGateway = gateway
 		service.StampedFileMode = cfg.StampedFileMode
 		service.StampedFileApplicationID = cfg.StampedFileApplicationID
+		if !splitProcess {
+			go (&application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}).Run(ctx)
+		}
 	}
 	var dashboardBearer platform.ClientCredentialsTokenVerifier
 	if cfg.DashboardMachineEnabled && cfg.DashboardMachineRequireBearer {
@@ -139,6 +180,21 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// 写路径冻结覆盖与协议端点共用同一仓储：即使端点未启用，也不得把新责任分配给交接中的用户。
+	service.HandoverFreeze = repository
+	// 审批节点转派走权威工作流命令（与 HTTP transfer 动作同一信号通道）。
+	var handoverBearer platform.ClientCredentialsTokenVerifier
+	if cfg.HandoverMachineEnabled && cfg.HandoverMachineRequireBearer {
+		handoverBearer, err = platform.NewKeycloakClientCredentialsTokenVerifier(ctx, platform.KeycloakClientCredentialsVerifierOptions{
+			Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
+			ClientID: cfg.HandoverMachineClientID, Audience: cfg.HandoverMachineAudience,
+			TenantID: cfg.OIDCTenantID, Timeout: cfg.OIDCAuthorizationTimeout,
+		})
+		if err != nil {
+			logger.Error("initialize handover machine bearer verifier", "error", err)
+			os.Exit(1)
+		}
+	}
 	var projectApprovalBearer platform.ClientCredentialsTokenVerifier
 	if cfg.ProjectApprovalMachineEnabled {
 		projectApprovalBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
@@ -149,6 +205,19 @@ func main() {
 		})
 		if err != nil {
 			logger.Error("initialize project approval bearer verifier", "error", err)
+			os.Exit(1)
+		}
+	}
+	var crmOpportunityIntakeBearer platform.ClientCredentialsTokenVerifier
+	if cfg.CRMOpportunityIntakeMachineEnabled {
+		crmOpportunityIntakeBearer, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{
+			Issuer: cfg.CRMOpportunityIntakeMachineIssuer, Audience: cfg.CRMOpportunityIntakeMachineAudience,
+			PublicKeyPath: cfg.CRMOpportunityIntakeMachinePublicKeyPath, ClientID: cfg.CRMOpportunityIntakeMachineClientID,
+			TenantID: cfg.OIDCTenantID, CallerApplicationCode: cfg.CRMOpportunityIntakeMachineCallerApp,
+			CallerEnvironmentCode: cfg.CRMOpportunityIntakeMachineCallerEnv, RequiredScope: cfg.CRMOpportunityIntakeMachineScope,
+		})
+		if err != nil {
+			logger.Error("initialize CRM opportunity intake bearer verifier", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -165,7 +234,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	auditReporter := platform.NewAuditReporter(cfg.PlatformBaseURL, cfg.PlatformAuditClientID, cfg.PlatformAuditClientSecret, cfg.PlatformApplicationCode, cfg.PlatformEnvironmentCode)
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
@@ -188,13 +256,29 @@ func main() {
 		logger.Error("OIDC discovery failed", "error", err)
 		os.Exit(1)
 	}
+	// 人员交接机器协议：仅在启用时注册端点；未启用时不暴露该组路由。
+	var handoverService *application.HandoverService
+	if cfg.HandoverMachineEnabled {
+		handoverService, err = application.NewHandoverService(store.NewRepository(db),
+			func(time.Time) (string, error) { return ulid.Make().String(), nil }, time.Now)
+		if err != nil {
+			logger.Error("initialize handover service", "error", err)
+			os.Exit(1)
+		}
+		// 审批节点转派走权威工作流命令（与 HTTP transfer 动作同一信号通道）。
+		handoverService.SetApprovalTransferDispatcher(application.NewHandoverApprovalDispatcher(service))
+		// 承接人的姓名/身份来自平台权威负责人目录，不能只改 owner_user_id。
+		if resolver, ok := personnelDirectory.(application.HandoverOwnerResolver); ok {
+			handoverService.SetOwnerResolver(resolver)
+		}
+	}
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
-		Handler: httpapi.NewRouterWithAllIntegrations(service, identity,
+		Handler: httpapi.NewRouterWithAuditOutbox(service, identity,
 			&httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer},
 			&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer},
 			&httpapi.ProjectIntegrationOptions{Enabled: cfg.ProjectApprovalMachineEnabled, RequireBearer: cfg.ProjectApprovalMachineRequireBearer, BearerVerifier: projectApprovalBearer},
-			&httpapi.CRMSignedCountIntegrationOptions{Enabled: cfg.CRMSignedCountMachineEnabled, RequireBearer: cfg.CRMSignedCountMachineRequireBearer, BearerVerifier: crmSignedCountBearer}, auditReporter),
+			&httpapi.CRMSignedCountIntegrationOptions{Enabled: cfg.CRMSignedCountMachineEnabled, RequireBearer: cfg.CRMSignedCountMachineRequireBearer, BearerVerifier: crmSignedCountBearer, OpportunityIntakeEnabled: cfg.CRMOpportunityIntakeMachineEnabled, OpportunityIntakeRequireBearer: cfg.CRMOpportunityIntakeMachineRequireBearer, OpportunityIntakeBearerVerifier: crmOpportunityIntakeBearer}, handoverService, &httpapi.HandoverIntegrationOptions{Enabled: cfg.HandoverMachineEnabled, RequireBearer: cfg.HandoverMachineRequireBearer, BearerVerifier: handoverBearer}, auditStore, auditReporter),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

@@ -9,8 +9,8 @@ import (
 	"github.com/j-s-te/contract-management/internal/docx"
 )
 
-// Replacing a source only affects future drafts. Existing contracts retain
-// their frozen document, values and hash and must follow the change workflow.
+// 替换源仅影响未来草稿。既有合同保留
+// 已冻结的文档、值和哈希，必须遵循变更工作流。
 func (h *Handler) replaceTemplateSource(c *gin.Context) {
 	actor := principal(c)
 	if !actor.Has("contract.template.manage") {

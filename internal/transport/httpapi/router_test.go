@@ -73,6 +73,27 @@ func TestApprovalWorkflowUnavailableIsNotReportedAsInternalServerError(t *testin
 	}
 }
 
+func TestApprovalAssigneeUnavailableIsAnActionableRejection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/v1/contracts/contract-1/submit-approval", nil)
+	writeError(context, &application.ApprovalAssigneeUnavailableError{RoleCodes: []string{"sales_director", "finance_director"}})
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusUnprocessableEntity, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "CON_APPROVAL_ASSIGNEE_UNAVAILABLE") || !strings.Contains(body, "销售总监") || !strings.Contains(body, "财务总监") {
+		t.Fatalf("body = %s, want actionable role names", body)
+	}
+	if !strings.Contains(body, "本次未提交") {
+		t.Fatalf("body = %s, want an explicit not-submitted statement", body)
+	}
+	if strings.Contains(body, "CON_INTERNAL_ERROR") || strings.Contains(body, "服务暂时不可用") {
+		t.Fatalf("body = %s, must not be reported as an internal error", body)
+	}
+}
+
 func (fn identityFunc) Authenticate(ctx context.Context, request *http.Request) (application.Principal, error) {
 	return fn(ctx, request)
 }
@@ -203,7 +224,7 @@ func TestCreateExternalContractMultipart(t *testing.T) {
 			PermissionScopes: map[string]contract.ScopeFilter{"contract.create": {AllowAll: true}},
 		}, nil
 	})
-	metadata := `{"title":"外部合同","contract_type":"直签","crm_customer_id":7,"customer_name":"示例客户","amount_minor":10000,"currency":"CNY","service_items":[{"service_type":"等保测评","site":"杭州","batch":"第一批","category":"等保测评","test_mode":"STANDARD"}]}`
+	metadata := `{"title":"外部合同","contract_type":"直签","crm_customer_id":7,"customer_name":"示例客户","amount_minor":10000,"currency":"CNY","payment_terms":[{"installment_no":1,"due_date":"2026-12-01","amount":"100.00"}],"service_items":[{"service_type":"等保测评","site":"杭州","batch":"第一批","category":"等保测评","test_mode":"STANDARD"}]}`
 	request := externalContractUploadRequest(t, metadata, "external.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", externalContractDOCX(t))
 	response := httptest.NewRecorder()
 
@@ -214,6 +235,9 @@ func TestCreateExternalContractMultipart(t *testing.T) {
 	}
 	if repository.created.TemplateID != "" || repository.created.CRMCustomerID != 7 || repository.created.Content != "外部合同正文" || len(repository.created.Document) == 0 {
 		t.Fatalf("created=%+v", repository.created)
+	}
+	if len(repository.created.PaymentTerms) != 1 || repository.created.PaymentTerms[0].Amount != "100.00" {
+		t.Fatal("external multipart payment schedule was lost")
 	}
 }
 
@@ -355,7 +379,7 @@ func TestCRMSignedCountIntegrationUsesVerifiedTenantAndReturnsEveryRequestedOppo
 	service := &application.Service{Repo: repository}
 	router := NewRouterWithAllIntegrations(service, nil, nil, nil, nil, &CRMSignedCountIntegrationOptions{
 		Enabled: true, RequireBearer: true, BearerVerifier: stubVerifier{tenantID: "tenant-from-token"},
-	})
+	}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/contract_management/internal/opportunity-contract-counts/query", strings.NewReader(`{"opportunity_ids":["7","9"]}`))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -467,21 +491,31 @@ func TestProjectApprovedContractsRequireMachineBearer(t *testing.T) {
 }
 
 func TestProjectApprovedContractViewExposesOnlyProjectSummary(t *testing.T) {
-	item := contract.Contract{
-		ID: "C-1", Number: "HT-1", Title: "技术服务", CRMCustomerID: 8, CustomerName: "客户",
-		Version: 2, Status: contract.StatusApproved, Content: "不得暴露的合同正文", Document: []byte("document"),
-	}
-	view := projectApprovedContractView(item)
-	encoded, err := json.Marshal(view)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := string(encoded)
-	if view.CustomerID != "8" || !view.ApprovalPassed || !strings.Contains(body, `"contract_number":"HT-1"`) {
-		t.Fatalf("view=%+v body=%s", view, body)
-	}
-	if strings.Contains(body, "不得暴露") || strings.Contains(body, "document") {
-		t.Fatalf("internal endpoint leaked contract body: %s", body)
+	// 正常审批完成事务会把合同推进到 active，路由原样返回持久化状态而不做转译；
+	// 项目接收方必须能同时识别 approved（历史停留）与 active（正常完成）。
+	for _, status := range []contract.Status{contract.StatusApproved, contract.StatusActive} {
+		status := status
+		t.Run(string(status), func(t *testing.T) {
+			item := contract.Contract{
+				ID: "C-1", Number: "HT-1", Title: "技术服务", CRMCustomerID: 8, CustomerName: "客户",
+				Version: 2, Status: status, Content: "不得暴露的合同正文", Document: []byte("document"),
+			}
+			view := projectApprovedContractView(item)
+			encoded, err := json.Marshal(view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(encoded)
+			if view.CustomerID != "8" || !view.ApprovalPassed || !strings.Contains(body, `"contract_number":"HT-1"`) {
+				t.Fatalf("view=%+v body=%s", view, body)
+			}
+			if !strings.Contains(body, `"status":"`+string(status)+`"`) || !strings.Contains(body, `"approval_passed":true`) {
+				t.Fatalf("machine projection must return the persisted status and approval flag: %s", body)
+			}
+			if strings.Contains(body, "不得暴露") || strings.Contains(body, "document") {
+				t.Fatalf("internal endpoint leaked contract body: %s", body)
+			}
+		})
 	}
 }
 

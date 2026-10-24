@@ -21,7 +21,7 @@ func TestIncomeTemplatesRealDocuments(t *testing.T) {
 	if err != nil || len(paths) != 5 {
 		t.Fatalf("income templates: paths=%v error=%v; want five real documents", paths, err)
 	}
-	// The two 金额_大写 helpers reuse 合同金额 rather than creating another input.
+	// 两个“金额_大写”辅助字段复用“合同金额”，不创建额外输入。
 	expectedFields := []int{21, 25, 21, 44, 24}
 	actor := Principal{TenantID: "income-tenant", UserID: "template-manager", Permissions: map[string]bool{"contract.template.manage": true, "contract.create": true}}
 	for index, path := range paths {

@@ -52,7 +52,7 @@ type Facts struct {
 	TermsIdentical      bool
 }
 
-// MatchHighest selects one immutable rule snapshot for workflow input.
+// MatchHighest 为工作流输入选择一个不可变规则快照。
 func MatchHighest(rules []Rule, facts Facts) (*Rule, error) {
 	candidates := append([]Rule(nil), rules...)
 	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Priority > candidates[j].Priority })

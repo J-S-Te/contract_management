@@ -112,9 +112,9 @@ func LoadAuthorizationCatalog() (AuthorizationCatalog, error) {
 	return result, nil
 }
 
-// SyncAuthorizationCatalog publishes the embedded application-owned manifest to the platform.
-// Enabling synchronization makes a failed publication a startup error so the API never runs with
-// a role catalog that differs from its own authorization checks.
+// SyncAuthorizationCatalog 向平台发布嵌入的应用自有清单。
+// 启用同步后，发布失败视为启动错误，防止 API 在
+// 角色目录与自身授权检查不一致时运行。
 func SyncAuthorizationCatalog(ctx context.Context, options CatalogSyncOptions) error {
 	if !options.Enabled {
 		return nil

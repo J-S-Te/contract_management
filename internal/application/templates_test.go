@@ -46,6 +46,11 @@ func (r *memoryTemplateRepository) UpdateTemplate(_ context.Context, item contra
 	return nil
 }
 
+func (r *memoryTemplateRepository) UpdateTemplateSource(_ context.Context, item contracttemplate.Template) error {
+	r.items[item.ID] = item
+	return nil
+}
+
 func (r *memoryTemplateRepository) DeleteTemplate(_ context.Context, tenantID, id string) error {
 	item, exists := r.items[id]
 	if !exists || item.TenantID != tenantID {

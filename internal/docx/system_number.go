@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// SystemContractNumberPending is frozen into drafts. Approval replaces only
-// this reserved marker, never rerenders an administrator's mutable template.
+// SystemContractNumberPending 冻结在草稿中。审批仅替换
+// 此保留标记，绝不重新渲染管理员可变的模板。
 const SystemContractNumberPending = "【系统合同编号：审批通过后生成】"
 
 func ReplaceSystemContractNumber(document []byte, number string) ([]byte, error) {

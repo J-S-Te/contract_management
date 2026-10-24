@@ -105,7 +105,9 @@ func (directory *ContractReferenceDirectory) Resolve(ctx context.Context, custom
 	if len(body) > 1<<20 {
 		return application.CRMContractReference{}, errors.New("CRM response exceeds 1 MiB")
 	}
-	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusUnprocessableEntity {
+	// CRM 将无效客户或操作者引用报告为 422。路由级 404
+	// 可能表示部署前缀缺失，而非客户无效。
+	if response.StatusCode == http.StatusUnprocessableEntity {
 		return application.CRMContractReference{}, application.ErrCRMReferenceInvalid
 	}
 	if response.StatusCode != http.StatusOK {

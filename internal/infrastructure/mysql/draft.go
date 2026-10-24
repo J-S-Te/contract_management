@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
+	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -41,9 +43,22 @@ func (r *Repository) UpdateContractDraft(ctx context.Context, c contract.Contrac
 		if contract.Status(current.Status) != contract.StatusDraft {
 			return apperrors.ErrStateConflict
 		}
+		if c.PaymentTerms == nil {
+			stored, err := (&Repository{db: tx}).ListContractPaymentTerms(ctx, c.TenantID, c.ID)
+			if err != nil {
+				return err
+			}
+			c.PaymentTerms = stored
+			if len(stored) > 0 && !strings.EqualFold(strings.TrimSpace(c.Currency), strings.TrimSpace(current.Currency)) {
+				return application.ErrValidation
+			}
+		}
+		if _, err := contract.NormalizePaymentTerms(c.PaymentTerms, c.AmountMinor, c.Currency); err != nil {
+			return fmt.Errorf("%w: %v", application.ErrValidation, err)
+		}
 		now := time.Now().UTC()
-		// Only editable draft content is updated. Identity, owner, source binding,
-		// contract number and original creation audit cannot be changed by callers.
+		// 仅更新可编辑的草稿内容。调用方不能修改身份、负责人、源绑定、
+		// 合同编号或原始创建审计。
 		result := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND version = ? AND status = ?", c.TenantID, c.ID, expectedVersion, contract.StatusDraft).Updates(map[string]any{
 			"title": c.Title, "contract_type": c.Type, "service_type": c.ServiceType, "customer_credit_level": stringPtr(c.CustomerCreditLevel),
 			"opportunity_id": stringPtr(c.OpportunityID), "opportunity_name": stringPtr(c.OpportunityName), "crm_customer_id": uintPtr(c.CRMCustomerID),
@@ -57,6 +72,9 @@ func (r *Repository) UpdateContractDraft(ctx context.Context, c contract.Contrac
 		}
 		if result.RowsAffected != 1 {
 			return apperrors.ErrVersionConflict
+		}
+		if err := replaceContractPaymentTerms(tx, c); err != nil {
+			return err
 		}
 		return tx.Create(&lifecycleEventRecord{ID: newID(), TenantID: c.TenantID, ContractID: c.ID, FromStatus: string(contract.StatusDraft), ToStatus: string(contract.StatusDraft), ActorUserID: stringPtr(actorUserID), Reason: stringPtr("contract draft edited"), IdempotencyKey: fmt.Sprintf("%s:draft:v%d", c.ID, expectedVersion+1), OccurredAt: now}).Error
 	})

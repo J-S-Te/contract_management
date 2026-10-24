@@ -32,7 +32,7 @@ type backchannelLogoutClaims struct {
 }
 
 // BackchannelLogout 接收并验证 OIDC Back-Channel Logout logout_token，然后撤销本地会话。
-// 该接口只接受表单中的 logout_token，普通 ID Token 会因缺少事件声明而拒绝。
+// 该接口只接受表单中的 logout_token，普通 ID 令牌 会因缺少事件声明而拒绝。
 func (a *OIDCAuthenticator) BackchannelLogout(writer http.ResponseWriter, request *http.Request) {
 	store, ok := a.store.(BackchannelLogoutStore)
 	if !ok {

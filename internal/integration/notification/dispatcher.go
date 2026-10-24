@@ -4,6 +4,7 @@ package notification
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -81,8 +82,12 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		// 角色在目录中已无符合条件的人员，无可送达对象，视为完成以避免无限重试。
 		return d.Store.MarkNotificationDelivered(ctx, delivery.ID)
 	}
+	identity, err := notificationDeliveryIdentity(delivery)
+	if err != nil {
+		return d.fail(ctx, delivery, err)
+	}
 	payload := ingestionEventPayload{
-		EventID:           delivery.DedupeKey,
+		EventID:           identity,
 		EventType:         delivery.NotificationType,
 		NotificationScope: "CROSS_SYSTEM",
 		Priority:          priorityFor(delivery.NotificationType),
@@ -91,7 +96,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		TargetURL:         targetURLFor(delivery),
 		ReferenceType:     referenceTypeFor(delivery),
 		ReferenceID:       referenceIDFor(delivery),
-		IdempotencyKey:    delivery.DedupeKey,
+		IdempotencyKey:    identity,
 		Recipients:        recipients,
 		OccurredAt:        delivery.CreatedAt,
 	}
@@ -126,6 +131,25 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		return d.Store.MarkNotificationDelivered(ctx, delivery.ID)
 	}
 	return d.fail(ctx, delivery, fmt.Errorf("platform notification API returned %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody))))
+}
+
+// 工作流去重键标识业务事件，而非接收者 Outbox
+// 行。JSON 编码元组，避免拼接歧义；版本化
+// 域将此哈希与其他集成隔离。字母前缀
+// 使工作流 ULID 以数字开头时也符合平台事件编码要求。
+// 固定 68 字节还为平台 128 字节规范幂等键中的
+// contract_management:prod: 留出空间。有意排除尝试次数和解析后的角色
+// 成员，确保重试保留相同身份。
+func notificationDeliveryIdentity(delivery Delivery) (string, error) {
+	if delivery.TenantID == "" || delivery.DedupeKey == "" || delivery.RecipientKey == "" {
+		return "", fmt.Errorf("notification delivery identity is incomplete")
+	}
+	framed, err := json.Marshal([]string{"contract-notification-delivery-v1", delivery.TenantID, delivery.DedupeKey, delivery.RecipientKey})
+	if err != nil {
+		return "", fmt.Errorf("encode notification delivery identity: %w", err)
+	}
+	digest := sha256.Sum256(framed)
+	return fmt.Sprintf("CN1_%X", digest), nil
 }
 
 func (d *Dispatcher) resolveRecipients(ctx context.Context, delivery Delivery) ([]string, error) {

@@ -38,6 +38,9 @@ func (s *Service) CanEditDraft(actor Principal, c contract.Contract) bool {
 }
 
 func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id string, expectedVersion uint64, input contract.Contract) (contract.Contract, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
+	}
 	filter, ok := actor.Scope("contract.edit")
 	if !ok {
 		return contract.Contract{}, ErrForbidden
@@ -61,8 +64,8 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 	if input.Number != "" || input.TemplateID != current.TemplateID {
 		return current, ErrValidation
 	}
-	// Caller-provided service source IDs must belong to this draft and cannot
-	// duplicate one another. New items have no ID until the delivery feed derives it.
+	// 调用方提供的服务源 ID 必须属于此草稿，且不能
+	// 彼此重复。新条目在交付数据流派生 ID 前没有 ID。
 	owned := map[string]bool{}
 	for _, item := range current.ServiceItems {
 		if item.SourceID != "" {
@@ -77,11 +80,19 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 		seen[item.SourceID] = item.SourceID != ""
 	}
 	input.OwnerIdentityID, input.OwnerOrgID, input.ProjectID = current.OwnerIdentityID, current.OwnerOrgID, current.ProjectID
+	// 旧客户端会省略新字段。保留已存储计划，并根据编辑后的
+	// 金额重新校验；显式空数组只能清空草稿中的计划。
+	if input.PaymentTerms == nil {
+		if len(current.PaymentTerms) > 0 && !strings.EqualFold(strings.TrimSpace(input.Currency), strings.TrimSpace(current.Currency)) {
+			return current, ErrValidation
+		}
+		input.PaymentTerms = current.PaymentTerms
+	}
 	external := current.TemplateID == ""
 	if external {
-		// Metadata edits do not rewrite an externally authored DOCX. Keep its
-		// financial terms frozen so an API caller cannot change approval amounts
-		// while retaining a contradictory source document.
+		// 元数据编辑不重写外部编写的 DOCX。冻结其
+		// 财务条款，防止 API 调用方修改审批金额，
+		// 却保留内容矛盾的源文档。
 		if input.AmountMinor != current.AmountMinor || strings.ToUpper(strings.TrimSpace(input.Currency)) != strings.ToUpper(current.Currency) {
 			return current, ErrValidation
 		}
@@ -111,6 +122,9 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 	repository, ok := s.Repo.(DraftRepository)
 	if !ok {
 		return current, apperrors.ErrStateConflict
+	}
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return contract.Contract{}, err
 	}
 	if err := repository.UpdateContractDraft(ctx, prepared, expectedVersion, actor.UserID); err != nil {
 		return current, err

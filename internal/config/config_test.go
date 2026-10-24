@@ -198,6 +198,30 @@ func TestCRMReferenceIntegrationRequiresLeastPrivilegeMachineConfiguration(t *te
 	}
 }
 
+func TestCRMReferenceBaseURLMountedPrefix(t *testing.T) {
+	for _, base := range []string{"http://customer-api:8090", "http://customer-api:8090/", "http://customer-api:8090/customer-opportunity", "https://crm.internal/customer-opportunity/"} {
+		t.Run(base, func(t *testing.T) {
+			validEnvironment(t)
+			t.Setenv("CRM_REFERENCE_ENABLED", "true")
+			t.Setenv("CRM_REFERENCE_BASE_URL", base)
+			t.Setenv("CRM_REFERENCE_TOKEN_URL", "http://platform-api:8080/oauth2/token")
+			t.Setenv("CRM_REFERENCE_CLIENT_ID", "contract-crm-reader")
+			t.Setenv("CRM_REFERENCE_CLIENT_SECRET", "test-only-secret")
+			t.Setenv("CRM_REFERENCE_SCOPE", "customer.contract_reference.read")
+			if _, err := Load(); err != nil {
+				t.Fatalf("mounted CRM base rejected: %v", err)
+			}
+		})
+	}
+	for _, base := range []string{"ftp://crm/customer-opportunity", "http://user:pass@crm/customer-opportunity", "http://crm/customer-opportunity?x=1", "http://crm/customer-opportunity?", "http://crm/customer-opportunity#fragment", "http://crm/arbitrary", "http://crm/customer-opportunity/../internal", "http://crm/customer%2dopportunity"} {
+		t.Run(base, func(t *testing.T) {
+			if validCRMReferenceBaseURL(base) {
+				t.Fatal("unsafe CRM base accepted")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsDashboardMachineWithoutBearer(t *testing.T) {
 	validEnvironment(t)
 	t.Setenv("DASHBOARD_MACHINE_ENABLED", "true")

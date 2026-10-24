@@ -19,9 +19,9 @@ import (
 
 const (
 	MaxTemplateSize = 10 << 20
-	// MaxDocumentSize is shared by templates and externally authored contract
-	// documents. Keeping one hard limit prevents a valid upload from becoming
-	// impossible to preview or export later in the workflow.
+	// MaxDocumentSize 由模板和外部编写的合同
+	// 文档共享。统一硬上限，防止有效上传
+	// 在后续工作流中无法预览或导出。
 	MaxDocumentSize = MaxTemplateSize
 	maxExpandedSize = 50 << 20
 	maxArchiveFiles = 2048
@@ -127,11 +127,11 @@ func PlainText(document []byte) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-// ValidateExternalDocument performs the stricter package checks required for
-// an externally authored contract. Generic template helpers deliberately keep
-// accepting the small synthetic DOCX packages used by existing callers, while
-// this boundary requires Word's main-document content type as proof that the
-// ZIP is an OOXML word-processing document rather than an arbitrary archive.
+// ValidateExternalDocument 执行外部合同所需的
+// 更严格包结构检查。通用模板辅助方法有意继续
+// 接受现有调用方使用的小型合成 DOCX 包，而
+// 此边界要求 Word 主文档内容类型，证明
+// ZIP 是 OOXML 文字处理文档而非任意压缩包。
 func ValidateExternalDocument(document []byte) error {
 	files, err := read(document)
 	if err != nil {

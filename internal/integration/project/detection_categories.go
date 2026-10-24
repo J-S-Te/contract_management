@@ -12,8 +12,8 @@ import (
 	"github.com/j-s-te/contract-management/internal/application"
 )
 
-// DetectionCategoryDirectory reads the project-management-owned controlled
-// vocabulary with the same client-credentials trust boundary as activation delivery.
+// DetectionCategoryDirectory 读取项目管理拥有的受控
+// 词汇表，与生效投递使用相同客户端凭据信任边界。
 type DetectionCategoryDirectory struct {
 	BaseURL     string
 	Client      *http.Client

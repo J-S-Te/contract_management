@@ -483,8 +483,8 @@ func principalFromJSON(raw []byte) (application.Principal, error) {
 		return application.Principal{}, err
 	}
 	if principal.Subject == "" {
-		// Sessions created before the subject/identity split can be upgraded on
-		// read because their legacy UserID was the platform identity id.
+		// 主体与身份拆分前创建的会话，可在读取时升级，
+		// 因为其旧版 UserID 就是平台身份 ID。
 		principal.Subject = principal.UserID
 	}
 	if principal.IdentityID == "" || principal.UserID != principal.IdentityID || principal.TenantID == "" || principal.AuthorizationRevision == 0 {
@@ -582,7 +582,7 @@ func (a *OIDCAuthenticator) publicPath(path string) string {
 
 func (a *OIDCAuthenticator) writeCallbackError(writer http.ResponseWriter, request *http.Request, stage string, status int, cause error) {
 	slog.ErrorContext(request.Context(), "contract OIDC callback failed", "stage", stage, "issuer", a.options.Issuer, "client_id", a.options.ClientID, "environment", a.options.EnvironmentCode, "error", cause)
-	// 失败时不能再返回 plain text "Unauthorized/Forbidden"：用户卡在地址栏里看不到任何可操作信息。
+	// 失败时不能再返回 纯文本 "Unauthorized/Forbidden"：用户卡在地址栏里看不到任何可操作信息。
 	// 跳到平台顶层 /access-error 错误页，由前端 SubsystemAccessErrorView 渲染：
 	// - 必须用相对路径让浏览器继续走同一个会话，避免跳出当前 origin；
 	// - 必须不带子系统路径前缀（/contract_management/...），否则会触发路由守卫再次要求合同会话，

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Status is the persisted contract lifecycle state from CON-002.
+// Status 是 CON-002 定义的持久化合同生命周期状态。
 type Status string
 
 const (
@@ -57,8 +57,8 @@ func ApprovalPassedStatuses() []Status {
 	return []Status{StatusApproved, StatusActive, StatusInProgress, StatusPendingPay, StatusCompleted, StatusTerminated, StatusArchived}
 }
 
-// RequiresApproval follows APP-002. pending is handled by the dedicated
-// contract approval workflow and is therefore not a state-change approval.
+// RequiresApproval 遵循 APP-002。pending 由专用
+// 合同审批工作流处理，因此不属于状态变更审批。
 func (s Status) RequiresApproval() bool {
 	switch s {
 	case StatusInProgress, StatusPendingPay, StatusTerminated, StatusArchived:

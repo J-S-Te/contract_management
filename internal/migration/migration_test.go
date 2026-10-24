@@ -11,7 +11,7 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
-	if len(items) != 22 ||
+	if len(items) != 31 ||
 		items[0].version != 1 || items[0].name != "contract_workflow" ||
 		items[1].version != 2 || items[1].name != "single_active_status_change" ||
 		items[2].version != 3 || items[2].name != "username_snapshots" ||
@@ -33,7 +33,16 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 		items[18].version != 19 || items[18].name != "notification_outbox_lock" ||
 		items[19].version != 20 || items[19].name != "file_gateway_fields" ||
 		items[20].version != 21 || items[20].name != "oidc_backchannel_logout" ||
-		items[21].version != 22 || items[21].name != "source_file_gateway" {
+		items[21].version != 22 || items[21].name != "source_file_gateway" ||
+		items[22].version != 23 || items[22].name != "contract_payment_terms" ||
+		items[23].version != 24 || items[23].name != "financial_effective_outbox" ||
+		items[24].version != 25 || items[24].name != "handover_protocol" ||
+		items[25].version != 26 || items[25].name != "contract_audit_outbox" ||
+		items[26].version != 27 || items[26].name != "stamped_document_versions" ||
+		items[27].version != 28 || items[27].name != "approval_snapshots" ||
+		items[28].version != 29 || items[28].name != "template_version" ||
+		items[29].version != 30 || items[29].name != "template_file_lifecycle" ||
+		items[30].version != 31 || items[30].name != "template_file_upload_attempt" {
 		t.Fatalf("items = %#v", items)
 	}
 }

@@ -65,7 +65,7 @@ func TestAuditWriteRejectedWhenReporterMissingUnderRequiredAudit(t *testing.T) {
 	request.Header.Set("Origin", "http://example.com")
 	response := httptest.NewRecorder()
 
-	// audit reporter 缺省（第 4 个参数为空），service 为 nil：handler 一旦执行必然是
+	// 审计上报器缺省（第 4 个参数为空），service 为 nil：handler 一旦执行必然是
 	// 业务响应（403）或 panic（500），503 + AUDIT_UNAVAILABLE 只可能来自审计拒绝。
 	NewRouter(nil, auditTestIdentity(), nil).ServeHTTP(response, request)
 

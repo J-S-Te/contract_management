@@ -23,8 +23,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Opt-in only: never derive this DSN from application configuration or business
-// database environment variables. The dedicated database must already exist.
+// 仅显式启用：禁止从应用配置或业务数据库
+// 环境变量派生此 DSN。专用数据库必须已存在。
 func draftE2ERepository(t *testing.T) (*Repository, string) {
 	t.Helper()
 	dsn := os.Getenv("CONTRACT_TEST_DSN")
@@ -52,7 +52,16 @@ func draftE2ERepository(t *testing.T) (*Repository, string) {
 	sqlDB.SetMaxOpenConns(8)
 	tenant := ulid.Make().String()
 	t.Cleanup(func() {
-		for _, model := range []any{&lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractRecord{}} {
+		if err := db.Where("tenant_id = ?", tenant).Delete(&templateFileOutboxRecord{}).Error; err != nil {
+			t.Error("dedicated test template-file cleanup failed")
+		}
+		// 任务通过审批外键绑定租户，而非 tenant_id
+		// 列。清理必须限定为本测试实例。
+		instances := db.Model(&approvalInstanceRecord{}).Select("id").Where("tenant_id = ?", tenant)
+		if err := db.Where("approval_id IN (?)", instances).Delete(&approvalTaskRecord{}).Error; err != nil {
+			t.Error("dedicated test approval-task cleanup failed")
+		}
+		for _, model := range []any{&signingConfirmationRecord{}, &stampedDocumentRecord{}, &signingRecord{}, &financialEffectiveOutboxRecord{}, &paymentTermRecord{}, &projectDeliveryOutboxRecord{}, &notificationOutboxRecord{}, &approvalActionRecord{}, &lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractRecord{}, &contractTemplateRecord{}} {
 			if err := db.Where("tenant_id = ?", tenant).Delete(model).Error; err != nil {
 				t.Error("dedicated test tenant cleanup failed")
 			}
@@ -91,7 +100,7 @@ func TestDraftPersistenceE2E(t *testing.T) {
 	changed.Content = "edited body"
 	changed.Document = []byte("edited document")
 	changed.ContentHash = draftE2EHash("edited document")
-	// Even an internal DTO cannot change immutable storage columns.
+	// 即使内部 DTO 也不能修改不可变存储列。
 	changed.OwnerUserID = "forged-owner"
 	changed.CreatedBy = "forged-creator"
 	changed.Number = "forged-number"

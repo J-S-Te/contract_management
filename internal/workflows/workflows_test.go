@@ -2,13 +2,16 @@ package workflows
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -79,6 +82,38 @@ func TestContractApprovalWorkflowApprovesAllNodes(t *testing.T) {
 	require.Equal(t, []string{"owner"}, store.notifications[3].Recipients)
 	require.Equal(t, []string{"contract_specialist"}, store.notifications[4].RoleRecipients)
 	require.Equal(t, "signing_pending", store.notifications[4].Type)
+}
+
+type failingNotificationStore struct{ *memoryStore }
+
+func (*failingNotificationStore) CreateNotification(context.Context, NotifyActivityInput) error {
+	return errors.New("notification database unavailable")
+}
+
+// 通知 Activity 持续失败不能让已完成的审批工作流返回错误；业务状态必须继续收口。
+func TestContractApprovalWorkflowContinuesWhenNotificationsFail(t *testing.T) {
+	store := &failingNotificationStore{memoryStore: &memoryStore{}}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(&Activities{Store: store})
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(CommandSignalName, ApprovalCommand{CommandID: "approve", Action: ActionApprove, ActorUserID: "sales-user", OccurredAt: time.Now().UTC()})
+	}, time.Minute)
+	env.ExecuteWorkflow(ContractApprovalWorkflow, ContractApprovalInput{ApprovalID: "approval", TenantID: "tenant", ContractID: "contract", ContractVersion: 1, ApplicantUserID: "owner", ContentHash: "hash", Nodes: []approval.Node{{ID: "sales", AssigneeIDs: []string{"sales-user"}}}})
+	require.NoError(t, env.GetWorkflowError())
+	var state ApprovalState
+	require.NoError(t, env.GetWorkflowResult(&state))
+	require.Equal(t, approval.StatusApproved, state.Status)
+	require.Len(t, store.completed, 1)
+}
+
+// 业务冲突必须标记为 NonRetryable，不能进入无限重试。
+func TestCriticalActivityErrorMarksBusinessConflictNonRetryable(t *testing.T) {
+	err := criticalActivityError(apperrors.ErrStateConflict)
+	var applicationErr *temporal.ApplicationError
+	require.ErrorAs(t, err, &applicationErr)
+	require.True(t, applicationErr.NonRetryable())
+	require.NotEqual(t, commercialLicenseErrorType, applicationErr.Type())
 }
 
 func TestContractApprovalWorkflowWithdraws(t *testing.T) {

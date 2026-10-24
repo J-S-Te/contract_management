@@ -12,6 +12,7 @@ import (
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/auditctx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
@@ -188,7 +189,11 @@ func (r *Repository) GetContract(ctx context.Context, tenantID, id string) (cont
 	if err != nil {
 		return contract.Contract{}, err
 	}
-	return contractFromRecord(record), nil
+	items, err := r.attachPaymentTerms(ctx, tenantID, []contract.Contract{contractFromRecord(record)})
+	if err != nil {
+		return contract.Contract{}, err
+	}
+	return items[0], nil
 }
 
 func (r *Repository) GetContractScoped(ctx context.Context, filter contract.ScopeFilter, id string) (contract.Contract, error) {
@@ -201,7 +206,11 @@ func (r *Repository) GetContractScoped(ctx context.Context, filter contract.Scop
 	if err != nil {
 		return contract.Contract{}, err
 	}
-	return contractFromRecord(record), nil
+	items, err := r.attachPaymentTerms(ctx, filter.TenantID, []contract.Contract{contractFromRecord(record)})
+	if err != nil {
+		return contract.Contract{}, err
+	}
+	return items[0], nil
 }
 
 func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.ScopeFilter, keyword, status string, limit int) ([]contract.Contract, error) {
@@ -224,7 +233,7 @@ func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.Sc
 	for _, record := range records {
 		result = append(result, contractFromRecord(record))
 	}
-	return result, nil
+	return r.attachPaymentTerms(ctx, filter.TenantID, result)
 }
 
 func applyContractScope(query *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
@@ -275,16 +284,16 @@ func (r *Repository) ListContracts(ctx context.Context, tenantID, keyword, owner
 	for _, record := range records {
 		result = append(result, contractFromRecord(record))
 	}
-	return result, nil
+	return r.attachPaymentTerms(ctx, tenantID, result)
 }
 
 func dashboardActiveStatuses() []contract.Status {
 	return []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay}
 }
 
-// Archived contracts remain valid business contracts for reporting. They are
-// terminal and may have a past end date, so they must be counted separately
-// from currently active statuses and must never be classified as expired.
+// 已归档合同仍是报表中的有效业务合同。它们处于
+// 终态，结束日期可能已过，因此须与
+// 当前有效状态分开计数，绝不能归类为过期。
 func dashboardActiveScope(db *gorm.DB, activeStatuses []contract.Status, today time.Time) *gorm.DB {
 	return db.Where("(status = ? OR (status IN ? AND (end_date IS NULL OR end_date >= ?)))", contract.StatusArchived, activeStatuses, today)
 }
@@ -303,10 +312,6 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
-	var aggregate struct {
-		TotalContracts   int64
-		TotalAmountMinor int64
-	}
 	contractScope := func() *gorm.DB {
 		query := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ?", tenantID)
 		if ownerUserID != "" {
@@ -323,9 +328,8 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 		}
 		return query
 	}
-	if err := contractScope().
-		Select("COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").
-		Scan(&aggregate).Error; err != nil {
+	currencyTotals, totalContracts, totalAmount, err := dashboardCurrencyTotals(contractScope())
+	if err != nil {
 		return contract.Dashboard{}, err
 	}
 
@@ -366,9 +370,9 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 		items = append(items, item)
 	}
 	return contract.Dashboard{
-		TotalAmountMinor: aggregate.TotalAmountMinor, TotalContracts: aggregate.TotalContracts,
+		TotalAmountMinor: totalAmount, CurrencyTotals: currencyTotals, TotalContracts: totalContracts,
 		ApprovalContracts: int64(len(approvalContractIDs)), ActiveContracts: activeCount, ExpiredContracts: expiredCount,
-		Contracts: items, ContractDetailLimited: aggregate.TotalContracts > int64(limit),
+		Contracts: items, ContractDetailLimited: totalContracts > int64(limit),
 	}, nil
 }
 
@@ -377,11 +381,8 @@ func (r *Repository) ContractDashboardScoped(ctx context.Context, filter contrac
 		limit = 200
 	}
 	contractScope := func() *gorm.DB { return applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter) }
-	var aggregate struct {
-		TotalContracts   int64
-		TotalAmountMinor int64
-	}
-	if err := contractScope().Select("COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").Scan(&aggregate).Error; err != nil {
+	currencyTotals, totalContracts, totalAmount, err := dashboardCurrencyTotals(contractScope())
+	if err != nil {
 		return contract.Dashboard{}, err
 	}
 	ownedContracts := contractScope().Select("id")
@@ -417,7 +418,32 @@ func (r *Repository) ContractDashboardScoped(ctx context.Context, filter contrac
 		}
 		items = append(items, item)
 	}
-	return contract.Dashboard{TotalAmountMinor: aggregate.TotalAmountMinor, TotalContracts: aggregate.TotalContracts, ApprovalContracts: int64(len(approvalContractIDs)), ActiveContracts: activeCount, ExpiredContracts: expiredCount, Contracts: items, ContractDetailLimited: aggregate.TotalContracts > int64(limit)}, nil
+	return contract.Dashboard{TotalAmountMinor: totalAmount, CurrencyTotals: currencyTotals, TotalContracts: totalContracts, ApprovalContracts: int64(len(approvalContractIDs)), ActiveContracts: activeCount, ExpiredContracts: expiredCount, Contracts: items, ContractDetailLimited: totalContracts > int64(limit)}, nil
+}
+
+func dashboardCurrencyTotals(scope *gorm.DB) ([]contract.CurrencyTotal, int64, int64, error) {
+	type row struct {
+		Currency         string
+		TotalContracts   int64
+		TotalAmountMinor int64
+	}
+	var rows []row
+	if err := scope.Select("currency, COUNT(*) AS total_contracts, COALESCE(SUM(amount_minor), 0) AS total_amount_minor").
+		Group("currency").Order("currency ASC").Scan(&rows).Error; err != nil {
+		return nil, 0, 0, err
+	}
+	totals := make([]contract.CurrencyTotal, 0, len(rows))
+	var contracts, amount int64
+	for _, item := range rows {
+		currency := strings.ToUpper(strings.TrimSpace(item.Currency))
+		if currency == "" {
+			currency = "UNKNOWN"
+		}
+		totals = append(totals, contract.CurrencyTotal{Currency: currency, AmountMinor: item.TotalAmountMinor, Contracts: item.TotalContracts})
+		contracts += item.TotalContracts
+		amount += item.TotalAmountMinor
+	}
+	return totals, contracts, amount, nil
 }
 
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
@@ -438,6 +464,47 @@ func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (
 		FromStatus: record.FromStatus, TargetStatus: record.TargetStatus,
 		Reason: valueOrEmpty(record.Reason), RuleID: valueOrEmpty(record.RuleID), RuleVersion: uintValueOrZero(record.RuleVersion),
 	}, nil
+}
+
+// GetApprovalRuntimeState 读取审批实例最后一次持久化的运行状态；工作流执行故障时，
+// 管理端可据此判断是否已到达终态并做幂等收口。
+func (r *Repository) GetApprovalRuntimeState(ctx context.Context, tenantID, approvalID string) (workflows.ApprovalState, bool, error) {
+	var record approvalInstanceRecord
+	err := r.db.WithContext(ctx).Select("runtime_state_json").Where("tenant_id = ? AND id = ?", tenantID, approvalID).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return workflows.ApprovalState{}, false, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return workflows.ApprovalState{}, false, err
+	}
+	if len(record.RuntimeStateJSON) == 0 {
+		return workflows.ApprovalState{}, false, nil
+	}
+	var state workflows.ApprovalState
+	if err := json.Unmarshal(record.RuntimeStateJSON, &state); err != nil {
+		return workflows.ApprovalState{}, false, fmt.Errorf("decode approval runtime state %s: %w", approvalID, err)
+	}
+	return state, true, nil
+}
+
+// GetApprovalSnapshot 读取审批发起时的合同快照；历史上没有快照的审批返回 found=false，
+// 由应用层降级到当前合同，避免把缺失快照误判成合同不存在。
+func (r *Repository) GetApprovalSnapshot(ctx context.Context, tenantID, approvalID string) (contract.Contract, bool, error) {
+	var record approvalSnapshotRecord
+	err := r.db.WithContext(ctx).Where("tenant_id = ? AND approval_id = ?", tenantID, approvalID).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return contract.Contract{}, false, nil
+	}
+	if err != nil {
+		return contract.Contract{}, false, err
+	}
+	var snapshot contract.Contract
+	if err := json.Unmarshal(record.ContractJSON, &snapshot); err != nil {
+		return contract.Contract{}, false, fmt.Errorf("decode approval snapshot %s: %w", approvalID, err)
+	}
+	snapshot.Document = record.RenderedDocument
+	snapshot.CanEditDraft = false
+	return snapshot, true, nil
 }
 
 func (r *Repository) ListApprovalActions(ctx context.Context, tenantID, approvalID string) ([]approval.Action, error) {
@@ -493,8 +560,8 @@ func uintValueOrZero(value *uint64) uint64 {
 	return *value
 }
 
-// assignedApprovalTaskStatuses keeps upcoming tasks visible to their assignee.
-// Only active tasks are actionable; pending tasks are read-only previews.
+// assignedApprovalTaskStatuses 使受理人可看到即将到来的任务。
+// 只有有效任务可操作；待处理任务仅供只读预览。
 func assignedApprovalTaskStatuses() []approval.NodeStatus {
 	return []approval.NodeStatus{approval.NodeActive, approval.NodePending}
 }
@@ -538,8 +605,8 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 		}
 
 		var current contractRecord
+		// 读取完整合同行（含正文/文档），用于写入审批提交快照。
 		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "tenant_id", "status", "version", "content_hash").
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
@@ -594,6 +661,33 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
 				return apperrors.ErrStateConflict
 			}
+			return err
+		}
+		// 审批历史只认发起时的合同内容：快照与审批实例、状态流转同事务写入。
+		snapshotContract := contractFromRecord(current)
+		var termRows []paymentTermRecord
+		if err := tx.Where("tenant_id = ? AND contract_id = ?", in.TenantID, in.ContractID).
+			Order("installment_no ASC").Find(&termRows).Error; err != nil {
+			return err
+		}
+		snapshotContract.PaymentTerms = make([]contract.PaymentTerm, 0, len(termRows))
+		for _, term := range termRows {
+			snapshotContract.PaymentTerms = append(snapshotContract.PaymentTerms, contract.PaymentTerm{
+				InstallmentNo: int(term.InstallmentNo), DueDate: term.DueDate.Format("2006-01-02"), Amount: formatAmountMinor(term.AmountMinor),
+			})
+		}
+		snapshotContract.Document = nil
+		snapshotContract.CanEditDraft = false
+		snapshotJSON, err := json.Marshal(snapshotContract)
+		if err != nil {
+			return err
+		}
+		if err := tx.Create(&approvalSnapshotRecord{
+			ApprovalID: in.ApprovalID, TenantID: in.TenantID, ContractID: in.ContractID,
+			ContractVersion: current.Version, ContentHash: current.ContentHash, ContractJSON: snapshotJSON,
+			RenderedDocument: current.RenderedDocument, RuleID: stringPtr(in.RuleID), RuleVersion: uintPtr(in.RuleVersion),
+			CreatedAt: now,
+		}).Error; err != nil {
 			return err
 		}
 		tasks := initialTasks(in.ApprovalID, in.Nodes, now)
@@ -710,6 +804,12 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 				if err := enqueueProjectActivation(tx, in.TenantID, in.ContractID); err != nil {
 					return err
 				}
+				// 财务生效事件（contract.financial_effective.v1）与项目投递同源同事务。
+				// 未维护付款计划或合计不符时 enqueueFinancialEffective 保持静默不写行，
+				// 由 ReconcileFinancialEffectives 在条件具备后补建，绝不合成财务分期。
+				if err := enqueueFinancialEffective(tx, in.TenantID, in.ContractID); err != nil {
+					return err
+				}
 			} else {
 				if err := updateStatus(tx, in.TenantID, in.ContractID, contract.StatusPending, contract.StatusDraft, actor); err != nil {
 					return err
@@ -787,7 +887,21 @@ func insertLifecycle(tx *gorm.DB, in workflows.StartApprovalActivityInput, from,
 		ActorUserID: stringPtr(actor), Reason: stringPtr(reason), ApprovalID: stringPtr(in.ApprovalID),
 		WorkflowID: stringPtr(in.WorkflowID), IdempotencyKey: key, OccurredAt: time.Now().UTC(),
 	}
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error; err != nil {
+		return err
+	}
+	// 批次 2：审计事件与业务状态变更同事务落库，平台不可用时由 dispatcher 重试，
+	// 不再出现"业务已提交、审计同步失败返 503"的不一致。
+	payload, _ := json.Marshal(map[string]any{
+		"contract_id": in.ContractID, "from_status": string(from), "to_status": string(to), "reason": reason,
+	})
+	meta := auditctx.FromContext(tx.Statement.Context)
+	entry := AuditOutboxEntry{
+		ActorID: actor, Action: "CONTRACT_MANAGEMENT:STATUS_CHANGE",
+		ResourceType: "contract", ResourceID: in.ContractID, Payload: payload,
+		LoginIP: meta.LoginIP, ClientIP: meta.ClientIP, IPSource: meta.IPSource, RequestID: meta.RequestID,
+	}
+	return insertAuditOutbox(tx, in.TenantID, newID(), entry)
 }
 
 func syncTasks(tx *gorm.DB, approvalID string, nodes []workflows.RuntimeNode) error {

@@ -1,9 +1,9 @@
-"""Build corrected copies without touching the supplied DOCX originals.
+"""生成修正后的副本，不修改所提供的原始 DOCX。
 
-Only explicit, reviewed text spans change. Signature lines and other Zip parts
-are retained. Payment-body runs override accidental 36pt inherited styles;
-this does not introduce payment business models.
-Run with the bundled artifact Python runtime.
+仅修改明确且已审核的文本片段，保留签名行及其他 ZIP 部件。
+付款正文显式覆盖意外继承的 36 磅样式，不引入付款业务模型。
+
+使用随包提供的文档工具 Python 运行时执行。
 """
 from pathlib import Path
 from zipfile import ZipFile
@@ -11,6 +11,9 @@ import re
 from lxml import etree
 
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+# 模板来自仓库内固定文件，仍禁用实体展开与网络/DTD 访问：
+# 任何被篡改的 docx 都不能借此读取宿主文件或发起外连（XXE 加固）。
+SAFE_XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "收入合同模版"
 DEST = SOURCE / "修正版"
@@ -52,7 +55,7 @@ def sub(p, pattern, replacement, count=1):
 
 
 def payment_blanks(p, first):
-    # Existing clauses retain their original payment-choice wording.
+    # 已有条款保留原有付款方式的表述。
     sub(p, r"RMB¥\s*_?元", "{{"+first+"}}元")
     sub(p, r"人民币\s*元整", "{{金额_大写 "+first+"}}")
 
@@ -60,9 +63,9 @@ def payment_blanks(p, first):
 def correct(index, tree):
     ps = tree.xpath("//w:p", namespaces=NS)
     if index in (1, 2, 3):
-        # These body clauses inherited a 36pt cover-title style in the supplied
-        # documents. Set only the reviewed payment block to normal 12pt body
-        # size, leaving covers and all other paragraph styles untouched.
+        # 所提供文档中的这些正文条款继承了封面标题的 36 磅样式。
+        # 仅将已审核的付款条款块调整为正常的 12 磅正文，
+        # 保留封面及其他段落样式。
         body_rows = {1: range(42, 47), 2: range(126, 139), 3: range(53, 59)}[index]
         for row in body_rows:
             for run in ps[row].xpath("./w:r", namespaces=NS):
@@ -145,7 +148,7 @@ def main():
     for index, source in enumerate(sources, 1):
         target = DEST / source.name
         with ZipFile(source) as original:
-            tree = etree.fromstring(original.read("word/document.xml"))
+            tree = etree.fromstring(original.read("word/document.xml"), parser=SAFE_XML_PARSER)
             correct(index, tree)
             body = etree.tostring(tree, encoding="UTF-8", xml_declaration=True, standalone=True)
             with ZipFile(target, "w") as output:

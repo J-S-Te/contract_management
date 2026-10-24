@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// enqueueOpportunityLink persists the callback payload in the same transaction
-// as the review, so a confirmed intake can never lose its CRM notification.
+// enqueueOpportunityLink 在审核事务内持久化回调载荷，
+// 确保已确认的接收永不丢失 CRM 通知。
 func enqueueOpportunityLink(tx *gorm.DB, item application.OpportunityIntake, payload []byte) error {
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&opportunityLinkOutboxRecord{
 		ID: ulid.Make().String(), TenantID: item.TenantID, IntakeID: item.IntakeID,

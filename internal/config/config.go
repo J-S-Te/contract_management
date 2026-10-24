@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// Config 承载合同子系统的全部运行配置：HTTP 监听、MySQL DSN、平台与 OIDC 对接，
+// 以及各跨系统机器接入（数据看板/结算/项目审批/CRM 等）的开关与凭据。
+// 分组注释标明每组配置归属的子系统；字段取值合法性由 validate 统一校验，
+// 校验失败聚合返回全部问题，便于一次性修正部署配置。
 type Config struct {
 	HTTPAddress            string
 	MySQLDSN               string
@@ -45,73 +49,97 @@ type Config struct {
 	CRMSignedCountMachineRequireBearer  bool
 	CRMSignedCountMachineClientID       string
 	CRMSignedCountMachineAudience       string
-	CRMSignedCountMachineIssuer         string
-	CRMSignedCountMachinePublicKeyPath  string
-	CRMSignedCountMachineCallerApp      string
-	CRMSignedCountMachineCallerEnv      string
-	CRMSignedCountMachineScope          string
-	OIDCClientSecret                    string
-	OIDCRedirectURI                     string
-	OIDCPostLogoutRedirectURI           string
-	OIDCIDPHint                         string
-	OIDCScopes                          []string
-	OIDCTenantID                        string
-	OIDCSessionCookieName               string
-	OIDCSessionTTL                      time.Duration
-	OIDCAuthorizationRefresh            time.Duration
-	OIDCAuthorizationTimeout            time.Duration
-	OIDCAuthorizationMaxStale           time.Duration
-	OIDCSessionEncryptionKey            []byte
-	OIDCSessionSecure                   bool
-	AppPublicURL                        string
-	AppPathPrefix                       string
-	PlatformAuditClientID               string
-	PlatformAuditClientSecret           string
-	PlatformApplicationCode             string
-	PlatformEnvironmentCode             string
-	PlatformApplicationID               string
-	PlatformCatalogSync                 bool
-	PlatformCatalogClientID             string
-	PlatformCatalogSecret               string
-	PlatformPersonnelClientID           string
-	PlatformPersonnelSecret             string
-	PlatformNotificationClientID        string
-	PlatformNotificationSecret          string
-	TemporalAddress                     string
-	TemporalNamespace                   string
-	TemporalTaskQueue                   string
-	TemporalWorkerBuildID               string
-	TemporalWorkerDeploymentName        string
-	TemporalWorkerVersioning            bool
-	TemporalWorkerVersioningPolicy      string
-	TemporalMetricsAddress              string
-	TemporalAPIKey                      string
-	TemporalTLS                         bool
-	NodeTimeout                         time.Duration
-	ReminderInterval                    time.Duration
-	ArchiveCron                         string
-	ProjectIntegrationEnabled           bool
-	ProjectAPIBaseURL                   string
-	ProjectIntegrationPoll              time.Duration
-	ProjectIntegrationRetries           uint
+	// HandoverMachine* 配置基础平台调用的人员交接机器协议端点。
+	HandoverMachineEnabled                   bool
+	HandoverMachineRequireBearer             bool
+	HandoverMachineClientID                  string
+	HandoverMachineAudience                  string
+	CRMSignedCountMachineIssuer              string
+	CRMSignedCountMachinePublicKeyPath       string
+	CRMSignedCountMachineCallerApp           string
+	CRMSignedCountMachineCallerEnv           string
+	CRMSignedCountMachineScope               string
+	CRMOpportunityIntakeMachineEnabled       bool
+	CRMOpportunityIntakeMachineRequireBearer bool
+	CRMOpportunityIntakeMachineClientID      string
+	CRMOpportunityIntakeMachineAudience      string
+	CRMOpportunityIntakeMachineIssuer        string
+	CRMOpportunityIntakeMachinePublicKeyPath string
+	CRMOpportunityIntakeMachineCallerApp     string
+	CRMOpportunityIntakeMachineCallerEnv     string
+	CRMOpportunityIntakeMachineScope         string
+	OIDCClientSecret                         string
+	OIDCRedirectURI                          string
+	OIDCPostLogoutRedirectURI                string
+	OIDCIDPHint                              string
+	OIDCScopes                               []string
+	OIDCTenantID                             string
+	OIDCSessionCookieName                    string
+	OIDCSessionTTL                           time.Duration
+	OIDCAuthorizationRefresh                 time.Duration
+	OIDCAuthorizationTimeout                 time.Duration
+	OIDCAuthorizationMaxStale                time.Duration
+	OIDCSessionEncryptionKey                 []byte
+	OIDCSessionSecure                        bool
+	AppPublicURL                             string
+	AppPathPrefix                            string
+	PlatformAuditClientID                    string
+	PlatformAuditClientSecret                string
+	PlatformApplicationCode                  string
+	PlatformEnvironmentCode                  string
+	PlatformApplicationID                    string
+	PlatformCatalogSync                      bool
+	PlatformCatalogClientID                  string
+	PlatformCatalogSecret                    string
+	PlatformPersonnelClientID                string
+	PlatformPersonnelSecret                  string
+	PlatformNotificationClientID             string
+	PlatformNotificationSecret               string
+	TemporalAddress                          string
+	TemporalNamespace                        string
+	TemporalTaskQueue                        string
+	TemporalWorkerBuildID                    string
+	TemporalWorkerDeploymentName             string
+	TemporalWorkerVersioning                 bool
+	TemporalWorkerVersioningPolicy           string
+	TemporalMetricsAddress                   string
+	TemporalAPIKey                           string
+	TemporalTLS                              bool
+	NodeTimeout                              time.Duration
+	ReminderInterval                         time.Duration
+	ArchiveCron                              string
+	ProjectIntegrationEnabled                bool
+	ProjectAPIBaseURL                        string
+	ProjectIntegrationPoll                   time.Duration
+	ProjectIntegrationRetries                uint
 	// H4：内部投递机器令牌（项目侧来源校验强制开启后必配）。
 	ProjectIntegrationTokenURL     string
 	ProjectIntegrationClientID     string
 	ProjectIntegrationClientSecret string
 	ProjectIntegrationAudience     string
-	CRMReferenceEnabled            bool
-	CRMReferenceBaseURL            string
-	CRMReferenceTokenURL           string
-	CRMReferenceClientID           string
-	CRMReferenceClientSecret       string
-	CRMReferenceScope              string
+	// 出站：合同 → 结算 财务生效事件（contract.financial_effective.v1）。
+	// 仅在付款计划已人工维护且合计等于合同金额时才产生事件（见 payment_terms.go）。
+	SettlementIntegrationEnabled      bool
+	SettlementAPIBaseURL              string
+	SettlementIntegrationPoll         time.Duration
+	SettlementIntegrationRetries      uint
+	SettlementIntegrationTokenURL     string
+	SettlementIntegrationClientID     string
+	SettlementIntegrationClientSecret string
+	SettlementIntegrationAudience     string
+	CRMReferenceEnabled               bool
+	CRMReferenceBaseURL               string
+	CRMReferenceTokenURL              string
+	CRMReferenceClientID              string
+	CRMReferenceClientSecret          string
+	CRMReferenceScope                 string
 	// CRMDelivery*：合同→CRM 签约回链（crm.Dispatcher / crm.LinkNotifier）凭据。
 	// AUD-2026-018：BaseURL 为空视为回链集成关闭（两处调用方均有该禁用语义）；
 	// 一旦配置必须是合法 HTTP(S) origin 且 Token 必填，避免回写请求缺失
 	// Authorization 后反复重试直至死信。
 	CRMDeliveryBaseURL string
 	CRMDeliveryToken   string
-	// StampedFile* 控制盖章 PDF 到平台文件网关的渐进迁移；默认 legacy 保留旧 BLOB。
+	// StampedFile* 控制盖章 PDF 到平台文件网关的渐进迁移；默认 旧版模式保留旧 BLOB。
 	StampedFileMode          string
 	StampedFileGatewayURL    string
 	StampedFileApplicationID string
@@ -120,43 +148,59 @@ type Config struct {
 	StampedFileScope         string
 }
 
+// Load 从环境变量加载合同子系统配置并执行完整校验；任一必填项缺失或非法时
+// 返回聚合错误（包含全部问题，而非首个）。缺省值即生产安全值；机器接入默认
+// 关闭，需经环境变量显式开启。
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
 		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
-		OIDCBackchannelBaseURL:              os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
-		DashboardMachineEnabled:             envBool("DASHBOARD_MACHINE_ENABLED", false),
-		DashboardMachineRequireBearer:       envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
-		DashboardMachineClientID:            os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
-		DashboardMachineAudience:            os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
-		DashboardMachineIssuer:              os.Getenv("DASHBOARD_MACHINE_ISSUER"),
-		DashboardMachinePublicKeyPath:       os.Getenv("DASHBOARD_MACHINE_PUBLIC_KEY_PATH"),
-		DashboardMachineCallerApp:           os.Getenv("DASHBOARD_MACHINE_CALLER_APPLICATION_CODE"),
-		DashboardMachineCallerEnv:           os.Getenv("DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE"),
-		DashboardMachineScope:               os.Getenv("DASHBOARD_MACHINE_REQUIRED_SCOPE"),
-		SettlementMachineEnabled:            envBool("SETTLEMENT_MACHINE_ENABLED", false),
-		SettlementMachineRequireBearer:      envBool("SETTLEMENT_MACHINE_REQUIRE_BEARER", false),
-		SettlementMachineClientID:           os.Getenv("SETTLEMENT_MACHINE_CLIENT_ID"),
-		SettlementMachineAudience:           os.Getenv("SETTLEMENT_MACHINE_AUDIENCE"),
-		ProjectApprovalMachineEnabled:       envBool("PROJECT_APPROVAL_MACHINE_ENABLED", false),
-		ProjectApprovalMachineRequireBearer: envBool("PROJECT_APPROVAL_MACHINE_REQUIRE_BEARER", false),
-		ProjectApprovalMachineClientID:      os.Getenv("PROJECT_APPROVAL_MACHINE_CLIENT_ID"),
-		ProjectApprovalMachineAudience:      os.Getenv("PROJECT_APPROVAL_MACHINE_AUDIENCE"),
-		ProjectApprovalMachineIssuer:        os.Getenv("PROJECT_APPROVAL_MACHINE_ISSUER"),
-		ProjectApprovalMachinePublicKeyPath: os.Getenv("PROJECT_APPROVAL_MACHINE_PUBLIC_KEY_PATH"),
-		ProjectApprovalMachineCallerApp:     os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_APPLICATION_CODE"),
-		ProjectApprovalMachineCallerEnv:     os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_ENVIRONMENT_CODE"),
-		ProjectApprovalMachineScope:         os.Getenv("PROJECT_APPROVAL_MACHINE_REQUIRED_SCOPE"),
-		CRMSignedCountMachineEnabled:        envBool("CRM_SIGNED_COUNT_MACHINE_ENABLED", false),
-		CRMSignedCountMachineRequireBearer:  envBool("CRM_SIGNED_COUNT_MACHINE_REQUIRE_BEARER", false),
-		CRMSignedCountMachineClientID:       os.Getenv("CRM_SIGNED_COUNT_MACHINE_CLIENT_ID"),
-		CRMSignedCountMachineAudience:       os.Getenv("CRM_SIGNED_COUNT_MACHINE_AUDIENCE"),
-		CRMSignedCountMachineIssuer:         os.Getenv("CRM_SIGNED_COUNT_MACHINE_ISSUER"),
-		CRMSignedCountMachinePublicKeyPath:  os.Getenv("CRM_SIGNED_COUNT_MACHINE_PUBLIC_KEY_PATH"),
-		CRMSignedCountMachineCallerApp:      os.Getenv("CRM_SIGNED_COUNT_MACHINE_CALLER_APPLICATION_CODE"),
-		CRMSignedCountMachineCallerEnv:      os.Getenv("CRM_SIGNED_COUNT_MACHINE_CALLER_ENVIRONMENT_CODE"),
-		CRMSignedCountMachineScope:          os.Getenv("CRM_SIGNED_COUNT_MACHINE_REQUIRED_SCOPE"),
-		OIDCClientSecret:                    os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
+		OIDCBackchannelBaseURL:                   os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
+		DashboardMachineEnabled:                  envBool("DASHBOARD_MACHINE_ENABLED", false),
+		DashboardMachineRequireBearer:            envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
+		DashboardMachineClientID:                 os.Getenv("DASHBOARD_MACHINE_CLIENT_ID"),
+		DashboardMachineAudience:                 os.Getenv("DASHBOARD_MACHINE_AUDIENCE"),
+		DashboardMachineIssuer:                   os.Getenv("DASHBOARD_MACHINE_ISSUER"),
+		DashboardMachinePublicKeyPath:            os.Getenv("DASHBOARD_MACHINE_PUBLIC_KEY_PATH"),
+		DashboardMachineCallerApp:                os.Getenv("DASHBOARD_MACHINE_CALLER_APPLICATION_CODE"),
+		DashboardMachineCallerEnv:                os.Getenv("DASHBOARD_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		DashboardMachineScope:                    os.Getenv("DASHBOARD_MACHINE_REQUIRED_SCOPE"),
+		SettlementMachineEnabled:                 envBool("SETTLEMENT_MACHINE_ENABLED", false),
+		SettlementMachineRequireBearer:           envBool("SETTLEMENT_MACHINE_REQUIRE_BEARER", false),
+		SettlementMachineClientID:                os.Getenv("SETTLEMENT_MACHINE_CLIENT_ID"),
+		SettlementMachineAudience:                os.Getenv("SETTLEMENT_MACHINE_AUDIENCE"),
+		HandoverMachineEnabled:                   envBool("HANDOVER_MACHINE_ENABLED", false),
+		HandoverMachineRequireBearer:             envBool("HANDOVER_MACHINE_REQUIRE_BEARER", false),
+		HandoverMachineClientID:                  os.Getenv("HANDOVER_MACHINE_CLIENT_ID"),
+		HandoverMachineAudience:                  os.Getenv("HANDOVER_MACHINE_AUDIENCE"),
+		ProjectApprovalMachineEnabled:            envBool("PROJECT_APPROVAL_MACHINE_ENABLED", false),
+		ProjectApprovalMachineRequireBearer:      envBool("PROJECT_APPROVAL_MACHINE_REQUIRE_BEARER", false),
+		ProjectApprovalMachineClientID:           os.Getenv("PROJECT_APPROVAL_MACHINE_CLIENT_ID"),
+		ProjectApprovalMachineAudience:           os.Getenv("PROJECT_APPROVAL_MACHINE_AUDIENCE"),
+		ProjectApprovalMachineIssuer:             os.Getenv("PROJECT_APPROVAL_MACHINE_ISSUER"),
+		ProjectApprovalMachinePublicKeyPath:      os.Getenv("PROJECT_APPROVAL_MACHINE_PUBLIC_KEY_PATH"),
+		ProjectApprovalMachineCallerApp:          os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_APPLICATION_CODE"),
+		ProjectApprovalMachineCallerEnv:          os.Getenv("PROJECT_APPROVAL_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		ProjectApprovalMachineScope:              os.Getenv("PROJECT_APPROVAL_MACHINE_REQUIRED_SCOPE"),
+		CRMSignedCountMachineEnabled:             envBool("CRM_SIGNED_COUNT_MACHINE_ENABLED", false),
+		CRMSignedCountMachineRequireBearer:       envBool("CRM_SIGNED_COUNT_MACHINE_REQUIRE_BEARER", false),
+		CRMSignedCountMachineClientID:            os.Getenv("CRM_SIGNED_COUNT_MACHINE_CLIENT_ID"),
+		CRMSignedCountMachineAudience:            os.Getenv("CRM_SIGNED_COUNT_MACHINE_AUDIENCE"),
+		CRMSignedCountMachineIssuer:              os.Getenv("CRM_SIGNED_COUNT_MACHINE_ISSUER"),
+		CRMSignedCountMachinePublicKeyPath:       os.Getenv("CRM_SIGNED_COUNT_MACHINE_PUBLIC_KEY_PATH"),
+		CRMSignedCountMachineCallerApp:           os.Getenv("CRM_SIGNED_COUNT_MACHINE_CALLER_APPLICATION_CODE"),
+		CRMSignedCountMachineCallerEnv:           os.Getenv("CRM_SIGNED_COUNT_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		CRMSignedCountMachineScope:               os.Getenv("CRM_SIGNED_COUNT_MACHINE_REQUIRED_SCOPE"),
+		CRMOpportunityIntakeMachineEnabled:       envBool("CRM_OPPORTUNITY_INTAKE_MACHINE_ENABLED", false),
+		CRMOpportunityIntakeMachineRequireBearer: envBool("CRM_OPPORTUNITY_INTAKE_MACHINE_REQUIRE_BEARER", false),
+		CRMOpportunityIntakeMachineClientID:      os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_CLIENT_ID"),
+		CRMOpportunityIntakeMachineAudience:      os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_AUDIENCE"),
+		CRMOpportunityIntakeMachineIssuer:        os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_ISSUER"),
+		CRMOpportunityIntakeMachinePublicKeyPath: os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_PUBLIC_KEY_PATH"),
+		CRMOpportunityIntakeMachineCallerApp:     os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_CALLER_APPLICATION_CODE"),
+		CRMOpportunityIntakeMachineCallerEnv:     os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_CALLER_ENVIRONMENT_CODE"),
+		CRMOpportunityIntakeMachineScope:         os.Getenv("CRM_OPPORTUNITY_INTAKE_MACHINE_REQUIRED_SCOPE"),
+		OIDCClientSecret:                         os.Getenv("OIDC_CLIENT_SECRET"), OIDCRedirectURI: os.Getenv("OIDC_REDIRECT_URI"),
 		OIDCPostLogoutRedirectURI: os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI"),
 		OIDCIDPHint:               strings.TrimSpace(os.Getenv("OIDC_IDP_HINT")),
 		OIDCScopes:                fields(env("OIDC_SCOPES", "openid profile")), OIDCTenantID: os.Getenv("OIDC_TENANT_ID"),
@@ -179,12 +223,13 @@ func Load() (Config, error) {
 		TemporalMetricsAddress:         env("TEMPORAL_METRICS_ADDRESS", ":9091"),
 		TemporalAPIKey:                 os.Getenv("TEMPORAL_API_KEY"), ArchiveCron: env("ARCHIVE_CRON_SCHEDULE", "0 16 * * *"),
 		ProjectAPIBaseURL:    env("PROJECT_API_BASE_URL", "http://localhost:8082"),
-		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090")),
+		SettlementAPIBaseURL: env("SETTLEMENT_API_BASE_URL", "http://localhost:8085"),
+		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090/customer-opportunity")),
 		CRMReferenceTokenURL: os.Getenv("CRM_REFERENCE_TOKEN_URL"), CRMReferenceClientID: os.Getenv("CRM_REFERENCE_CLIENT_ID"),
 		CRMReferenceClientSecret: os.Getenv("CRM_REFERENCE_CLIENT_SECRET"), CRMReferenceScope: env("CRM_REFERENCE_SCOPE", "customer.contract_reference.read"),
 		CRMDeliveryBaseURL: os.Getenv("CRM_API_BASE_URL"), CRMDeliveryToken: os.Getenv("CRM_API_TOKEN"),
 		StampedFileMode: env("STAMPED_FILE_GATEWAY_MODE", "legacy"), StampedFileGatewayURL: env("FILE_GATEWAY_BASE_URL", ""),
-		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload"),
+		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload platform:file:bind"),
 	}
 	var err error
 	if c.NodeTimeout, err = duration("APPROVAL_NODE_TIMEOUT", 72*time.Hour); err != nil {
@@ -246,6 +291,21 @@ func Load() (Config, error) {
 	c.ProjectIntegrationClientID = os.Getenv("PROJECT_INTEGRATION_CLIENT_ID")
 	c.ProjectIntegrationClientSecret = os.Getenv("PROJECT_INTEGRATION_CLIENT_SECRET")
 	c.ProjectIntegrationAudience = os.Getenv("PROJECT_INTEGRATION_AUDIENCE")
+	if c.SettlementIntegrationEnabled, err = strconv.ParseBool(env("SETTLEMENT_INTEGRATION_OUTBOUND_ENABLED", "false")); err != nil {
+		return c, fmt.Errorf("SETTLEMENT_INTEGRATION_OUTBOUND_ENABLED: %w", err)
+	}
+	if c.SettlementIntegrationPoll, err = duration("SETTLEMENT_INTEGRATION_POLL_INTERVAL", 2*time.Second); err != nil {
+		return c, err
+	}
+	settlementRetries, settlementParseErr := strconv.ParseUint(env("SETTLEMENT_INTEGRATION_MAX_ATTEMPTS", "20"), 10, 32)
+	if settlementParseErr != nil || settlementRetries == 0 {
+		return c, fmt.Errorf("SETTLEMENT_INTEGRATION_MAX_ATTEMPTS must be a positive integer")
+	}
+	c.SettlementIntegrationRetries = uint(settlementRetries)
+	c.SettlementIntegrationTokenURL = os.Getenv("SETTLEMENT_INTEGRATION_TOKEN_URL")
+	c.SettlementIntegrationClientID = os.Getenv("SETTLEMENT_INTEGRATION_CLIENT_ID")
+	c.SettlementIntegrationClientSecret = os.Getenv("SETTLEMENT_INTEGRATION_CLIENT_SECRET")
+	c.SettlementIntegrationAudience = os.Getenv("SETTLEMENT_INTEGRATION_AUDIENCE")
 	if c.CRMReferenceEnabled, err = strconv.ParseBool(env("CRM_REFERENCE_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("CRM_REFERENCE_ENABLED: %w", err)
 	}
@@ -286,12 +346,34 @@ func (c Config) validate() error {
 			return fmt.Errorf("PROJECT_INTEGRATION_TOKEN_URL must be a valid HTTP(S) URL without credentials, query or fragment")
 		}
 	}
+	if c.SettlementIntegrationEnabled {
+		if !validHTTPOrigin(c.SettlementAPIBaseURL) {
+			return fmt.Errorf("SETTLEMENT_API_BASE_URL must be an HTTP(S) origin")
+		}
+		// 结算侧入站强制机器 Bearer 且要求令牌绑定可信租户（AUD-2026-001），令牌配置为必配。
+		for name, value := range map[string]string{
+			"SETTLEMENT_INTEGRATION_TOKEN_URL": c.SettlementIntegrationTokenURL, "SETTLEMENT_INTEGRATION_CLIENT_ID": c.SettlementIntegrationClientID,
+			"SETTLEMENT_INTEGRATION_CLIENT_SECRET": c.SettlementIntegrationClientSecret,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when SETTLEMENT_INTEGRATION_OUTBOUND_ENABLED=true", name)
+			}
+		}
+		tokenURL, tokenErr := url.ParseRequestURI(c.SettlementIntegrationTokenURL)
+		if tokenErr != nil || (tokenURL.Scheme != "http" && tokenURL.Scheme != "https") || tokenURL.Host == "" ||
+			tokenURL.User != nil || tokenURL.RawQuery != "" || tokenURL.Fragment != "" {
+			return fmt.Errorf("SETTLEMENT_INTEGRATION_TOKEN_URL must be a valid HTTP(S) URL without credentials, query or fragment")
+		}
+	}
+	if c.SettlementIntegrationPoll <= 0 {
+		return fmt.Errorf("SETTLEMENT_INTEGRATION_POLL_INTERVAL must be positive")
+	}
 	if c.ProjectIntegrationPoll <= 0 {
 		return fmt.Errorf("PROJECT_INTEGRATION_POLL_INTERVAL must be positive")
 	}
 	if c.CRMReferenceEnabled {
-		if !validHTTPOrigin(c.CRMReferenceBaseURL) {
-			return fmt.Errorf("CRM_REFERENCE_BASE_URL must be an HTTP(S) origin")
+		if !validCRMReferenceBaseURL(c.CRMReferenceBaseURL) {
+			return fmt.Errorf("CRM_REFERENCE_BASE_URL must be an HTTP(S) origin with optional /customer-opportunity prefix, without credentials, query or fragment")
 		}
 		for _, item := range []struct{ name, value string }{
 			{"CRM_REFERENCE_TOKEN_URL", c.CRMReferenceTokenURL},
@@ -359,6 +441,27 @@ func (c Config) validate() error {
 		}
 		if c.CRMSignedCountMachineScope != "contract.opportunity_signed_count.read" {
 			return fmt.Errorf("CRM_SIGNED_COUNT_MACHINE_REQUIRED_SCOPE must be contract.opportunity_signed_count.read")
+		}
+	}
+	if c.CRMOpportunityIntakeMachineEnabled {
+		if !c.CRMOpportunityIntakeMachineRequireBearer {
+			return fmt.Errorf("CRM_OPPORTUNITY_INTAKE_MACHINE_REQUIRE_BEARER must be true when CRM opportunity intake is enabled")
+		}
+		for name, value := range map[string]string{
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_CLIENT_ID":               c.CRMOpportunityIntakeMachineClientID,
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_AUDIENCE":                c.CRMOpportunityIntakeMachineAudience,
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_ISSUER":                  c.CRMOpportunityIntakeMachineIssuer,
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_PUBLIC_KEY_PATH":         c.CRMOpportunityIntakeMachinePublicKeyPath,
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_CALLER_APPLICATION_CODE": c.CRMOpportunityIntakeMachineCallerApp,
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_CALLER_ENVIRONMENT_CODE": c.CRMOpportunityIntakeMachineCallerEnv,
+			"CRM_OPPORTUNITY_INTAKE_MACHINE_REQUIRED_SCOPE":          c.CRMOpportunityIntakeMachineScope,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when CRM opportunity intake is enabled", name)
+			}
+		}
+		if c.CRMOpportunityIntakeMachineScope != "opportunity.signed.write" {
+			return fmt.Errorf("CRM_OPPORTUNITY_INTAKE_MACHINE_REQUIRED_SCOPE must be opportunity.signed.write")
 		}
 	}
 	platformURL, err := url.ParseRequestURI(c.PlatformBaseURL)
@@ -465,6 +568,9 @@ func (c Config) validate() error {
 	if c.SettlementMachineRequireBearer && !c.SettlementMachineEnabled {
 		return fmt.Errorf("SETTLEMENT_MACHINE_REQUIRE_BEARER requires SETTLEMENT_MACHINE_ENABLED")
 	}
+	if c.HandoverMachineRequireBearer && !c.HandoverMachineEnabled {
+		return fmt.Errorf("HANDOVER_MACHINE_REQUIRE_BEARER requires HANDOVER_MACHINE_ENABLED")
+	}
 	if c.SettlementMachineEnabled && !c.SettlementMachineRequireBearer {
 		return fmt.Errorf("SETTLEMENT_MACHINE_REQUIRE_BEARER must be true when SETTLEMENT_MACHINE_ENABLED=true")
 	}
@@ -499,6 +605,13 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+// CRM 将引用 API 挂载在此前缀下；对于网关会移除该前缀的部署，
+// 保留仅根路径的兼容，但不接受任意路径。
+func validCRMReferenceBaseURL(value string) bool {
+	parsed, err := url.ParseRequestURI(value)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && parsed.RawPath == "" && (parsed.Path == "" || parsed.Path == "/" || parsed.Path == "/customer-opportunity" || parsed.Path == "/customer-opportunity/")
 }
 
 func validHTTPOrigin(value string) bool {

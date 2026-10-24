@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// 修复：回调失败时不能再 http.Error(... http.StatusText(status) ...)，用户会被卡在 plain text "Unauthorized/Forbidden"。
+// 修复：回调失败时不能再 http.Error(... http.StatusText(status) ...)，用户会被卡在 纯文本 "Unauthorized/Forbidden"。
 // 必须 302 跳到平台顶层 /access-error，前端 SubsystemAccessErrorView 才能渲染友好错误页 + 重试/重新登录/回门户按钮。
 func TestWriteCallbackErrorRedirectsToAccessErrorPage(t *testing.T) {
 	t.Run("redirects to platform access-error with stage/code/from/request_id", func(t *testing.T) {
@@ -58,9 +58,9 @@ func TestWriteCallbackErrorRedirectsToAccessErrorPage(t *testing.T) {
 		if got := query.Get("request_id"); got != "req-callback-12345" {
 			t.Fatalf("request_id = %q, want req-callback-12345", got)
 		}
-		// 不再返回 plain text "Unauthorized"：http.Redirect 会自动写入一个 <a href> 跳转提示，
+		// 不再返回 纯文本 "Unauthorized"：http.Redirect 会自动写入一个 <a href> 跳转提示，
 		// 但浏览器在 30x 时不会渲染它（直接跟随 Location）。这里只验证 Content-Type
-		// 不是 text/plain 的 plain-text 错误。
+		// 不是 text/plain 的 纯文本错误。
 		if ct := recorder.Header().Get("Content-Type"); ct != "" && strings.HasPrefix(ct, "text/plain") {
 			t.Fatalf("Content-Type = %q, must not be text/plain", ct)
 		}

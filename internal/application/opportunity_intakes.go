@@ -59,6 +59,9 @@ type OpportunityIntakeRepository interface {
 }
 
 func (s *Service) AcceptOpportunityIntake(ctx context.Context, intake OpportunityIntake) (OpportunityIntake, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return OpportunityIntake{}, err
+	}
 	if strings.TrimSpace(intake.TenantID) == "" || strings.TrimSpace(intake.EventID) == "" || intake.OpportunityID == 0 || intake.EventVersion == 0 || strings.TrimSpace(intake.ContractRef) == "" || intake.OccurredAt.IsZero() {
 		return OpportunityIntake{}, ErrValidation
 	}
@@ -95,6 +98,9 @@ func (s *Service) GetOpportunityIntake(ctx context.Context, actor Principal, id 
 }
 
 func (s *Service) ReviewOpportunityIntake(ctx context.Context, actor Principal, id string, review OpportunityIntakeReview, idempotencyKey string) (OpportunityIntake, error) {
+	if err := s.checkBusinessLicense(ctx); err != nil {
+		return OpportunityIntake{}, err
+	}
 	if !actor.Has("opportunity_intake.process") {
 		return OpportunityIntake{}, ErrForbidden
 	}

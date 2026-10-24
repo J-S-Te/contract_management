@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	core "github.com/J-S-Te/license-core"
 	"io"
 	"log/slog"
 	"net/http"
@@ -29,6 +30,9 @@ type deliveryReconciler interface {
 }
 
 type Dispatcher struct {
+	LicenseGate interface {
+		Check(context.Context, core.Operation) error
+	}
 	Store       Store
 	BaseURL     string
 	MaxAttempts uint
@@ -66,6 +70,11 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 func (d *Dispatcher) reconcile(ctx context.Context) (int, error) {
+	if d.LicenseGate != nil {
+		if err := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
+			return 0, err
+		}
+	}
 	reconciler, ok := d.Store.(deliveryReconciler)
 	if !ok {
 		return 0, nil
@@ -74,6 +83,11 @@ func (d *Dispatcher) reconcile(ctx context.Context) (int, error) {
 }
 
 func (d *Dispatcher) dispatchOne(ctx context.Context) error {
+	if d.LicenseGate != nil {
+		if err := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
+			return err
+		}
+	}
 	delivery, found, err := d.Store.ClaimProjectDelivery(ctx)
 	if err != nil || !found {
 		return err
@@ -98,6 +112,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 				client = &http.Client{Timeout: 15 * time.Second}
 			}
 			var response *http.Response
+			if d.LicenseGate != nil {
+				if licenseErr := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); licenseErr != nil {
+					return licenseErr
+				}
+			}
 			response, err = client.Do(req)
 			if err == nil {
 				defer response.Body.Close()
