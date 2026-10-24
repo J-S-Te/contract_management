@@ -11,6 +11,9 @@ import re
 from lxml import etree
 
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+# 模板来自仓库内固定文件，仍禁用实体展开与网络/DTD 访问：
+# 任何被篡改的 docx 都不能借此读取宿主文件或发起外连（XXE 加固）。
+SAFE_XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "收入合同模版"
 DEST = SOURCE / "修正版"
@@ -145,7 +148,7 @@ def main():
     for index, source in enumerate(sources, 1):
         target = DEST / source.name
         with ZipFile(source) as original:
-            tree = etree.fromstring(original.read("word/document.xml"))
+            tree = etree.fromstring(original.read("word/document.xml"), parser=SAFE_XML_PARSER)
             correct(index, tree)
             body = etree.tostring(tree, encoding="UTF-8", xml_declaration=True, standalone=True)
             with ZipFile(target, "w") as output:
