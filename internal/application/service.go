@@ -62,6 +62,12 @@ func (p Principal) Scope(permission string) (contract.ScopeFilter, bool) {
 	return filter, filter.AllowAll || filter.AllowSelf || len(filter.OrganizationIDs) > 0 || len(filter.ProjectIDs) > 0
 }
 
+// DocumentAccessRecorder 记录敏感文档访问（下载/预览）。
+// 由仓储层实现；缺失实现时调用方必须视为"无法建立审计依据"。
+type DocumentAccessRecorder interface {
+	RecordDocumentAccess(ctx context.Context, tenantID, contractID, documentKind, actorID string) error
+}
+
 type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, string, int) ([]contract.Contract, error)

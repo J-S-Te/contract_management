@@ -15,7 +15,9 @@ import (
 // 分组注释标明每组配置归属的子系统；字段取值合法性由 validate 统一校验，
 // 校验失败聚合返回全部问题，便于一次性修正部署配置。
 type Config struct {
-	HTTPAddress            string
+	HTTPAddress string
+	// TrustedProxies 是唯一允许采信 X-Real-IP / X-Forwarded-For 的直接对端集合。
+	TrustedProxies         []string
 	MySQLDSN               string
 	PlatformBaseURL        string
 	OIDCIssuer             string
@@ -154,7 +156,8 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
-		OIDCIssuer: os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
+		TrustedProxies: commaList(envOr("APP_TRUSTED_PROXIES", "127.0.0.1/32,::1/128")),
+		OIDCIssuer:     os.Getenv("OIDC_ISSUER"), OIDCClientID: os.Getenv("OIDC_CLIENT_ID"),
 		OIDCBackchannelBaseURL:                   os.Getenv("OIDC_BACKCHANNEL_BASE_URL"),
 		DashboardMachineEnabled:                  envBool("DASHBOARD_MACHINE_ENABLED", false),
 		DashboardMachineRequireBearer:            envBool("DASHBOARD_MACHINE_REQUIRE_BEARER", false),
@@ -587,6 +590,25 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// envOr 返回环境变量值，缺失时使用回退值。
+func envOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// commaList 按逗号拆分并去除空白项。
+func commaList(value string) []string {
+	items := make([]string, 0)
+	for _, part := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
 }
 
 func placeholder(value string) bool {

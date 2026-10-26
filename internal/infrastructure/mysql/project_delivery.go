@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
+	"github.com/j-s-te/contract-management/internal/auditctx"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	"gorm.io/gorm"
@@ -151,7 +152,26 @@ func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	}
 	now := time.Now().UTC()
 	record := projectDeliveryOutboxRecord{ID: newID(), TenantID: tenantID, ContractID: row.ID, ContractVersion: row.Version, PayloadJSON: encoded, DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now}
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error; err != nil {
+		return err
+	}
+	// 交接给项目是关键跨系统动作：与投递行同事务写审计，便于回答"合同何时、由谁交接"。
+	auditPayload, err := json.Marshal(map[string]any{
+		"contract_id": row.ID, "contract_version": row.Version, "service_item_count": len(services), "target": "PROJECT_MANAGEMENT",
+	})
+	if err != nil {
+		return err
+	}
+	meta := auditctx.FromContext(tx.Statement.Context)
+	actor := meta.ActorID
+	if actor == "" {
+		actor = "SYSTEM"
+	}
+	return insertAuditOutbox(tx, tenantID, newID(), AuditOutboxEntry{
+		ActorID: actor, Action: "CONTRACT_MANAGEMENT:HANDED_OFF_TO_PROJECT",
+		ResourceType: "contract", ResourceID: row.ID, Payload: auditPayload,
+		LoginIP: meta.LoginIP, ClientIP: meta.ClientIP, IPSource: meta.IPSource, RequestID: meta.RequestID,
+	})
 }
 
 func newProjectActivationPayload(row contractRecord, effectiveAt time.Time, stamped bool, services []contract.ProjectServiceItem) projectActivationPayload {

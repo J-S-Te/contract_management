@@ -19,7 +19,7 @@ func TestReplaceTemplateSourceHTTPBoundary(t *testing.T) {
 	actor := application.Principal{TenantID: "income-tenant", UserID: "manager", Permissions: map[string]bool{"contract.template.manage": true}}
 	repo := &incomeHTTPTemplateRepository{items: map[string]contracttemplate.Template{}}
 	service := &application.Service{Templates: repo}
-	paths, err := filepath.Glob("../../../收入合同模版/[1-5]、*.docx")
+	paths, err := filepath.Glob("../../../testdata/income-templates/original/[1-5]、*.docx")
 	if err != nil || len(paths) != 5 {
 		t.Fatal(paths, err)
 	}

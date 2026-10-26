@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -477,8 +478,9 @@ func (h *Handler) auditWrites() gin.HandlerFunc {
 		// 来源信息必须在业务 handler 执行前注入：事务内审计在 handler 内部读取它，
 		// 放到 c.Next() 之后只能得到空值。
 		clientIP, ipSource := requestClientIP(c.Request), requestIPSource(c.Request)
+		// 同一请求内的业务审计要能定位到稳定操作者：主体由上游 authenticate 建立。
 		c.Request = c.Request.WithContext(auditctx.WithMeta(c.Request.Context(), auditctx.Meta{
-			ClientIP: clientIP, IPSource: ipSource, RequestID: requestID,
+			ClientIP: clientIP, IPSource: ipSource, RequestID: requestID, ActorID: principal(c).UserID,
 		}))
 		c.Next()
 		status := c.Writer.Status()
@@ -610,51 +612,45 @@ func sensitiveRead(path string) bool {
 // 仅在直接对端是可信反向代理时信任转发头，
 // 确保可直接访问的服务不会被客户端请求头
 // 伪造审计源地址。
-func requestClientIP(request *http.Request) string {
-	if request == nil {
-		return ""
-	}
-	if trustedProxyPeer(request.RemoteAddr) {
-		if ip := publicClientIP(request.Header.Get("X-Real-IP")); ip != nil {
-			return ip.String()
-		}
-		values := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
-		for i := len(values) - 1; i >= 0; i-- {
-			if ip := publicClientIP(values[i]); ip != nil {
-				return ip.String()
-			}
-		}
-	}
-	remote := strings.TrimSpace(request.RemoteAddr)
-	if host, _, err := net.SplitHostPort(remote); err == nil {
-		remote = host
-	}
-	if ip := publicClientIP(remote); ip != nil {
-		return ip.String()
-	}
-	return ""
+// 显式可信代理列表：只有列入该列表的直接对端才允许提供 X-Real-IP / X-Forwarded-For。
+// 由组合根在启动时调用 ConfigureTrustedProxies 注入（默认仅回环）。
+var trustedProxies atomic.Value
+
+// ConfigureTrustedProxies 由组合根注入可信代理（CIDR 或单地址）。
+func ConfigureTrustedProxies(values []string) {
+	trustedProxies.Store(parseTrustedProxies(values))
 }
 
-// trustedProxyPeer 判断直接对端地址是否属于
-// 可信反向代理（回环或私有、链路本地 Docker 网关）。
-// 公网对端表示服务可被直接访问，因此不能信任
-// 客户端提供的转发头。
-func trustedProxyPeer(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
-	if err != nil {
-		host = strings.TrimSpace(remoteAddr)
+func currentTrustedProxies() []netip.Prefix {
+	if value, ok := trustedProxies.Load().([]netip.Prefix); ok {
+		return value
 	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
+	return parseTrustedProxies(nil)
+}
+
+func parseTrustedProxies(values []string) []netip.Prefix {
+	if len(values) == 0 {
+		values = []string{"127.0.0.1/32", "::1/128"}
 	}
-	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(value); err == nil {
+			prefixes = append(prefixes, prefix)
+			continue
+		}
+		if address, err := netip.ParseAddr(value); err == nil {
+			prefixes = append(prefixes, netip.PrefixFrom(address, address.BitLen()))
+		}
+	}
+	return prefixes
 }
 
 // clientIPAddress 接受任意合法单播地址（含办公网/VPN/回环）。
-//
-// AUD-IP-2026：按地址段过滤会把真实办公网地址丢掉，审计只能显示"未采集"；
-// 是否可信由"从哪个入口观察到"决定，见 trustedProxyPeer。
+// AUD-IP-2026：按地址段过滤会把真实办公网地址丢掉；是否可信由获取链路决定。
 func clientIPAddress(value string) *netip.Addr {
 	addr, err := netip.ParseAddr(strings.TrimSpace(value))
 	if err != nil || addr.IsUnspecified() || addr.IsMulticast() {
@@ -663,21 +659,80 @@ func clientIPAddress(value string) *netip.Addr {
 	return &addr
 }
 
-// publicClientIP 保留旧名称以兼容既有调用点，口径已放宽为任意合法单播地址。
+// publicClientIP 保留旧名称以兼容既有调用点。
 func publicClientIP(value string) *netip.Addr { return clientIPAddress(value) }
 
-// requestIPSource 标记操作地址的来源：经可信代理解析还是直连观察。
-func requestIPSource(request *http.Request) string {
+func trustedProxyPeer(remoteAddr string) bool {
+	peer := peerAddress(remoteAddr)
+	if peer == "" {
+		return false
+	}
+	address, err := netip.ParseAddr(peer)
+	if err != nil {
+		return false
+	}
+	for _, prefix := range currentTrustedProxies() {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveClientIP 返回本次请求的操作地址与来源（DIRECT / TRUSTED_PROXY / UNKNOWN）。
+func resolveClientIP(request *http.Request) (string, string) {
 	if request == nil {
-		return "UNKNOWN"
+		return "", "UNKNOWN"
 	}
-	if trustedProxyPeer(request.RemoteAddr) {
-		return "TRUSTED_PROXY"
+	peer := peerAddress(request.RemoteAddr)
+	if peer == "" {
+		return "", "UNKNOWN"
 	}
-	if requestClientIP(request) != "" {
-		return "DIRECT"
+	if !trustedProxyPeer(request.RemoteAddr) {
+		return peer, "DIRECT"
 	}
-	return "UNKNOWN"
+	if ip := clientIPAddress(request.Header.Get("X-Real-IP")); ip != nil {
+		if value := ip.String(); value != peer {
+			return value, "TRUSTED_PROXY"
+		}
+	}
+	values := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
+	for index := len(values) - 1; index >= 0; index-- {
+		ip := clientIPAddress(values[index])
+		if ip == nil {
+			continue
+		}
+		value := ip.String()
+		if trustedProxyPeer(value) {
+			continue
+		}
+		if value != peer {
+			return value, "TRUSTED_PROXY"
+		}
+	}
+	return peer, "DIRECT"
+}
+
+func requestClientIP(request *http.Request) string {
+	clientIP, _ := resolveClientIP(request)
+	return clientIP
+}
+
+func requestIPSource(request *http.Request) string {
+	_, source := resolveClientIP(request)
+	return source
+}
+
+func peerAddress(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil || address.IsUnspecified() || address.IsMulticast() {
+		return ""
+	}
+	return address.String()
 }
 
 func auditAction(r *http.Request) string {
@@ -1073,6 +1128,10 @@ func (h *Handler) downloadApprovedDOCX(c *gin.Context) {
 		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有 DOCX 文档", nil)
 		return
 	}
+	if err := h.service.RecordDocumentAccess(c.Request.Context(), principal(c), c.Param("contractID"), "DOCX"); err != nil {
+		writeError(c, err)
+		return
+	}
 	h.download(c, found.Number, ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", found.Document)
 }
 
@@ -1086,6 +1145,10 @@ func (h *Handler) downloadApprovedPDF(c *gin.Context) {
 	defer cancel()
 	document, err := contractpdf.ConvertDOCX(ctx, found.Document)
 	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if err := h.service.RecordDocumentAccess(c.Request.Context(), principal(c), c.Param("contractID"), "PDF"); err != nil {
 		writeError(c, err)
 		return
 	}
@@ -1141,6 +1204,10 @@ func (h *Handler) uploadStampedPDF(c *gin.Context) {
 func (h *Handler) downloadStampedPDF(c *gin.Context) {
 	found, err := h.service.GetStampedDocument(c.Request.Context(), principal(c), c.Param("contractID"))
 	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if err := h.service.RecordDocumentAccess(c.Request.Context(), principal(c), c.Param("contractID"), "STAMPED_PDF"); err != nil {
 		writeError(c, err)
 		return
 	}

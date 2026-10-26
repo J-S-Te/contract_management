@@ -11,7 +11,7 @@ import (
 )
 
 func TestLoadIncomeSources(t *testing.T) {
-	items, err := loadSources("../../收入合同模版")
+	items, err := loadSources("../../testdata/income-templates/original")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestLoadIncomeSources(t *testing.T) {
 }
 
 func TestLoadSourcesIgnoresWordLockFiles(t *testing.T) {
-	items, err := loadSources("../../收入合同模版")
+	items, err := loadSources("../../testdata/income-templates/original")
 	if err != nil {
 		t.Fatal(err)
 	}

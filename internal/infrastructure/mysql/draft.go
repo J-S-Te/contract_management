@@ -10,6 +10,7 @@ import (
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/auditctx"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -76,6 +77,44 @@ func (r *Repository) UpdateContractDraft(ctx context.Context, c contract.Contrac
 		if err := replaceContractPaymentTerms(tx, c); err != nil {
 			return err
 		}
-		return tx.Create(&lifecycleEventRecord{ID: newID(), TenantID: c.TenantID, ContractID: c.ID, FromStatus: string(contract.StatusDraft), ToStatus: string(contract.StatusDraft), ActorUserID: stringPtr(actorUserID), Reason: stringPtr("contract draft edited"), IdempotencyKey: fmt.Sprintf("%s:draft:v%d", c.ID, expectedVersion+1), OccurredAt: now}).Error
+		if err := tx.Create(&lifecycleEventRecord{ID: newID(), TenantID: c.TenantID, ContractID: c.ID, FromStatus: string(contract.StatusDraft), ToStatus: string(contract.StatusDraft), ActorUserID: stringPtr(actorUserID), Reason: stringPtr("contract draft edited"), IdempotencyKey: fmt.Sprintf("%s:draft:v%d", c.ID, expectedVersion+1), OccurredAt: now}).Error; err != nil {
+			return err
+		}
+		// 草稿修改同样是关键业务变更：与业务行同事务写审计，记录版本跃迁。
+		// 不记录合同正文、模板值或客户联系方式。
+		auditPayload, err := json.Marshal(map[string]any{
+			"contract_id": c.ID, "from_version": expectedVersion, "to_version": expectedVersion + 1,
+			"status": string(contract.StatusDraft), "amount_minor": c.AmountMinor, "currency": c.Currency,
+		})
+		if err != nil {
+			return err
+		}
+		meta := auditctx.FromContext(ctx)
+		return insertAuditOutbox(tx, c.TenantID, newID(), AuditOutboxEntry{
+			ActorID: actorUserID, Action: "CONTRACT_MANAGEMENT:UPDATED",
+			ResourceType: "contract", ResourceID: c.ID, Payload: auditPayload,
+			LoginIP: meta.LoginIP, ClientIP: meta.ClientIP, IPSource: meta.IPSource, RequestID: meta.RequestID,
+		})
+	})
+}
+
+// RecordDocumentAccess 在敏感文档返回前写审计 outbox（统一审计方案 §3.2）。
+// 只记录合同、文档类型与操作者，不记录文件名以外的内容，也不缓存文档字节。
+func (r *Repository) RecordDocumentAccess(ctx context.Context, tenantID, contractID, documentKind, actorID string) error {
+	payload, err := json.Marshal(map[string]any{"contract_id": contractID, "document_kind": documentKind})
+	if err != nil {
+		return err
+	}
+	meta := auditctx.FromContext(ctx)
+	actor := actorID
+	if actor == "" {
+		actor = "UNKNOWN"
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return insertAuditOutbox(tx, tenantID, newID(), AuditOutboxEntry{
+			ActorID: actor, Action: "CONTRACT_MANAGEMENT:DOCUMENT_DOWNLOADED",
+			ResourceType: "contract", ResourceID: contractID, Payload: payload,
+			LoginIP: meta.LoginIP, ClientIP: meta.ClientIP, IPSource: meta.IPSource, RequestID: meta.RequestID,
+		})
 	})
 }

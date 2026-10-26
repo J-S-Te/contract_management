@@ -9,6 +9,9 @@ import "context"
 // Meta 是请求级审计来源信息。
 type Meta struct {
 	LoginIP, ClientIP, IPSource, RequestID string
+	// ActorID 是当前请求的稳定操作者 ID（来自已认证主体）。
+	// 仓储层在缺少显式 actor 入参时用它写审计，避免机器事件伪装成人工操作。
+	ActorID string
 }
 
 type metaKey struct{}

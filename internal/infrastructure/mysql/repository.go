@@ -736,7 +736,25 @@ func (r *Repository) RecordCommand(ctx context.Context, in workflows.RecordComma
 		if result.RowsAffected != 1 {
 			return apperrors.ErrNotFound
 		}
-		return syncTasks(tx, in.ApprovalID, in.State.Nodes)
+		if err := syncTasks(tx, in.ApprovalID, in.State.Nodes); err != nil {
+			return err
+		}
+		// 审批命令（含签署、转派、退回、催办）也是关键业务变更：
+		// 与命令记录同事务写审计 outbox，动作按命令区分，便于按签署/转派检索。
+		auditPayload, err := json.Marshal(map[string]any{
+			"approval_id": in.ApprovalID, "command_id": in.Command.CommandID,
+			"command": strings.ToUpper(string(in.Command.Action)), "node_id": in.NodeID,
+			"countersign": string(in.Command.Countersign),
+		})
+		if err != nil {
+			return err
+		}
+		meta := auditctx.FromContext(ctx)
+		return insertAuditOutbox(tx, in.TenantID, newID(), AuditOutboxEntry{
+			ActorID: in.Command.ActorUserID, Action: "CONTRACT_MANAGEMENT:APPROVAL_" + strings.ToUpper(string(in.Command.Action)),
+			ResourceType: "contract", ResourceID: in.ContractID, Payload: auditPayload,
+			LoginIP: meta.LoginIP, ClientIP: meta.ClientIP, IPSource: meta.IPSource, RequestID: meta.RequestID,
+		})
 	})
 }
 

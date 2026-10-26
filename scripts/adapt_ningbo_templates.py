@@ -8,7 +8,7 @@ import hashlib
 import copy
 import re
 from lxml import etree
-from repair_income_templates import NS, text, replace_span
+from repair_income_templates import NS, SAFE_XML_PARSER, text, replace_span
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "收入合同模版/宁波合同模板"
@@ -18,7 +18,7 @@ DEST = SOURCE / "系统适配版"
 def adapt(source):
     before = hashlib.sha256(source.read_bytes()).hexdigest()
     with ZipFile(source) as original:
-        tree = etree.fromstring(original.read("word/document.xml"))
+        tree = etree.fromstring(original.read("word/document.xml"), parser=SAFE_XML_PARSER)
         tables = tree.xpath("//w:tbl", namespaces=NS)
         rows = tables[0].xpath("./w:tr", namespaces=NS)[2:]
         if len(rows) != 16:

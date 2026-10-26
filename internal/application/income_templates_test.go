@@ -17,7 +17,7 @@ import (
 )
 
 func TestIncomeTemplatesRealDocuments(t *testing.T) {
-	paths, err := filepath.Glob("../../收入合同模版/[1-5]、*.docx")
+	paths, err := filepath.Glob("../../testdata/income-templates/original/[1-5]、*.docx")
 	if err != nil || len(paths) != 5 {
 		t.Fatalf("income templates: paths=%v error=%v; want five real documents", paths, err)
 	}

@@ -21,13 +21,23 @@ func (f downloadAuditReporter) Report(ctx context.Context, event platform.AuditE
 	return f(ctx, event)
 }
 
-type auditDownloadRepository struct{ application.Repository }
+type auditDownloadRepository struct {
+	application.Repository
+	documentAccess []string
+}
 
 func (auditDownloadRepository) GetContract(_ context.Context, tenantID, id string) (contract.Contract, error) {
 	if tenantID != "audit-test-tenant" || id != "existing" {
 		return contract.Contract{}, application.ErrForbidden
 	}
 	return contract.Contract{ID: id, TenantID: tenantID, Status: contract.StatusActive, Number: "CON-EXISTING", Document: []byte("existing-private-document")}, nil
+}
+
+// RecordDocumentAccess 让测试替身满足服务层"下载必须先建立审计依据"的要求；
+// 记录次数在用例里断言，避免下载在无审计记录时也能成功。
+func (r *auditDownloadRepository) RecordDocumentAccess(_ context.Context, tenantID, contractID, documentKind, actorID string) error {
+	r.documentAccess = append(r.documentAccess, documentKind)
+	return nil
 }
 
 func (auditDownloadRepository) GetStampedDocument(_ context.Context, tenantID, id string) (contract.StampedDocument, error) {
@@ -55,7 +65,8 @@ func TestRegisteredContractDownloadsEnforceAuditAndPermission(t *testing.T) {
 				actor := application.Principal{TenantID: "audit-test-tenant", UserID: "actor", IdentityID: "actor",
 					Permissions:      map[string]bool{"contract.read": tc.allowed, "contract.document.download": tc.allowed},
 					PermissionScopes: map[string]contract.ScopeFilter{"contract.read": {AllowAll: true}, "contract.document.download": {AllowAll: true}}}
-				service := &application.Service{Repo: auditDownloadRepository{}, LicenseGate: historyOnlyLicense{}}
+				repository := &auditDownloadRepository{}
+				service := &application.Service{Repo: repository, LicenseGate: historyOnlyLicense{}}
 				router := NewRouter(service, identityFunc(func(context.Context, *http.Request) (application.Principal, error) { return actor, nil }), nil, &stubAuditReporter{err: tc.auditErr})
 				response := httptest.NewRecorder()
 				router.ServeHTTP(response, httptest.NewRequest("GET", path, nil))

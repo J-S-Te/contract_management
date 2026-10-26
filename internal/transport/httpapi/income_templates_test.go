@@ -103,7 +103,7 @@ func incomeUploadRequest(t *testing.T, name, filename string, content []byte) *h
 func TestIncomeTemplatesHTTPRealUploadsAndTenantIsolation(t *testing.T) {
 	t.Setenv("APP_PUBLIC_URL", "https://contracts.example.test/contract_management")
 	t.Setenv("APP_CORS_ALLOWED_ORIGINS", "")
-	paths, err := filepath.Glob("../../../收入合同模版/[1-5]、*.docx")
+	paths, err := filepath.Glob("../../../testdata/income-templates/original/[1-5]、*.docx")
 	if err != nil || len(paths) != 5 {
 		t.Fatalf("templates=%v error=%v want five documents", paths, err)
 	}
@@ -204,7 +204,7 @@ func TestIncomeTemplatesHTTPRealUploadsAndTenantIsolation(t *testing.T) {
 func TestIncomeTemplatesHTTPRejectsInvalidUploadsAndAccess(t *testing.T) {
 	t.Setenv("APP_PUBLIC_URL", "https://contracts.example.test")
 	t.Setenv("APP_CORS_ALLOWED_ORIGINS", "")
-	paths, err := filepath.Glob("../../../收入合同模版/[1-5]、*.docx")
+	paths, err := filepath.Glob("../../../testdata/income-templates/original/[1-5]、*.docx")
 	if err != nil || len(paths) != 5 {
 		t.Fatalf("templates=%v error=%v", paths, err)
 	}

@@ -230,6 +230,16 @@ func normalizeNumberFormat(value string) (string, error) {
 	return value, nil
 }
 
+// RecordDocumentAccess 在返回文档字节前建立持久化审计依据。
+// 未配置记录器时拒绝访问，避免敏感文档在无审计的情况下被下载。
+func (s *Service) RecordDocumentAccess(ctx context.Context, actor Principal, contractID, documentKind string) error {
+	recorder, ok := s.Repo.(DocumentAccessRecorder)
+	if !ok || recorder == nil {
+		return fmt.Errorf("%w: document access audit recorder is not configured", ErrForbidden)
+	}
+	return recorder.RecordDocumentAccess(ctx, actor.TenantID, contractID, documentKind, actor.UserID)
+}
+
 func (s *Service) DeleteTemplate(ctx context.Context, actor Principal, id string) error {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err

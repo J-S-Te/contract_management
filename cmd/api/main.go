@@ -272,6 +272,8 @@ func main() {
 			handoverService.SetOwnerResolver(resolver)
 		}
 	}
+	// 统一审计来源：显式可信代理列表，未列入的直接对端不能改写来源地址。
+	httpapi.ConfigureTrustedProxies(cfg.TrustedProxies)
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
 		Handler: httpapi.NewRouterWithAuditOutbox(service, identity,
