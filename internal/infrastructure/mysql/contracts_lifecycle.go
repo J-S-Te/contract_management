@@ -51,6 +51,9 @@ func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID 
 	})
 }
 
+// CreateContract 原子创建合同、责任基线及审计事件。
+// 参数：ctx 控制事务，c 为经业务校验的合同，actorUserID 为真实操作者。
+// 返回值：校验或存储失败时返回错误且不保留部分创建结果。
 func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, actorUserID string) error {
 	now := time.Now().UTC()
 	templateValues, err := json.Marshal(c.TemplateValues)
@@ -80,6 +83,9 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+		if err := enqueueContractResponsibility(tx, c.TenantID, c.ID); err != nil {
 			return err
 		}
 		if err := replaceContractPaymentTerms(tx, c); err != nil {

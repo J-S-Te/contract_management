@@ -23,8 +23,9 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// 仅显式启用：禁止从应用配置或业务数据库
-// 环境变量派生此 DSN。专用数据库必须已存在。
+// draftE2ERepository 只在显式隔离DSN下初始化并清理本测试租户。
+// 参数：t 为测试上下文，DSN必须指向回环专用测试库。
+// 返回值：仓储和随机测试租户；未配置DSN时跳过。
 func draftE2ERepository(t *testing.T) (*Repository, string) {
 	t.Helper()
 	dsn := os.Getenv("CONTRACT_TEST_DSN")
@@ -61,7 +62,7 @@ func draftE2ERepository(t *testing.T) (*Repository, string) {
 		if err := db.Where("approval_id IN (?)", instances).Delete(&approvalTaskRecord{}).Error; err != nil {
 			t.Error("dedicated test approval-task cleanup failed")
 		}
-		for _, model := range []any{&signingConfirmationRecord{}, &stampedDocumentRecord{}, &signingRecord{}, &financialEffectiveOutboxRecord{}, &paymentTermRecord{}, &projectDeliveryOutboxRecord{}, &notificationOutboxRecord{}, &approvalActionRecord{}, &lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractRecord{}, &contractTemplateRecord{}} {
+		for _, model := range []any{&contractResponsibilityOutbox{}, &contractResponsibilityStream{}, &signingConfirmationRecord{}, &stampedDocumentRecord{}, &signingRecord{}, &financialEffectiveOutboxRecord{}, &paymentTermRecord{}, &projectDeliveryOutboxRecord{}, &notificationOutboxRecord{}, &approvalActionRecord{}, &lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractRecord{}, &contractTemplateRecord{}} {
 			if err := db.Where("tenant_id = ?", tenant).Delete(model).Error; err != nil {
 				t.Error("dedicated test tenant cleanup failed")
 			}

@@ -82,6 +82,7 @@ type financialEffectivePayload struct {
 		Version      int           `json:"version"`
 		CustomerID   string        `json:"customer_id"`
 		CustomerName string        `json:"customer_name"`
+		OwnerUserID  string        `json:"owner_user_id,omitempty"`
 		ProjectID    string        `json:"project_id,omitempty"`
 		ProjectName  string        `json:"project_name,omitempty"`
 		Currency     string        `json:"currency"`
@@ -293,6 +294,9 @@ func enqueueFinancialEffective(tx *gorm.DB, tenantID, contractID string) error {
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error
 }
 
+// newFinancialEffectivePayload 冻结财务条款并携带已有真实负责人和项目引用。
+// 参数：eventID 为事件号，row 为权威合同，terms 为合法分期，occurredAt 为发生时间。
+// 返回值：财务事件JSON及序列化错误。
 func newFinancialEffectivePayload(eventID string, row *contractRecord, terms []paymentTermRecord, occurredAt time.Time) ([]byte, error) {
 	paymentTerms := make([]PaymentTerm, 0, len(terms))
 	for _, term := range terms {
@@ -313,6 +317,8 @@ func newFinancialEffectivePayload(eventID string, row *contractRecord, terms []p
 	payload.Contract.Version = int(row.Version)
 	payload.Contract.CustomerID = customerIDOf(row.CRMCustomerID)
 	payload.Contract.CustomerName = valueOrEmpty(row.CustomerName)
+	payload.Contract.OwnerUserID = row.OwnerUserID
+	payload.Contract.ProjectID = valueOrEmpty(row.ProjectID)
 	payload.Contract.Currency = strings.ToUpper(strings.TrimSpace(row.Currency))
 	payload.Contract.Amount = formatAmountMinor(row.AmountMinor)
 	payload.Contract.PaymentTerms = paymentTerms

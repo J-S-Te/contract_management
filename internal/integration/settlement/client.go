@@ -3,6 +3,7 @@ package settlement
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,6 +34,13 @@ type Store interface {
 	MarkFinancialEffectiveFailed(context.Context, string, string, uint, bool) error
 }
 
+type responsibilityStore interface {
+	ClaimContractResponsibilityDelivery(context.Context) (Delivery, bool, error)
+	MarkContractResponsibilityDelivered(context.Context, string) error
+	MarkContractResponsibilityFailed(context.Context, string, string, uint, bool) error
+	ReconcileContractResponsibilities(context.Context) (int, error)
+}
+
 type deliveryReconciler interface {
 	ReconcileFinancialEffectives(context.Context) (int, error)
 }
@@ -52,20 +60,32 @@ type Dispatcher struct {
 	TokenSource func(context.Context) (string, error)
 }
 
+// Run 运行财务和责任事件的持久化投递循环。
+// 参数：ctx 为进程生命周期。
+// 返回值：无。
 func (d *Dispatcher) Run(ctx context.Context) {
 	if d.Store == nil {
 		return
 	}
-	if count, err := d.reconcile(ctx); err != nil {
-		if d.Logger != nil {
-			d.Logger.Error("reconcile historical financial effective deliveries", "error", err)
-		}
-	} else if count > 0 && d.Logger != nil {
-		d.Logger.Info("historical financial effective deliveries queued", "count", count)
-	}
+	reconciled := false
+
 	ticker := time.NewTicker(d.Poll)
 	defer ticker.Stop()
 	for {
+		if !reconciled {
+			count, err := d.reconcile(ctx)
+			if err != nil {
+				if d.Logger != nil {
+					d.Logger.Error("reconcile settlement deliveries", "error", err)
+				}
+			} else {
+				reconciled = true
+				if count > 0 && d.Logger != nil {
+					d.Logger.Info("historical settlement deliveries queued", "count", count)
+				}
+			}
+		}
+
 		if err := d.dispatchOne(ctx); err != nil && ctx.Err() == nil && d.Logger != nil {
 			d.Logger.Error("dispatch financial effective event to settlement", "error", err)
 		}
@@ -77,20 +97,51 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	}
 }
 
+// reconcile 补建现有合同缺失的责任及财务事件。
+// 参数：ctx 控制存储操作。
+// 返回值：新增数量及存储或许可错误。
 func (d *Dispatcher) reconcile(ctx context.Context) (int, error) {
 	if d.LicenseGate != nil {
 		if err := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
 			return 0, err
 		}
 	}
+	responsibilityCount := 0
+	if store, ok := d.Store.(responsibilityStore); ok {
+		var err error
+		responsibilityCount, err = store.ReconcileContractResponsibilities(ctx)
+		if err != nil {
+			return 0, err
+		}
+	}
 	reconciler, ok := d.Store.(deliveryReconciler)
 	if !ok {
-		return 0, nil
+		return responsibilityCount, nil
 	}
-	return reconciler.ReconcileFinancialEffectives(ctx)
+	count, err := reconciler.ReconcileFinancialEffectives(ctx)
+	return responsibilityCount + count, err
 }
 
+// dispatchOne 投递财务事件并独立处理一条责任事件。
+// 参数：ctx 控制请求及持久化重试。
+// 返回值：投递、许可或重试记录错误。
 func (d *Dispatcher) dispatchOne(ctx context.Context) error {
+	if store, ok := d.Store.(responsibilityStore); ok {
+		if d.LicenseGate != nil {
+			if err := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
+				return err
+			}
+		}
+		delivery, found, err := store.ClaimContractResponsibilityDelivery(ctx)
+		if err != nil {
+			return err
+		}
+		if found {
+			if err := d.deliver(ctx, delivery, store.MarkContractResponsibilityDelivered, store.MarkContractResponsibilityFailed); err != nil {
+				return err
+			}
+		}
+	}
 	if d.LicenseGate != nil {
 		if err := d.LicenseGate.Check(ctx, core.MUTATE_BUSINESS); err != nil {
 			return err
@@ -100,8 +151,24 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 	if err != nil || !found {
 		return err
 	}
+	return d.deliver(ctx, delivery, d.Store.MarkFinancialEffectiveDelivered, d.Store.MarkFinancialEffectiveFailed)
+}
+
+// deliver 按事件类型发送冻结载荷并持久记录成功或失败。
+// 参数：ctx 控制请求，delivery 为队列行，delivered 和 failed 写回各自队列。
+// 返回值：网络、载荷或持久化错误。
+func (d *Dispatcher) deliver(ctx context.Context, delivery Delivery, delivered func(context.Context, string) error, failed func(context.Context, string, string, uint, bool) error) error {
+	var event struct {
+		EventType string `json:"event_type"`
+	}
+	_ = json.Unmarshal(delivery.Payload, &event)
+	endpoint := "/internal/v1/settlement/events/contracts"
+	if event.EventType == "contract.responsibility_changed.v1" {
+		endpoint = "/internal/v1/settlement/events/contract-responsibility"
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(d.BaseURL, "/")+"/internal/v1/settlement/events/contracts",
+		strings.TrimRight(d.BaseURL, "/")+endpoint,
 		bytes.NewReader(delivery.Payload))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -132,14 +199,14 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 				defer response.Body.Close()
 				body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 				if response.StatusCode >= 200 && response.StatusCode < 300 {
-					return d.Store.MarkFinancialEffectiveDelivered(ctx, delivery.ID)
+					return delivered(ctx, delivery.ID)
 				}
 				err = fmt.Errorf("settlement API returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 			}
 		}
 	}
 	dead := delivery.Attempts >= d.MaxAttempts
-	if markErr := d.Store.MarkFinancialEffectiveFailed(ctx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
+	if markErr := failed(ctx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
 		return fmt.Errorf("delivery error: %v; persist retry: %w", err, markErr)
 	}
 	return err

@@ -175,7 +175,9 @@ func (r *Repository) listContractResponsibilities(ctx context.Context, tenantID,
 	return items, nil
 }
 
-// TransferOwnership 在本地事务内变更负责人、递增版本并写入幂等回执。
+// TransferOwnership 原子交接合同负责人、责任事件及幂等回执。
+// 参数：ctx 控制事务，in 为经校验的交接请求，now 为受理时间。
+// 返回值：实际交接回执及存储或冲突错误。
 func (r *Repository) TransferOwnership(ctx context.Context, in application.HandoverTransferInput, now time.Time) (application.HandoverReceipt, error) {
 	var receipt application.HandoverReceipt
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -233,6 +235,9 @@ func (r *Repository) TransferOwnership(ctx context.Context, in application.Hando
 			return application.ErrHandoverConflict
 		}
 
+		if err := enqueueContractResponsibility(tx, in.TenantID, in.ResourceID); err != nil {
+			return err
+		}
 		applied := handoverReceiptRecord{
 			ID: ulid.Make().String(), TenantID: in.TenantID, BatchID: in.BatchID, ItemID: in.ItemID,
 			ResourceType: in.ResourceType, ResourceID: in.ResourceID, FromUserID: in.FromUserID, ToUserID: in.ToUserID,
