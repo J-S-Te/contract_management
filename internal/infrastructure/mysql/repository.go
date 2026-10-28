@@ -884,6 +884,9 @@ func (r *Repository) CreateNotification(ctx context.Context, in workflows.Notify
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&records).Error
 }
 
+// updateStatus 更新状态并在同一事务同步责任撤销或恢复。
+// 参数：tx 为合同行事务，租户和合同限定对象，from/to 为状态，actor 为操作者。
+// 返回值：状态、并发或责任事件写入错误。
 func updateStatus(tx *gorm.DB, tenantID, contractID string, from, to contract.Status, actor string) error {
 	if err := contract.ValidateTransition(from, to); err != nil {
 		return err
@@ -896,7 +899,7 @@ func updateStatus(tx *gorm.DB, tenantID, contractID string, from, to contract.St
 	if result.RowsAffected != 1 {
 		return apperrors.ErrStateConflict
 	}
-	return nil
+	return enqueueContractResponsibility(tx, tenantID, contractID)
 }
 
 func insertLifecycle(tx *gorm.DB, in workflows.StartApprovalActivityInput, from, to contract.Status, actor, reason, key string) error {
