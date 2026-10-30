@@ -120,6 +120,20 @@ type ScopedRepository interface {
 }
 
 type Service struct {
+	ExternalPDFEnabled              bool
+	ContractImportHistoryEnabled    bool
+	ContractImportConfirmationRoles []string
+	ImportReportReadConfigured      bool
+	ImportProject                   *ImportTargetTransport
+	ImportFinance                   *ImportTargetTransport
+	ImportReport                    *ImportTargetTransport
+	ImportOwners                    interface {
+		ResolveOwner(context.Context, string, string) (UserReference, error)
+	}
+	ContractImportEnabled    bool
+	ContractImportMaxItems   int
+	ContractImportStagingTTL time.Duration
+	ImportActorResolver      func(context.Context, []byte, string, string) (Principal, error)
 	LicenseGate              LicenseChecker
 	Repo                     Repository
 	Templates                TemplateRepository
@@ -192,6 +206,9 @@ func (s *Service) ListApprovedContractReferences(ctx context.Context, actor Prin
 	return s.Repo.ListApprovedContractReferences(ctx, actor.TenantID, afterID, limit)
 }
 
+// GetApprovedContract 按授权范围读取普通已批准合同，排除历史及未知来源。
+// 参数：ctx为上下文，actor为可信主体，id为合同ID，permission为所需读取权限。
+// 返回值：可见合同或权限、不存在、状态与存储错误。
 func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, permission string) (contract.Contract, error) {
 	filter, ok := s.contractScope(actor, permission)
 	if !ok {
@@ -201,7 +218,7 @@ func (s *Service) GetApprovedContract(ctx context.Context, actor Principal, id, 
 	if err != nil {
 		return found, err
 	}
-	if !found.Status.ApprovalPassed() {
+	if !contract.OperationalOrigin(found) || !found.Status.ApprovalPassed() {
 		return contract.Contract{}, ErrForbidden
 	}
 	return found, nil
@@ -519,10 +536,9 @@ func (s *Service) CreateContract(ctx context.Context, actor Principal, c contrac
 	return s.createContract(ctx, actor, c, false)
 }
 
-// CreateExternalContract 从调用方提供的 DOCX 创建草稿，
-// 不引入第二套工作流或持久化模型。文档冻结在模板合同
-// 共用的 rendered_document/content/content_hash 字段中，
-// 确保预览、审批和导出使用唯一权威来源。
+// CreateExternalContract 从已校验外部原件创建普通合同草稿。
+// 参数：ctx为请求上下文，actor为可信操作者，c含原件和结构化元数据。
+// 返回值：冻结原件与类型的草稿；文件、权限或业务校验失败返回错误。
 func (s *Service) CreateExternalContract(ctx context.Context, actor Principal, c contract.Contract) (contract.Contract, error) {
 	if _, ok := actor.Scope("contract.create"); !ok {
 		return c, ErrForbidden
@@ -530,14 +546,9 @@ func (s *Service) CreateExternalContract(ctx context.Context, actor Principal, c
 	if c.TemplateID != "" || len(c.TemplateValues) != 0 || len(c.Document) == 0 {
 		return c, ErrValidation
 	}
-	if err := docx.ValidateExternalDocument(c.Document); err != nil {
-		return c, fmt.Errorf("%w: 外部合同 DOCX 解析失败：%v", ErrValidation, err)
+	if err := s.prepareExternalSource(&c); err != nil {
+		return c, err
 	}
-	content, err := docx.PlainText(c.Document)
-	if err != nil || strings.TrimSpace(content) == "" {
-		return c, fmt.Errorf("%w: 外部合同 DOCX 正文不能为空", ErrValidation)
-	}
-	c.Content = content
 	return s.createContract(ctx, actor, c, true)
 }
 
@@ -724,6 +735,9 @@ func validateContractTextLengths(c contract.Contract) error {
 	return nil
 }
 
+// persistNewContract 以真实创建人和原件信息持久化合同并同步网关副本。
+// 参数：ctx为请求上下文，actor为操作者，c为已校验合同，external标识外部原件，filter为创建范围。
+// 返回值：新草稿；许可或持久化失败返回错误，副本失败按既有模式记录。
 func (s *Service) persistNewContract(ctx context.Context, actor Principal, c contract.Contract, external bool, filter contract.ScopeFilter) (contract.Contract, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return contract.Contract{}, err
@@ -741,7 +755,8 @@ func (s *Service) persistNewContract(ctx context.Context, actor Principal, c con
 	hash := sha256.Sum256(hashSource)
 	c.ContentHash = hex.EncodeToString(hash[:])
 	if external && s.StampedFileGateway != nil && !strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "legacy") {
-		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-external-"+c.ID, s.StampedFileApplicationID, "CONTRACT_EXTERNAL_SOURCE", "external-contract.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(c.Document))
+		purpose, filename, mediaType := sourceGatewayMetadata(c)
+		fileID, uploadErr := s.StampedFileGateway.Upload(ctx, "contract-external-"+c.ID, s.StampedFileApplicationID, purpose, filename, mediaType, bytes.NewReader(c.Document))
 		if uploadErr != nil {
 			if strings.EqualFold(strings.TrimSpace(s.StampedFileMode), "required") {
 				return c, fmt.Errorf("contract source file gateway: %w", uploadErr)
@@ -758,7 +773,8 @@ func (s *Service) persistNewContract(ctx context.Context, actor Principal, c con
 		return c, err
 	}
 	if external && c.SourceFileID != "" {
-		bindErr := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, c.SourceFileID, "contract", c.ID, "EXTERNAL_SOURCE", c.Title+".docx")
+		_, filename, _ := sourceGatewayMetadata(c)
+		bindErr := s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, c.SourceFileID, "contract", c.ID, "EXTERNAL_SOURCE", filename)
 		state, detail := "READY", ""
 		if bindErr != nil {
 			state, detail = "FAILED", bindErr.Error()
@@ -855,6 +871,9 @@ func (s *Service) SubmitContract(ctx context.Context, actor Principal, contractI
 	return s.SubmitContractVersion(ctx, actor, contractID, termsIdentical, 0)
 }
 
+// SubmitContractVersion 以当前版本提交普通合同审批并保持来源策略约束。
+// 参数：ctx/actor为上下文与主体，contractID为合同，termsIdentical为条款声明，expectedVersion为并发版本。
+// 返回值：已启动审批标识或校验、权限、状态冲突及工作流错误。
 func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, contractID string, termsIdentical bool, expectedVersion uint64) (StartResult, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return StartResult{}, err
@@ -866,6 +885,9 @@ func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, co
 	c, err := s.getContractScoped(ctx, filter, contractID)
 	if err != nil {
 		return StartResult{}, err
+	}
+	if !contract.OperationalOrigin(c) {
+		return StartResult{}, ErrImportUnsupported
 	}
 	if c.Status != contract.StatusDraft {
 		return StartResult{}, apperrors.ErrStateConflict
@@ -910,6 +932,9 @@ func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, co
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
 }
 
+// ChangeStatus 通过现审批路径变更普通合同状态，拒绝历史基线改写。
+// 参数：ctx/actor为上下文与主体，contractID/version为目标及版本，target为状态，reason为业务原因。
+// 返回值：审批启动结果或权限、状态、版本与依赖错误。
 func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID string, version uint64, target contract.Status, reason string) (StartResult, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return StartResult{}, err
@@ -924,6 +949,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	c, err := s.getContractScoped(ctx, filter, contractID)
 	if err != nil {
 		return StartResult{}, err
+	}
+	if !contract.OperationalOrigin(c) {
+		return StartResult{}, ErrImportUnsupported
 	}
 	if c.Version != version {
 		return StartResult{}, apperrors.ErrVersionConflict

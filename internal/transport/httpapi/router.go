@@ -23,6 +23,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/auditctx"
 	"github.com/j-s-te/contract-management/internal/auditoutbox"
+	"github.com/j-s-te/contract-management/internal/contractdocument"
 	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
@@ -127,6 +128,9 @@ func NewRouterWithAuditOutbox(service *application.Service, identity Identity, d
 	return newRouter(service, identity, dashboardOptions, settlementOptions, projectOptions, crmSignedCountOptions, handoverService, handoverOptions, auditOutbox, audits...)
 }
 
+// newRouter 组装合同现有认证、许可、审计及业务路由。
+// 参数：service/identity为业务与身份依赖，各Options为独立机器集成配置，handoverService为交接服务，auditOutbox/audits为持久审计依赖。
+// 返回值：完成中间件及路由注册的Gin引擎。
 func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, handoverService *application.HandoverService, handoverOptions *HandoverIntegrationOptions, auditOutbox *auditoutbox.GORMStore, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
@@ -253,6 +257,10 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.POST("/signing-records/:contractID/confirm", h.confirmSigning)
 	api.GET("/contracts/:contractID", h.getContract)
 	api.GET("/contracts/:contractID/lifecycle", h.listContractLifecycle)
+	api.GET("/contracts/:contractID/document-descriptor", h.describeContractDocument)
+	api.GET("/contract-source-capabilities", h.contractSourceCapabilities)
+	h.registerContractImports(api)
+	api.GET("/contracts/:contractID/source", h.downloadContractSource)
 	api.GET("/contracts/:contractID/preview", h.previewContract)
 	api.GET("/contracts/:contractID/export", h.exportContract)
 	api.GET("/contract-templates", h.listTemplates)
@@ -267,6 +275,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/approvals/tasks", h.listTasks)
 	api.GET("/approvals/:approvalID", h.getApproval)
 	api.GET("/approvals/:approvalID/contract-preview", h.previewApprovalContract)
+	api.GET("/approvals/:approvalID/contract-source", h.downloadApprovalSource)
 	api.POST("/approvals/:approvalID/recover", h.recoverApproval)
 	api.GET("/approval-rules", h.listRules)
 	api.POST("/approval-rules", h.createRule)
@@ -588,17 +597,15 @@ func skipAudit(method, path string) bool {
 	}
 }
 
-// sensitiveRead 识别会暴露数据的读操作（下载、导出、嵌入令牌签发）。
-//
-// AUD-IP-2026：合同正文的实际下载路由是 /approved-contracts/:id/docx、/pdf 与
-// /stamped-pdf，路径里并不会有 "download" 字样；只按关键词匹配会让这些导出完全
-// 绕过审计（包括强制审计模式下"审计写不进去就拒绝"的保护）。
+// sensitiveRead 识别正文、原件及导出读取，确保实际下载路径受审计约束。
+// 参数：path为当前请求路径，包含普通及导入原件入口。
+// 返回值：涉及敏感原件或导出返回true，否则返回false。
 func sensitiveRead(path string) bool {
 	lowered := strings.ToLower(path)
 	if containsAnyAudit(lowered, "embed", "download", "export") {
 		return true
 	}
-	for _, suffix := range []string{"/docx", "/pdf", "/stamped-pdf"} {
+	for _, suffix := range []string{"/docx", "/pdf", "/stamped-pdf", "/source", "/contract-source"} {
 		if strings.HasSuffix(lowered, suffix) {
 			return true
 		}
@@ -883,13 +890,20 @@ func (h *Handler) listDetectionCategories(c *gin.Context) {
 	writeData(c, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
+// createExternalContract 接收单个源文件及严格结构化元数据创建草稿。
+// 参数：c为multipart请求，大小受格式及入口开关共同限制。
+// 返回值：无；通过统一响应输出草稿或字段/文件校验错误。
 func (h *Handler) createExternalContract(c *gin.Context) {
 	const metadataLimit = 1 << 20
 	if _, ok := principal(c).Scope("contract.create"); !ok {
 		writeError(c, application.ErrForbidden)
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, docx.MaxDocumentSize+(2<<20))
+	maxFileSize := int64(docx.MaxDocumentSize)
+	if h.service != nil && h.service.ExternalPDFEnabled {
+		maxFileSize = contractdocument.MaxPDFSize
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFileSize+(2<<20))
 	if err := c.Request.ParseMultipartForm(metadataLimit); err != nil {
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同上传参数不合法或文件过大", nil)
 		return
@@ -919,32 +933,25 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 		return
 	}
 	fileHeader, err := c.FormFile("file")
-	if err != nil {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择外部合同 DOCX 文件", nil)
-		return
-	}
-	if fileHeader.Size <= 0 || fileHeader.Size > docx.MaxDocumentSize || !strings.EqualFold(filepath.Ext(filepath.Base(fileHeader.Filename)), ".docx") {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "仅支持不超过 10MB 的 DOCX 文件", nil)
-		return
-	}
-	mediaType, _, mimeErr := mime.ParseMediaType(fileHeader.Header.Get("Content-Type"))
-	if mimeErr != nil || mediaType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" && mediaType != "application/octet-stream" {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同文件类型必须为 DOCX", nil)
+	if err != nil || fileHeader.Size <= 0 || fileHeader.Size > maxFileSize {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请选择有效且未超过上限的DOCX或PDF原件", nil)
 		return
 	}
 	stream, err := fileHeader.Open()
 	if err != nil {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "无法读取外部合同文件", nil)
+		writeError(c, application.ErrValidation)
 		return
 	}
-	document, readErr := io.ReadAll(io.LimitReader(stream, docx.MaxDocumentSize+1))
+	document, readErr := io.ReadAll(io.LimitReader(stream, maxFileSize+1))
 	closeErr := stream.Close()
-	if readErr != nil || closeErr != nil || len(document) == 0 || len(document) > docx.MaxDocumentSize {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同文件为空、过大或无法读取", nil)
+	if readErr != nil || closeErr != nil || int64(len(document)) > maxFileSize {
+		writeError(c, application.ErrValidation)
 		return
 	}
-	if err := docx.ValidateExternalDocument(document); err != nil {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "外部合同文件不是有效的 DOCX", nil)
+	source, validationErr := contractdocument.ValidateExternalSource(fileHeader.Filename,
+		fileHeader.Header.Get("Content-Type"), document)
+	if validationErr != nil {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", validationErr.Error(), nil)
 		return
 	}
 	created, err := h.service.CreateExternalContract(c.Request.Context(), principal(c), contract.Contract{
@@ -954,6 +961,7 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 		CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
 		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
 		AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Document: document,
+		DocumentFormat: source.Format, SourceFilename: source.Filename, SourceMediaType: source.MediaType,
 		StartDate: body.StartDate, EndDate: body.EndDate,
 	})
 	if err != nil {
@@ -1090,6 +1098,9 @@ func (h *Handler) previewTemplate(c *gin.Context) {
 	writeData(c, http.StatusOK, map[string]string{"html": preview})
 }
 
+// exportContract 导出权威原件并保持实际文件类型。
+// 参数：c为已认证请求，合同读取范围由服务复核。
+// 返回值：无；PDF原样输出，旧DOCX维持既有导出行为。
 func (h *Handler) exportContract(c *gin.Context) {
 	found, err := h.service.GetContract(c.Request.Context(), principal(c), c.Param("contractID"))
 	if err != nil {
@@ -1098,6 +1109,15 @@ func (h *Handler) exportContract(c *gin.Context) {
 	}
 	if len(found.Document) == 0 {
 		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可导出的 DOCX 文档", nil)
+		return
+	}
+	format, err := storedDocumentFormat(found)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if format == "PDF" {
+		h.download(c, found.Number, ".pdf", contractdocument.PDFMediaType, found.Document)
 		return
 	}
 	filename := strings.TrimSuffix(filepath.Base(found.Number), filepath.Ext(found.Number))
@@ -1118,10 +1138,22 @@ func (h *Handler) listApprovedContracts(c *gin.Context) {
 	writeData(c, http.StatusOK, items)
 }
 
+// downloadApprovedDOCX 下载已批准DOCX，拒绝将PDF标成DOCX。
+// 参数：c为请求，下载权限与持久访问审计均由服务执行。
+// 返回值：无；成功输出DOCX原字节，否则输出统一错误。
 func (h *Handler) downloadApprovedDOCX(c *gin.Context) {
 	found, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.document.download")
 	if err != nil {
 		writeError(c, err)
+		return
+	}
+	format, formatErr := storedDocumentFormat(found)
+	if formatErr != nil {
+		writeError(c, formatErr)
+		return
+	}
+	if format == "PDF" {
+		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "源文件为PDF，没有DOCX版本", nil)
 		return
 	}
 	if len(found.Document) == 0 {
@@ -1135,10 +1167,22 @@ func (h *Handler) downloadApprovedDOCX(c *gin.Context) {
 	h.download(c, found.Number, ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", found.Document)
 }
 
+// downloadApprovedPDF 下载源PDF或转换已保存的DOCX。
+// 参数：c为已认证请求，权限及审计均失败关闭。
+// 返回值：无；PDF不经重写或LibreOffice转换。
 func (h *Handler) downloadApprovedPDF(c *gin.Context) {
 	found, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.document.download")
 	if err != nil {
 		writeError(c, err)
+		return
+	}
+	format, formatErr := storedDocumentFormat(found)
+	if formatErr != nil {
+		writeError(c, formatErr)
+		return
+	}
+	if format == "PDF" {
+		h.downloadSource(c, found)
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
@@ -1313,6 +1357,9 @@ func (h *Handler) download(c *gin.Context, name, extension, contentType string, 
 	c.Data(http.StatusOK, contentType, document)
 }
 
+// previewContract 按原件类型预览当前合同或不可变审批快照。
+// 参数：c为已认证请求，具体权限由应用服务复核。
+// 返回值：无；DOCX输出安全HTML，PDF输出受鉴权原件描述。
 func (h *Handler) previewContract(c *gin.Context) {
 	found, err := h.service.GetContract(c.Request.Context(), principal(c), c.Param("contractID"))
 	if err != nil {
@@ -1322,6 +1369,17 @@ func (h *Handler) previewContract(c *gin.Context) {
 	if len(found.Document) == 0 {
 		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该合同没有可预览的 DOCX 文档", nil)
 		return
+	}
+	if found.DocumentFormat != "" {
+		format, formatErr := storedDocumentFormat(found)
+		if formatErr != nil {
+			writeError(c, formatErr)
+			return
+		}
+		if format == "PDF" {
+			h.writeDocumentDescriptor(c, found, "/contracts/"+found.ID+"/source")
+			return
+		}
 	}
 	preview, err := docx.PreviewHTML(found.Document)
 	if err != nil {
@@ -1580,6 +1638,9 @@ func (h *Handler) recoverApproval(c *gin.Context) {
 	writeData(c, http.StatusOK, map[string]bool{"recovered": true})
 }
 
+// previewApprovalContract 按原件类型预览当前合同或不可变审批快照。
+// 参数：c为已认证请求，具体权限由应用服务复核。
+// 返回值：无；DOCX输出安全HTML，PDF输出受鉴权原件描述。
 func (h *Handler) previewApprovalContract(c *gin.Context) {
 	detail, err := h.service.GetApprovalDetail(c.Request.Context(), principal(c), c.Param("approvalID"))
 	if err != nil {
@@ -1589,6 +1650,17 @@ func (h *Handler) previewApprovalContract(c *gin.Context) {
 	if len(detail.Contract.Document) == 0 {
 		writeEnvelopeError(c, http.StatusNotFound, "CON_DOCUMENT_NOT_FOUND", "该审批合同没有可预览的 DOCX 文档", nil)
 		return
+	}
+	if detail.Contract.DocumentFormat != "" {
+		format, formatErr := storedDocumentFormat(detail.Contract)
+		if formatErr != nil {
+			writeError(c, formatErr)
+			return
+		}
+		if format == "PDF" {
+			h.writeDocumentDescriptor(c, detail.Contract, "/approvals/"+c.Param("approvalID")+"/contract-source")
+			return
+		}
 	}
 	preview, err := docx.PreviewHTML(detail.Contract.Document)
 	if err != nil {
@@ -1744,9 +1816,25 @@ func decode(c *gin.Context, target any) bool {
 func writeData(c *gin.Context, status int, data any) {
 	writeJSON(c, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(c.Request.Context()), Data: data})
 }
+
+// writeError 将真实业务错误转换为统一HTTP信封及可定位错误码。
+// 参数：c为HTTP上下文，err为业务或依赖错误。
+// 返回值：无；不泄漏内部凭据，保留权限、版本、来源及恢复冲突语义。
 func writeError(c *gin.Context, err error) {
 	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
 	switch {
+	case errors.Is(err, application.ErrImportMixedLifecycle):
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_MIXED_LIFECYCLE", "NORMAL与历史合同须分别建立批次", map[string]any{"field_path": "items[].mode"})
+	case errors.Is(err, application.ErrImportCorrectionRequired):
+		writeEnvelopeError(c, http.StatusConflict, "IMPORT_CORRECTION_REQUIRED", "已创建合同的基线不能在批次内覆盖，请先核对原合同并走更正流程", nil)
+	case errors.Is(err, application.ErrImportNeedsReview):
+		writeEnvelopeError(c, http.StatusConflict, "IMPORT_NEEDS_REVIEW", "已创建合同版本发生变化，请先核对原合同", nil)
+	case errors.Is(err, application.ErrImportConflict):
+		writeEnvelopeError(c, http.StatusConflict, "IMPORT_REVISION_CONFLICT", "批次版本或幂等请求已变化，请先查询结果", nil)
+	case errors.Is(err, application.ErrImportIdentityConflict):
+		writeEnvelopeError(c, http.StatusConflict, "IMPORT_SOURCE_ID_CONFLICT", "来源业务身份与冻结基线冲突，需要核对", nil)
+	case errors.Is(err, application.ErrImportUnsupported):
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_POLICY_UNSUPPORTED", "导入能力或此模式尚未开放", nil)
 	case errors.Is(err, application.ErrCommercialLicense):
 		writeEnvelopeError(c, http.StatusForbidden, "COMMERCIAL_LICENSE_RESTRICTED", "商业授权不允许此操作；历史查询与导出仍可使用", nil)
 	case errors.Is(err, platform.ErrUnauthenticated):

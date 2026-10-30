@@ -193,9 +193,13 @@ func (h *Handler) handoverComplete(c *gin.Context) {
 	c.JSON(http.StatusOK, envelope{Code: "OK", Message: "交接已结束", Data: gin.H{"system": "contract", "batch_id": payload.BatchID, "outcome": strings.ToUpper(payload.Outcome)}})
 }
 
-// writeHandoverError 把交接错误映射为确定性状态码，避免平台猜测结果。
+// writeHandoverError 将责任交接错误映射为确定性HTTP状态及业务错误。
+// 参数：c为HTTP上下文，err为实际交接错误。
+// 返回值：无；历史更正要求及其他错误以受控响应返回。
 func writeHandoverError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, application.ErrImportCorrectionRequired):
+		c.JSON(http.StatusConflict, envelope{Code: "IMPORT_CORRECTION_REQUIRED", Message: "历史合同负责人已冻结，需受控更正后处理责任交接；本次未转移"})
 	case err == nil:
 		return
 	case errors.Is(err, application.ErrHandoverValidation):

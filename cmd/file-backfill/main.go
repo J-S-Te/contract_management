@@ -23,8 +23,9 @@ import (
 )
 
 type contractRow struct {
-	ID, TenantID, Title, SourceFileStatus string
-	RenderedDocument                      []byte
+	ID, TenantID, Title, SourceFileStatus        string
+	DocumentFormat, SourceFilename, SourceSHA256 string
+	RenderedDocument                             []byte
 }
 
 func (contractRow) TableName() string { return "con_contract" }
@@ -36,6 +37,9 @@ type templateRow struct {
 
 func (templateRow) TableName() string { return "con_contract_template" }
 
+// main 使用显式租户与许可上下文补偿源文件及模板的网关副本。
+// 参数：无；凭据只从运行环境读取，limit与interval限制本次操作。
+// 返回值：无；配置、许可或持久化失败以非零状态退出。
 func main() {
 	licenseGate, licenseErr := consumer.FromEnvironment("contract_management")
 	if licenseErr != nil {
@@ -75,16 +79,20 @@ func main() {
 	ctx := context.Background()
 	processed, failed := 0, 0
 	var contracts []contractRow
-	if err = db.WithContext(ctx).Where("template_id IS NULL AND rendered_document IS NOT NULL AND OCTET_LENGTH(rendered_document) > 0 AND (source_file_status = '' OR source_file_status <> 'READY')").Order("id").Limit(*limit).Find(&contracts).Error; err != nil {
+	if err = db.WithContext(ctx).Where("tenant_id = ?", tenantID).Where("template_id IS NULL AND rendered_document IS NOT NULL AND OCTET_LENGTH(rendered_document) > 0 AND (source_file_status = '' OR source_file_status <> 'READY')").Order("id").Limit(*limit).Find(&contracts).Error; err != nil {
 		log.Fatal(err)
 	}
 	for _, row := range contracts {
 		if licenseGate.Check(ctx, core.MUTATE_BUSINESS) != nil {
 			log.Fatal("commercial license blocks file backfill")
 		}
-		fileID, uploadErr := gateway.Upload(ctx, "backfill-contract-"+row.ID, applicationID, "CONTRACT_EXTERNAL_SOURCE", safeName(row.Title, row.ID)+".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes.NewReader(row.RenderedDocument))
+		purpose, filename, mediaType, uploadErr := sourceBackfillDescriptor(row)
+		fileID := ""
 		if uploadErr == nil {
-			uploadErr = gateway.Bind(ctx, applicationID, fileID, "contract", row.ID, "EXTERNAL_SOURCE", safeName(row.Title, row.ID)+".docx")
+			fileID, uploadErr = gateway.Upload(ctx, "backfill-contract-"+row.ID, applicationID, purpose, filename, mediaType, bytes.NewReader(row.RenderedDocument))
+		}
+		if uploadErr == nil {
+			uploadErr = gateway.Bind(ctx, applicationID, fileID, "contract", row.ID, "EXTERNAL_SOURCE", filename)
 		}
 		state, detail := "READY", ""
 		if uploadErr != nil {

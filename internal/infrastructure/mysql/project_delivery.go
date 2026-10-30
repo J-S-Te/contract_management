@@ -53,14 +53,13 @@ func projectDeliveryEligibleStatuses() []contract.Status {
 	}
 }
 
-// ReconcileProjectDeliveries 回填项目集成启用前已进入生效状态
-// 或生效后终态的合同。
-// 同时刷新早于盖章合同标记的历史投递；
-// 复用同一 Outbox 行，防止创建第二个项目。
+// ReconcileProjectDeliveries 补建或刷新普通生效及后续终态合同的原项目出站记录。
+// 参数：ctx为扫描上下文。
+// 返回值：实际补建数量或数据库错误，复用原出站身份避免重复项目。
 func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error) {
 	created := 0
 	var legacyDeliveries []legacyProjectDeliveryCandidate
-	err := r.db.WithContext(ctx).Table("con_project_delivery_outbox AS o").
+	err := ordinaryContractScope(r.db.WithContext(ctx).Table("con_project_delivery_outbox AS o"), "c").
 		Select("o.id, o.tenant_id, o.contract_id").
 		Joins("JOIN con_contract AS c ON c.id = o.contract_id AND c.tenant_id = o.tenant_id").
 		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
@@ -88,7 +87,7 @@ func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error
 	}
 
 	var candidates []projectDeliveryCandidate
-	err = r.db.WithContext(ctx).Table("con_contract AS c").
+	err = ordinaryContractScope(r.db.WithContext(ctx).Table("con_contract AS c"), "c").
 		Select("c.tenant_id, c.id AS contract_id").
 		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
 		Where("JSON_LENGTH(c.service_items_json) > 0").
@@ -127,10 +126,16 @@ func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error
 	return created, nil
 }
 
+// enqueueProjectActivation 为符合普通来源策略的合同登记幂等项目激活事件。
+// 参数：tx为当前事务，tenantID/contractID为可信合同身份。
+// 返回值：登记结果错误；不适用的历史合同不进入普通事件流。
 func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	var row contractRecord
 	if err := tx.Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&row).Error; err != nil {
 		return err
+	}
+	if !ordinaryContractRecord(row) {
+		return nil
 	}
 	var items []contract.ServiceItem
 	if err := json.Unmarshal(row.ServiceItemsJSON, &items); err != nil {

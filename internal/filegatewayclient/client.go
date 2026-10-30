@@ -67,7 +67,9 @@ func New(baseURL string, httpClient *http.Client, token TokenSource) (*Client, e
 	return &Client{baseURL: baseURL, httpClient: httpClient, token: token}, nil
 }
 
-// Upload 将文件上传到基础平台并返回文件 ID；requestID 用于完整请求哈希幂等。
+// Upload 使用正式文件用途上传原件并保留请求级幂等身份。
+// 参数：ctx为上下文，其余标识限定请求、应用、用途、原名、MIME及原字节流。
+// 返回值：网关文件ID；上传失败或回执不完整时返回错误。
 func (c *Client) Upload(ctx context.Context, requestID, applicationID, classification, name, mediaType string, content io.Reader) (string, error) {
 	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(applicationID) == "" || strings.TrimSpace(name) == "" || content == nil {
 		return "", errors.New("request ID, application ID, file name and content are required")
@@ -82,6 +84,10 @@ func (c *Client) Upload(ctx context.Context, requestID, applicationID, classific
 		purpose = "contract.stamped-pdf"
 	case "CONTRACT_EXTERNAL_SOURCE":
 		purpose = "contract.external.source"
+	case "CONTRACT_EXTERNAL_PDF_SOURCE":
+		purpose = "contract.external.pdf-source"
+	case "CONTRACT_IMPORT_SOURCE":
+		purpose = "contract.import.source"
 	case "CONTRACT_TEMPLATE":
 		purpose = "contract.template"
 	}

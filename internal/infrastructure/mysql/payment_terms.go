@@ -238,13 +238,16 @@ func (r *Repository) ListContractPaymentTerms(ctx context.Context, tenantID, con
 	return terms, nil
 }
 
-// financialEffectiveEligible 判断当前合同能否产出合法的财务生效事件。
-// 返回 ok=false 表示"暂不具备条件"，调用方应保持静默（由 Reconcile 后续重试），
-// 而不是插入一条伪造事件。
+// financialEffectiveEligible 判断普通合同能否产生合法财务生效事件，不具备条件时不造事件。
+// 参数：tx为当前事务，tenantID/contractID为可信合同身份。
+// 返回值：合同、原付款计划、是否满足投递条件及数据库错误。
 func financialEffectiveEligible(tx *gorm.DB, tenantID, contractID string) (*contractRecord, []paymentTermRecord, bool, error) {
 	var row contractRecord
 	if err := tx.Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&row).Error; err != nil {
 		return nil, nil, false, err
+	}
+	if !ordinaryContractRecord(row) {
+		return &row, nil, false, nil
 	}
 	contractNumber := valueOrEmpty(row.ContractNumber)
 	customerID := customerIDOf(row.CRMCustomerID)
@@ -325,11 +328,12 @@ func newFinancialEffectivePayload(eventID string, row *contractRecord, terms []p
 	return json.Marshal(payload)
 }
 
-// ReconcileFinancialEffectives 为"已生效、已有付款计划、但尚无 Outbox 行"的合同补建事件。
-// 用于集成启用前已生效的存量合同，以及付款计划后补录的场景。不具备条件的合同保持静默。
+// ReconcileFinancialEffectives 补建满足条件且尚无财务出站事件的普通合同。
+// 参数：ctx为扫描上下文。
+// 返回值：实际新增数量或数据库错误；暂不具备条件的合同留待后续扫描。
 func (r *Repository) ReconcileFinancialEffectives(ctx context.Context) (int, error) {
 	var candidates []projectDeliveryCandidate
-	err := r.db.WithContext(ctx).Table("con_contract AS c").
+	err := ordinaryContractScope(r.db.WithContext(ctx).Table("con_contract AS c"), "c").
 		Select("c.tenant_id, c.id AS contract_id").
 		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
 		Where("EXISTS (SELECT 1 FROM con_contract_payment_term AS t WHERE t.tenant_id = c.tenant_id AND t.contract_id = c.id)").

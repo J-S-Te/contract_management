@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/domain/contract"
 	settlementintegration "github.com/j-s-te/contract-management/internal/integration/settlement"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -36,7 +37,12 @@ func (contractResponsibilityOutbox) TableName() string { return "con_contract_re
 // 参数：row 为权威合同行。
 // 返回值：负责人存在且合同未撤销或归档时为 true。
 func responsibilityActive(row contractRecord) bool {
-	return row.OwnerUserID != "" && row.Status != "terminated" && row.Status != "archived"
+	eligible := ordinaryContractRecord(row)
+	if !eligible && row.OriginKind == "IMPORTED" && row.ImportMode == "CONTINUE_LIVE" && row.ImportResponsibilityActivatedAt != nil {
+		var policy contract.ImportPolicy
+		eligible = json.Unmarshal(row.ImportPolicyJSON, &policy) == nil && contract.ValidateImportPolicy(contract.ImportContinueLive, &policy) == nil && policy.ResponsibilityMode == "ACTIVATE_ON_RELEASE"
+	}
+	return eligible && row.OwnerUserID != "" && row.Status != "terminated" && row.Status != "archived"
 }
 
 // newResponsibilityPayload 构造不含金额的独立责任事件。

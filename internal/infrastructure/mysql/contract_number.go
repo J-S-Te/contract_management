@@ -6,13 +6,23 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
+	"github.com/j-s-te/contract-management/internal/contractdocument"
 	"github.com/j-s-te/contract-management/internal/docx"
 )
 
-// 使用已审批快照，绝不使用管理员可能已替换的模板。
+// approvedNumberUpdates 仅为DOCX回写正文编号，PDF保持原字节与哈希。
+// 参数：current为审批锁定的合同行，number为本次正式系统编号。
+// 返回值：应更新的字段；未知类型或无效文档返回错误，事务不得完成。
 func approvedNumberUpdates(current contractRecord, number string) (map[string]any, error) {
 	updates := map[string]any{"contract_number": number}
 	if len(current.RenderedDocument) == 0 {
+		return updates, nil
+	}
+	format, err := contractdocument.EffectiveDocumentFormat(current.DocumentFormat, current.RenderedDocument)
+	if err != nil {
+		return nil, err
+	}
+	if format == contractdocument.FormatPDF {
 		return updates, nil
 	}
 	document, err := docx.ReplaceSystemContractNumber(current.RenderedDocument, number)

@@ -53,13 +53,16 @@ type handoverReceiptRecord struct {
 func (handoverReceiptRecord) TableName() string { return "con_handover_receipt" }
 
 type handoverContractRecord struct {
-	ID          string    `gorm:"column:id;primaryKey"`
-	TenantID    string    `gorm:"column:tenant_id"`
-	Title       string    `gorm:"column:title"`
-	OwnerUserID string    `gorm:"column:owner_user_id"`
-	Status      string    `gorm:"column:status"`
-	Version     uint64    `gorm:"column:version"`
-	UpdatedAt   time.Time `gorm:"column:updated_at"`
+	OriginKind       string
+	ImportMode       string
+	ImportPolicyJSON []byte    `gorm:"type:json"`
+	ID               string    `gorm:"column:id;primaryKey"`
+	TenantID         string    `gorm:"column:tenant_id"`
+	Title            string    `gorm:"column:title"`
+	OwnerUserID      string    `gorm:"column:owner_user_id"`
+	Status           string    `gorm:"column:status"`
+	Version          uint64    `gorm:"column:version"`
+	UpdatedAt        time.Time `gorm:"column:updated_at"`
 }
 
 func (handoverContractRecord) TableName() string { return "con_contract" }
@@ -153,7 +156,9 @@ func (r *Repository) ListOwnedResponsibilities(ctx context.Context, tenantID, us
 	return items, nil
 }
 
-// listContractResponsibilities 返回该用户负责的未结束合同。
+// listContractResponsibilities 返回用户全部未结束合同，不隐藏尚需人工处理的历史责任。
+// 参数：ctx为上下文，tenantID/userID为受信范围，cursor/limit为分页。
+// 返回值：可定位的责任清单；历史责任转移由写路径明确阻止。
 func (r *Repository) listContractResponsibilities(ctx context.Context, tenantID, userID, cursor string, limit int) ([]application.HandoverResponsibility, error) {
 	var records []handoverContractRecord
 	query := r.db.WithContext(ctx).Model(&handoverContractRecord{}).
@@ -198,6 +203,9 @@ func (r *Repository) TransferOwnership(ctx context.Context, in application.Hando
 				return application.ErrHandoverNotFound
 			}
 			return err
+		}
+		if !ordinaryContractRecord(contractRecord{OriginKind: contractRow.OriginKind, ImportMode: contractRow.ImportMode, ImportPolicyJSON: contractRow.ImportPolicyJSON}) {
+			return application.ErrImportCorrectionRequired
 		}
 		// 版本或当前负责人不符：写入 REJECTED 回执让平台看到确定性结论，而不是猜测。
 		if contractRow.Version != in.ExpectedVersion || contractRow.OwnerUserID != in.FromUserID {
