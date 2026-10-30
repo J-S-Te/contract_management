@@ -49,6 +49,10 @@ func (s *Service) ReleaseImportItem(ctx context.Context, actor Principal, item, 
 	if e = importAccess(actor, b, "contract.import.release"); e != nil {
 		return b, e
 	}
+	projectRetry, e := s.prepareImportProjectRetry(ctx, actor, b, item, target, version, phase)
+	if e != nil {
+		return b, e
+	}
 	recovery, e := s.prepareImportFinanceRecovery(ctx, store, actor, b, item, target, version, phase)
 	if e != nil {
 		return b, e
@@ -59,6 +63,15 @@ func (s *Service) ReleaseImportItem(ctx context.Context, actor Principal, item, 
 		}
 		if current.Confirmation == nil || current.Confirmation.State != "APPROVED" || !i.Confirmed || contract.ValidateHistoryEvidence(i.Item) != nil {
 			return ErrImportConflict
+		}
+		if projectRetry != nil {
+			if t.State != "BLOCKED" || t.Epoch+1 != projectRetry.Epoch ||
+				t.CommandID != projectRetry.CommandID || t.RequestPayload != projectRetry.RequestPayload ||
+				t.CommandGeneration != projectRetry.CommandGeneration {
+				return ErrImportConflict
+			}
+			*t = *projectRetry
+			return nil
 		}
 		if recovery != nil {
 			if t.State != "BLOCKED" || t.CommandID != recovery.OldCommandID || t.Epoch != recovery.OldEpoch || t.CommandGeneration != recovery.OldGeneration {
@@ -133,7 +146,9 @@ func (s *Service) DispatchImportTargetOnce(ctx context.Context) error {
 	defer cancel()
 	e = s.executeImportTarget(ctx, store, b, item, &task)
 	task.LeaseUntil = time.Time{}
-	if e != nil {
+	if e == nil {
+		task.ErrorCode = ""
+	} else {
 		task.ErrorCode = "IMPORT_TARGET_WAITING"
 		var wait *ImportTargetWaitError
 		if errors.As(e, &wait) {
@@ -214,39 +229,12 @@ func (s *Service) freezeImportRequest(ctx context.Context, b contract.ImportBatc
 // 返回值：PROJECT_BOUND精确匹配才成功。
 func (s *Service) executeImportProject(ctx context.Context, b contract.ImportBatch, item contract.ImportItemState, c contract.Contract, t *contract.ImportTarget) error {
 	policy, _ := contract.ImportDigest(item.Item.Policy)
-	evidence := item.Item.HistoryEvidence
-	if c.StartDate == nil {
-		return &ImportTargetWaitError{Code: "IMPORT_ORIGINAL_START_DATE_REQUIRED"}
+	request, e := importProjectRequest(b, item, c, *t)
+	if e != nil {
+		return e
 	}
-	projection := map[string]any{"contract_id": c.ID,
-		"contract_number": c.Number,
-		"contract_version": strconv.FormatUint(c.Version,
-			10),
-		"contract_name": c.Title,
-		"customer":      c.CustomerName,
-		"customer_id": strconv.FormatUint(c.CRMCustomerID,
-			10),
-		"effective_at": c.StartDate.UTC(),
-		"services":     importProjectServices(c.ID, c.ServiceItems)}
-	request := map[string]any{"schema_version": 1,
-		"command_id":  t.CommandID,
-		"tenant_id":   b.TenantID,
-		"contract_id": c.ID,
-		"contract_version": strconv.FormatUint(c.Version,
-			10),
-		"origin_import_item_id": item.ID,
-		"source_revision":       item.SourceRevision,
-		"policy_digest":         policy,
-		"release_version":       t.ReleaseVersion,
-		"import_mode":           item.Item.Mode,
-		"project_mode":          item.Item.Policy.ProjectMode,
-		"relationship":          evidence.Relationship,
-		"target_owner_user_id":  evidence.TargetOwnerUserID,
-		"contract":              projection}
-	if evidence.ExistingProjectID != "" {
-		request["existing_project_id"] = evidence.ExistingProjectID
-		request["expected_project_version"] = evidence.ExpectedProjectVersion
-		request["original_contract_ref"] = evidence.OriginalContractRef
+	if t.RequestPayload != "" && validateFrozenProjectRequest(request, t.RequestPayload) != nil {
+		return ErrImportTargetReceipt
 	}
 	if e := s.freezeImportRequest(ctx, b, item, t, request); e != nil {
 		return e
@@ -270,7 +258,7 @@ func (s *Service) executeImportProject(ctx context.Context, b contract.ImportBat
 	if reply.CommandID != t.CommandID || reply.SchemaVersion != 1 || reply.TenantID != b.TenantID || reply.ItemID != item.ID || reply.SourceRevision != item.SourceRevision || reply.PolicyDigest != policy || reply.ReleaseVersion != t.ReleaseVersion || reply.ContractID != c.ID || reply.ProjectID == "" || reply.ProjectVersion == 0 || reply.Status != "PROJECT_BOUND" {
 		return ErrImportTargetReceipt
 	}
-	if evidence.ExistingProjectID != "" && reply.ProjectID != evidence.ExistingProjectID {
+	if expected := item.Item.HistoryEvidence.ExistingProjectID; expected != "" && reply.ProjectID != expected {
 		return ErrImportTargetReceipt
 	}
 	t.State, t.ReceiptID = "COMPLETE", reply.ProjectID

@@ -43,13 +43,15 @@ type ImportConfirmationCommand struct {
 	At      time.Time `json:"at"`
 }
 type ImportTargetCommandHistory struct {
-	CommandID      string    `json:"command_id"`
-	Generation     uint64    `json:"command_generation"`
-	RequestDigest  string    `json:"request_digest"`
-	RequestPayload string    `json:"request_payload,omitempty"`
-	HTTPStatus     int       `json:"http_status"`
-	RecipientCode  string    `json:"recipient_code"`
-	RejectedAt     time.Time `json:"rejected_at"`
+	CommandID           string     `json:"command_id"`
+	Generation          uint64     `json:"command_generation"`
+	RequestDigest       string     `json:"request_digest"`
+	RequestPayload      string     `json:"request_payload,omitempty"`
+	HTTPStatus          int        `json:"http_status"`
+	RecipientCode       string     `json:"recipient_code"`
+	RejectedAt          time.Time  `json:"rejected_at"`
+	RecoveryRequestedBy string     `json:"recovery_requested_by,omitempty"`
+	RecoveryRequestedAt *time.Time `json:"recovery_requested_at,omitempty"`
 }
 type ImportTarget struct {
 	CommandGeneration     uint64                       `json:"command_generation"`
