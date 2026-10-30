@@ -15,7 +15,18 @@ import (
 // 分组注释标明每组配置归属的子系统；字段取值合法性由 validate 统一校验，
 // 校验失败聚合返回全部问题，便于一次性修正部署配置。
 type Config struct {
-	HTTPAddress string
+	ExternalPDFEnabled              bool
+	ContractImportEnabled           bool
+	ContractImportHistoryEnabled    bool
+	ContractImportConfirmationRoles []string
+	ImportProject                   ImportTargetConfig
+	ImportFinance                   ImportTargetConfig
+	ImportReport                    ImportTargetConfig
+	ImportReportRead                ImportReportReadConfig
+	ContractImportMaxItems          int
+	ContractImportMaxConcurrency    int
+	ContractImportStagingTTL        time.Duration
+	HTTPAddress                     string
 	// TrustedProxies 是唯一允许采信 X-Real-IP / X-Forwarded-For 的直接对端集合。
 	TrustedProxies         []string
 	MySQLDSN               string
@@ -150,9 +161,9 @@ type Config struct {
 	StampedFileScope         string
 }
 
-// Load 从环境变量加载合同子系统配置并执行完整校验；任一必填项缺失或非法时
-// 返回聚合错误（包含全部问题，而非首个）。缺省值即生产安全值；机器接入默认
-// 关闭，需经环境变量显式开启。
+// Load 加载并验证合同进程的运行与导入资源配置。
+// 参数：无；从当前进程环境读取，不读取业务数据库。
+// 返回值：完整配置；缺失必填项或非法值返回错误。
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
@@ -235,6 +246,9 @@ func Load() (Config, error) {
 		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload platform:file:bind"),
 	}
 	var err error
+	if err = loadImportConfig(&c); err != nil {
+		return c, err
+	}
 	if c.NodeTimeout, err = duration("APPROVAL_NODE_TIMEOUT", 72*time.Hour); err != nil {
 		return c, err
 	}
@@ -312,13 +326,35 @@ func Load() (Config, error) {
 	if c.CRMReferenceEnabled, err = strconv.ParseBool(env("CRM_REFERENCE_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("CRM_REFERENCE_ENABLED: %w", err)
 	}
+	if err := loadImportHistoryConfig(&c); err != nil {
+		return c, err
+	}
 	if err := c.validate(); err != nil {
 		return c, err
 	}
 	return c, nil
 }
 
+// validate 检查合同运行配置及新增导入开关的完整性和边界。
+// 参数：无；使用接收者配置c。
+// 返回值：配置有效返回nil，缺失、冲突或非法值返回可定位错误。
 func (c Config) validate() error {
+	if c.ContractImportEnabled {
+		if c.StampedFileMode == "legacy" {
+			return fmt.Errorf("CONTRACT_IMPORT_ENABLED requires configured file gateway storage")
+		}
+		for _, requiredScope := range []string{"platform:file:upload", "platform:file:bind", "platform:file:download"} {
+			found := false
+			for _, scope := range strings.Fields(c.StampedFileScope) {
+				if scope == requiredScope {
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("CONTRACT_IMPORT_ENABLED requires FILE_GATEWAY_SCOPE upload, bind and download")
+			}
+		}
+	}
 	if c.StampedFileMode != "legacy" && c.StampedFileMode != "dual" && c.StampedFileMode != "required" {
 		return fmt.Errorf("STAMPED_FILE_GATEWAY_MODE must be legacy, dual or required")
 	}

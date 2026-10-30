@@ -14,11 +14,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// TransitionDirect 在版本和来源门禁下执行普通合同直接状态迁移。
+// 参数：ctx为上下文，tenantID/contractID为身份，expectedVersion为版本，target为状态，actorUserID/reason/idempotencyKey为操作者、理由和稳定键。
+// 返回值：迁移或幂等结果；来源、版本和状态冲突返回错误。
 func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID string, expectedVersion uint64, target contract.Status, actorUserID, reason, idempotencyKey string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row contractRecord
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "tenant_id", "status", "version").
+			Select("id", "tenant_id", "status", "version", "origin_kind", "import_mode", "import_policy_json").
 			Where("tenant_id = ? AND id = ?", tenantID, contractID).
 			Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -29,6 +32,9 @@ func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID 
 		}
 		if row.Version != expectedVersion {
 			return apperrors.ErrVersionConflict
+		}
+		if !ordinaryContractRecord(row) {
+			return apperrors.ErrStateConflict
 		}
 		var activeStatusChanges int64
 		if err := tx.Model(&approvalInstanceRecord{}).
@@ -80,6 +86,9 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 		SourceFileID: c.SourceFileID, SourceFileStatus: c.SourceFileStatus,
 		Status: string(c.Status), StartDate: c.StartDate, EndDate: c.EndDate, ContentHash: stringPtr(c.ContentHash), Version: 1,
 		CreatedAt: now, CreatedBy: actorUserID, UpdatedAt: now, UpdatedBy: actorUserID,
+	}
+	if err := applyContractSource(&record, c); err != nil {
+		return err
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {

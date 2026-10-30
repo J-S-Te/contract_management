@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 12
+  version: 14
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -21,6 +21,34 @@ semantics:
     - 企业合同仪表盘 GET /api/v1/dashboard 同时要求 admin 角色与 contract.read，并始终限制当前 tenant_id。
 
 permissions:
+  - code: contract.import.approve
+    name: 审批历史合同导入确认
+    resource: contract_import
+    action: approve
+    risk_level: HIGH
+    enforced_by: [独立历史确认审批命令]
+    constraints: [当前权限及冻结受派角色，不代替普通合同审批]
+  - code: contract.import.release
+    name: 分目标放行历史合同导入
+    resource: contract_import
+    action: release
+    risk_level: HIGH
+    enforced_by: [逐目标放行接口]
+    constraints: [已批准历史基线和精确目标版本，不代替财务本地核对]
+  - code: contract.import.preview
+    name: 查看和预检合同导入批次
+    resource: contract_import
+    action: preview
+    risk_level: HIGH
+    enforced_by: [批次创建、文件暂存、清单和预检接口]
+    constraints: [可信租户及创建人或全范围]
+  - code: contract.import.commit
+    name: 提交和恢复合同导入批次
+    resource: contract_import
+    action: commit
+    risk_level: HIGH
+    enforced_by: [批次提交、暂停、恢复及后台逐项执行]
+    constraints: [仍需contract.create和实时范围，不免审批生效]
   - code: opportunity_intake.receive
     name: 接收 CRM 商机签单事件
     resource: opportunity_intake
@@ -196,6 +224,10 @@ roles:
   - code: admin
     name: 超级管理员
     permissions:
+      - contract.import.approve
+      - contract.import.release
+      - contract.import.preview
+      - contract.import.commit
       - contract.read
       - contract.create
       - contract.edit
@@ -232,6 +264,7 @@ roles:
   - code: sales_director
     name: 销售总监
     permissions:
+      - contract.import.approve
       - contract.read
       - approval.view
       - approval.process
@@ -239,6 +272,7 @@ roles:
   - code: tech_director
     name: 技术总监
     permissions:
+      - contract.import.approve
       - contract.read
       - approval.view
       - approval.process
@@ -246,6 +280,8 @@ roles:
   - code: finance_director
     name: 财务总监
     permissions:
+      - contract.import.approve
+      - contract.import.release
       - contract.read
       - approval.view
       - approval.process

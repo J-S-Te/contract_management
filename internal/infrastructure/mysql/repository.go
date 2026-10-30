@@ -308,12 +308,15 @@ func dashboardStatusIsActive(status contract.Status, endDate *time.Time, today t
 	return endDate == nil || !endDate.Before(today)
 }
 
+// ContractDashboard 汇总普通来源合同的经营看板数据。
+// 参数：ctx为上下文，tenantID为租户，ownerUserID为责任人，today为业务日期，limit为明细上限。
+// 返回值：看板统计与明细或数据库错误。
 func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserID string, today time.Time, limit int) (contract.Dashboard, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
 	contractScope := func() *gorm.DB {
-		query := r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id = ?", tenantID)
+		query := ordinaryContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), "").Where("tenant_id = ?", tenantID)
 		if ownerUserID != "" {
 			query = query.Where("owner_user_id = ?", ownerUserID)
 		}
@@ -376,11 +379,16 @@ func (r *Repository) ContractDashboard(ctx context.Context, tenantID, ownerUserI
 	}, nil
 }
 
+// ContractDashboardScoped 按可信组织及个人范围汇总普通合同经营看板。
+// 参数：ctx为上下文，filter为可信范围，today为业务日期，limit为明细上限。
+// 返回值：范围内统计及明细，或范围与数据库错误。
 func (r *Repository) ContractDashboardScoped(ctx context.Context, filter contract.ScopeFilter, today time.Time, limit int) (contract.Dashboard, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
-	contractScope := func() *gorm.DB { return applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter) }
+	contractScope := func() *gorm.DB {
+		return ordinaryContractScope(applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter), "")
+	}
 	currencyTotals, totalContracts, totalAmount, err := dashboardCurrencyTotals(contractScope())
 	if err != nil {
 		return contract.Dashboard{}, err
@@ -593,6 +601,9 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 	return result, nil
 }
 
+// StartApproval 在源事务中启动普通合同审批并冻结对应原件快照。
+// 参数：ctx为上下文，in为工作流已冻结的审批输入。
+// 返回值：幂等启动结果或来源、版本、状态及数据库错误。
 func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprovalActivityInput) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing approvalInstanceRecord
@@ -613,6 +624,9 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 		}
 		if err != nil {
 			return err
+		}
+		if !ordinaryContractRecord(current) {
+			return apperrors.ErrStateConflict
 		}
 		if current.Version != in.ExpectedVersion {
 			return apperrors.ErrVersionConflict
@@ -758,6 +772,9 @@ func (r *Repository) RecordCommand(ctx context.Context, in workflows.RecordComma
 	})
 }
 
+// CompleteApproval 应用普通审批终决议并按文档格式处理编号及业务派生。
+// 参数：ctx为上下文，in为可信工作流审批结果。
+// 返回值：幂等应用结果或来源、版本、原件和数据库错误。
 func (r *Repository) CompleteApproval(ctx context.Context, in workflows.CompleteApprovalActivityInput) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var instance approvalInstanceRecord
@@ -775,13 +792,16 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		}
 
 		var current contractRecord
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format", "rendered_document", "content", "template_values_json").
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format", "rendered_document", "document_format", "content", "template_values_json", "origin_kind", "import_mode", "import_policy_json").
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
 		}
 		if err != nil {
 			return err
+		}
+		if !ordinaryContractRecord(current) {
+			return apperrors.ErrStateConflict
 		}
 		actor := in.ActorUserID
 		if actor == "" {
@@ -956,9 +976,13 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 	return records
 }
 
+// contractFromRecord 将完整持久记录恢复为含来源和文档分型的合同。
+// 参数：record为同租户查询得到的权威合同行。
+// 返回值：业务合同；损坏历史策略保留为不可放行版本。
 func contractFromRecord(record contractRecord) contract.Contract {
 	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CRMCustomerID: uintValueOrZero(record.CRMCustomerID), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerIdentityID: valueOrEmpty(record.OwnerIdentityID), OwnerOrgID: valueOrEmpty(record.OwnerOrgID), ProjectID: valueOrEmpty(record.ProjectID), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, SourceFileID: record.SourceFileID, SourceFileStatus: record.SourceFileStatus, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	result.CreatedBy = record.CreatedBy
+	readContractSource(record, &result)
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel
 	}

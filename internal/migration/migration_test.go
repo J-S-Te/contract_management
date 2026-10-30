@@ -6,7 +6,7 @@ import (
 	"github.com/j-s-te/contract-management/migrations"
 )
 
-// TestEmbeddedMigrationsAreContiguous 验证嵌入迁移连续且包含责任流。
+// TestEmbeddedMigrationsAreContiguous 验证迁移连续且包含文档来源扩展。
 // 参数：t 为测试上下文。
 // 返回值：无。
 func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
@@ -14,7 +14,7 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
-	if len(items) != 32 ||
+	if len(items) != 35 ||
 		items[0].version != 1 || items[0].name != "contract_workflow" ||
 		items[1].version != 2 || items[1].name != "single_active_status_change" ||
 		items[2].version != 3 || items[2].name != "username_snapshots" ||
@@ -46,7 +46,10 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 		items[28].version != 29 || items[28].name != "template_version" ||
 		items[29].version != 30 || items[29].name != "template_file_lifecycle" ||
 		items[30].version != 31 || items[30].name != "template_file_upload_attempt" ||
-		items[31].version != 32 || items[31].name != "contract_responsibility" {
+		items[31].version != 32 || items[31].name != "contract_responsibility" ||
+		items[32].version != 33 || items[32].name != "contract_document_source" ||
+		items[33].version != 34 || items[33].name != "contract_import_batches" ||
+		items[34].version != 35 || items[34].name != "contract_import_history" {
 		t.Fatalf("items = %#v", items)
 	}
 }

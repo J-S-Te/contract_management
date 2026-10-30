@@ -50,46 +50,64 @@ func stringValue(value *string) string {
 }
 
 type contractRecord struct {
-	ID                   string `gorm:"primaryKey"`
-	TenantID             string
-	ContractNumber       *string
-	ContractNumberFormat string
-	Title                string
-	ContractType         string
-	ServiceType          string
-	OpportunityID        *string
-	OpportunityName      *string
-	CRMCustomerID        *uint64
-	CustomerName         *string
-	CustomerAddress      *string
-	CustomerContact      *string
-	CustomerPhone        *string
-	OwnerIdentityID      *string
-	OwnerOrgID           *string
-	ProjectID            *string
-	SystemsJSON          []byte `gorm:"type:json"`
-	ServiceItemsJSON     []byte `gorm:"type:json"`
-	CustomerCreditLevel  *string
-	OwnerUserID          string
-	OwnerDisplayName     string
-	AmountMinor          int64
-	Currency             string
-	Content              string
-	TemplateID           *string
-	TemplateValuesJSON   []byte `gorm:"type:json"`
-	RenderedDocument     []byte `gorm:"type:longblob"`
-	SourceFileID         string
-	SourceFileStatus     string
-	SourceFileLastError  string
-	Status               string
-	StartDate            *time.Time
-	EndDate              *time.Time
-	ContentHash          *string
-	Version              uint64
-	CreatedAt            time.Time
-	CreatedBy            string
-	UpdatedAt            time.Time
-	UpdatedBy            string
+	ID                              string `gorm:"primaryKey"`
+	TenantID                        string
+	ContractNumber                  *string
+	ContractNumberFormat            string
+	Title                           string
+	ContractType                    string
+	ServiceType                     string
+	OpportunityID                   *string
+	OpportunityName                 *string
+	CRMCustomerID                   *uint64
+	CustomerName                    *string
+	CustomerAddress                 *string
+	CustomerContact                 *string
+	CustomerPhone                   *string
+	OwnerIdentityID                 *string
+	OwnerOrgID                      *string
+	ProjectID                       *string
+	SystemsJSON                     []byte `gorm:"type:json"`
+	ServiceItemsJSON                []byte `gorm:"type:json"`
+	CustomerCreditLevel             *string
+	OwnerUserID                     string
+	OwnerDisplayName                string
+	AmountMinor                     int64
+	Currency                        string
+	Content                         string
+	TemplateID                      *string
+	TemplateValuesJSON              []byte `gorm:"type:json"`
+	RenderedDocument                []byte `gorm:"type:longblob"`
+	DocumentFormat                  string `gorm:"default:null"`
+	SourceMediaType                 string `gorm:"default:null"`
+	SourceFilename                  string `gorm:"default:null"`
+	SourceSHA256                    string `gorm:"default:null"`
+	ExternalPaperNumber             string `gorm:"default:null"`
+	OriginKind                      string `gorm:"default:NORMAL"`
+	ImportMode                      string `gorm:"default:null"`
+	OriginImportItemID              *string
+	HistoricalStatus                string `gorm:"default:null"`
+	HistoricalCustomerName          string `gorm:"default:null"`
+	HistoricalOwnerLabel            string `gorm:"default:null"`
+	ImportSourceRevision            uint64
+	ImportReportReleaseVersion      uint64
+	ImportReportRequiredChannels    string
+	DeclaredSignedDate              *time.Time
+	ImportConfirmedAt               *time.Time
+	ImportResponsibilityActivatedAt *time.Time
+	ImportPolicyJSON                []byte `gorm:"type:json"`
+	SourceFileID                    string
+	SourceFileStatus                string
+	SourceFileLastError             string
+	Status                          string
+	StartDate                       *time.Time
+	EndDate                         *time.Time
+	ContentHash                     *string
+	Version                         uint64
+	CreatedAt                       time.Time
+	CreatedBy                       string
+	UpdatedAt                       time.Time
+	UpdatedBy                       string
 }
 
 func (contractRecord) TableName() string { return "con_contract" }

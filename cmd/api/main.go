@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/gin-gonic/gin"
 	"log/slog"
 	"net/http"
 	"os"
@@ -26,6 +27,9 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// main 装配合同API及默认关闭的文件接入能力。
+// 参数：无；使用受校验的进程运行配置。
+// 返回值：无；初始化失败以非零状态退出。
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	splitProcess, err := bootstrap.RuntimeProcessMode("contract-api")
@@ -129,17 +133,23 @@ func main() {
 		crmContractReferences = &crm.ContractReferenceDirectory{BaseURL: cfg.CRMReferenceBaseURL, TokenSource: crmTokenSource}
 	}
 	service := &application.Service{
-		LicenseGate:             licenseGate,
-		Repo:                    repository,
-		Templates:               repository,
-		Temporal:                temporalClient,
-		TaskQueue:               cfg.TemporalTaskQueue,
-		NodeTimeout:             cfg.NodeTimeout,
-		ReminderInterval:        cfg.ReminderInterval,
-		Personnel:               personnelDirectory,
-		OpportunityLinkNotifier: &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
-		DetectionCategories:     projectDetectionCategories,
-		CRMContractReferences:   crmContractReferences,
+		ExternalPDFEnabled:              cfg.ExternalPDFEnabled,
+		ContractImportEnabled:           cfg.ContractImportEnabled,
+		ContractImportHistoryEnabled:    cfg.ContractImportHistoryEnabled,
+		ContractImportConfirmationRoles: cfg.ContractImportConfirmationRoles,
+		ContractImportMaxItems:          cfg.ContractImportMaxItems,
+		ContractImportStagingTTL:        cfg.ContractImportStagingTTL,
+		LicenseGate:                     licenseGate,
+		Repo:                            repository,
+		Templates:                       repository,
+		Temporal:                        temporalClient,
+		TaskQueue:                       cfg.TemporalTaskQueue,
+		NodeTimeout:                     cfg.NodeTimeout,
+		ReminderInterval:                cfg.ReminderInterval,
+		Personnel:                       personnelDirectory,
+		OpportunityLinkNotifier:         &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, Client: &http.Client{Timeout: 5 * time.Second}},
+		DetectionCategories:             projectDetectionCategories,
+		CRMContractReferences:           crmContractReferences,
 	}
 	if cfg.StampedFileMode != "legacy" {
 		gatewayToken := filegatewayclient.NewClientCredentialsTokenSource(ctx, strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token", cfg.StampedFileClientID, cfg.StampedFileClientSecret, cfg.StampedFileScope)
@@ -257,6 +267,29 @@ func main() {
 		os.Exit(1)
 	}
 	// 人员交接机器协议：仅在启用时注册端点；未启用时不暴露该组路由。
+	if resolver, ok := personnelDirectory.(application.HandoverOwnerResolver); ok {
+		service.ImportOwners = resolver
+	}
+	for _, entry := range []struct {
+		cfg config.ImportTargetConfig
+		out **application.ImportTargetTransport
+	}{{cfg.ImportProject, &service.ImportProject}, {cfg.ImportFinance, &service.ImportFinance}, {cfg.ImportReport, &service.ImportReport}} {
+		if entry.cfg.BaseURL != "" {
+			*entry.out = &application.ImportTargetTransport{BaseURL: entry.cfg.BaseURL, TokenSource: filegatewayclient.NewClientCredentialsTokenSource(ctx, entry.cfg.TokenURL, entry.cfg.ClientID, entry.cfg.ClientSecret, entry.cfg.Scope)}
+		}
+	}
+	service.ImportActorResolver = identity.ResolveImportActor
+	go service.RunImportDispatcher(ctx)
+	service.ImportReportReadConfigured = cfg.ImportReportRead.ClientID != ""
+	var importReportVerifier platform.ClientCredentialsTokenVerifier
+	if cfg.ImportReportRead.ClientID != "" {
+		importReportVerifier, err = platform.NewClientCredentialsTokenVerifier(ctx, platform.ClientCredentialsVerifierOptions{Issuer: cfg.ImportReportRead.Issuer, Audience: cfg.ImportReportRead.Audience, PublicKeyPath: cfg.ImportReportRead.PublicKeyPath, ClientID: cfg.ImportReportRead.ClientID, TenantID: cfg.OIDCTenantID, CallerApplicationCode: "data_analysis", CallerEnvironmentCode: cfg.ImportReportRead.CallerEnvironmentCode, RequiredScope: "contract.import.report.read"})
+		if err != nil {
+			logger.Error("initialize import report verifier", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	var handoverService *application.HandoverService
 	if cfg.HandoverMachineEnabled {
 		handoverService, err = application.NewHandoverService(store.NewRepository(db),
@@ -284,6 +317,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 
+	httpapi.RegisterImportReportSource(server.Handler.(*gin.Engine), service, importReportVerifier)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

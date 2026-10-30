@@ -32,11 +32,17 @@ func draftActorAllowed(actor Principal, c contract.Contract) bool {
 	return false
 }
 
+// CanEditDraft 判断当前主体是否可编辑普通来源草稿，历史基线禁止普通编辑。
+// 参数：actor为当前可信主体，c为目标合同。
+// 返回值：可编辑返回true，否则返回false。
 func (s *Service) CanEditDraft(actor Principal, c contract.Contract) bool {
 	filter, ok := actor.Scope("contract.edit")
-	return ok && c.Status == contract.StatusDraft && canAccessContract(filter, c) && draftActorAllowed(actor, c)
+	return ok && contract.OperationalOrigin(c) && c.Status == contract.StatusDraft && canAccessContract(filter, c) && draftActorAllowed(actor, c)
 }
 
+// UpdateContractDraft 编辑普通草稿元数据并保留外部原件与来源。
+// 参数：ctx为请求上下文，actor为操作者，id及expectedVersion限定合同，input为新元数据。
+// 返回值：更新后合同；权限、版本、原件财务冻结或存储冲突返回错误。
 func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id string, expectedVersion uint64, input contract.Contract) (contract.Contract, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return contract.Contract{}, err
@@ -48,6 +54,9 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 	current, err := s.getContractScoped(ctx, filter, id)
 	if err != nil {
 		return current, err
+	}
+	if !contract.OperationalOrigin(current) {
+		return current, ErrImportCorrectionRequired
 	}
 	if !draftActorAllowed(actor, current) {
 		return current, ErrForbidden
@@ -100,6 +109,8 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 			return current, ErrValidation
 		}
 		input.Content, input.Document = current.Content, current.Document
+		input.DocumentFormat, input.SourceMediaType = current.DocumentFormat, current.SourceMediaType
+		input.SourceFilename, input.SourceSHA256 = current.SourceFilename, current.SourceSHA256
 		if len(input.TemplateValues) != 0 {
 			return current, ErrValidation
 		}
@@ -113,6 +124,9 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 	prepared.OwnerUserID, prepared.OwnerDisplayName = current.OwnerUserID, current.OwnerDisplayName
 	prepared.CreatedAt, prepared.CreatedBy, prepared.Status = current.CreatedAt, current.CreatedBy, current.Status
 	prepared.SourceFileID, prepared.SourceFileStatus = current.SourceFileID, current.SourceFileStatus
+	prepared.ExternalPaperNumber, prepared.OriginKind = current.ExternalPaperNumber, current.OriginKind
+	prepared.ImportMode, prepared.OriginImportItemID = current.ImportMode, current.OriginImportItemID
+	prepared.ImportPolicy = current.ImportPolicy
 	source := []byte(prepared.Content)
 	if len(prepared.Document) > 0 {
 		source = prepared.Document

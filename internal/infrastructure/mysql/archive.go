@@ -11,6 +11,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// ArchiveExpired 扫描并归档满足普通来源和日期条件的合同。
+// 参数：ctx为上下文，in为扫描日期及通知收件人等工作流输入。
+// 返回值：实际归档统计或数据库错误，不处理历史策略合同。
 func (r *Repository) ArchiveExpired(ctx context.Context, in workflows.ExpiredArchiveInput) (workflows.ExpiredArchiveResult, error) {
 	date, err := time.Parse(time.DateOnly, in.AsOfDate)
 	if err != nil {
@@ -18,7 +21,7 @@ func (r *Repository) ArchiveExpired(ctx context.Context, in workflows.ExpiredArc
 	}
 	statuses := []contract.Status{contract.StatusActive, contract.StatusInProgress, contract.StatusPendingPay, contract.StatusCompleted, contract.StatusTerminated}
 	var candidates []contractRecord
-	err = r.db.WithContext(ctx).Select("id", "tenant_id", "owner_user_id", "status").
+	err = ordinaryContractScope(r.db.WithContext(ctx), "").Select("id", "tenant_id", "owner_user_id", "status").
 		Where("end_date < ? AND status IN ?", date, statuses).Order("end_date, id").Limit(1000).Find(&candidates).Error
 	if err != nil {
 		return workflows.ExpiredArchiveResult{}, err
@@ -36,17 +39,23 @@ func (r *Repository) ArchiveExpired(ctx context.Context, in workflows.ExpiredArc
 	return result, nil
 }
 
+// archiveOne 在事务中复核并归档单份到期普通合同。
+// 参数：ctx为上下文，candidate为候选记录，additionalRecipients为附加收件人，date为业务日期。
+// 返回值：是否实际归档及事务错误；条件变化时不伪造成功。
 func (r *Repository) archiveOne(ctx context.Context, candidate contractRecord, additionalRecipients []string, date time.Time) (bool, error) {
 	archived := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current contractRecord
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "tenant_id", "owner_user_id", "status", "end_date").
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "tenant_id", "owner_user_id", "status", "end_date", "origin_kind", "import_mode", "import_policy_json").
 			Where("tenant_id = ? AND id = ?", candidate.TenantID, candidate.ID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		if !ordinaryContractRecord(current) {
+			return nil
 		}
 		from := contract.Status(current.Status)
 		if from != contract.Status(candidate.Status) || current.EndDate == nil || !current.EndDate.Before(date) || !contract.CanTransition(from, contract.StatusArchived) {

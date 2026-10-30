@@ -6,6 +6,9 @@ import (
 	"net/http"
 )
 
+// contractLicenseOperation 根据真实路由和方法选择商业许可操作类别。
+// 参数：method为HTTP方法，path为当前路由路径。
+// 返回值：本次读取或业务写入对应的许可操作。
 func contractLicenseOperation(method, path string) core.Operation {
 	if method == http.MethodPost && path == "/api/v1/audit-outbox/failed/:id/retry" {
 		// 仅恢复既有安全审计投递，不重执行审批或其它业务事件。
@@ -19,7 +22,7 @@ func contractLicenseOperation(method, path string) core.Operation {
 	}
 	if method == http.MethodGet {
 		switch path {
-		case "/internal/v1/dashboard", "/internal/v1/settlement/completed-contracts", "/internal/v1/project/approved-contracts", "/internal/v1/project/approved-contract-references", "/internal/v1/project/approved-contracts/:contractID", "/internal/v1/project/approved-contracts/:contractID/service-items":
+		case "/api/v1/contract-import-batches/:id/items/:itemID/document-descriptor", "/api/v1/contract-import-batches/:id/items/:itemID/source", "/internal/v1/contract-imports/report-source", "/api/v1/contract-import-batches", "/api/v1/contract-import-batches/:id", "/internal/v1/dashboard", "/internal/v1/settlement/completed-contracts", "/internal/v1/project/approved-contracts", "/internal/v1/project/approved-contract-references", "/internal/v1/project/approved-contracts/:contractID", "/internal/v1/project/approved-contracts/:contractID/service-items":
 			return core.READ_HISTORY
 		case "/api/v1/auth/me", "/api/v1/audit-outbox/failed":
 			return core.ESSENTIAL_SERVICE
