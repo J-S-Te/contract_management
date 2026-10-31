@@ -126,6 +126,8 @@ func (s *Service) DispatchImportOnce(ctx context.Context) error {
 // 返回值：公开错误码。
 func importErrorCode(err error) string {
 	switch {
+	case errors.Is(err, ErrCRMActorContextRequired):
+		return "IMPORT_CRM_SESSION_REQUIRED"
 	case errors.Is(err, ErrForbidden):
 		return "IMPORT_AUTHORIZATION_REQUIRED"
 	case errors.Is(err, ErrValidation):

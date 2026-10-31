@@ -468,7 +468,10 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 			item.State = "BLOCKED"
 			code := "IMPORT_VALIDATION_FAILED"
 			retry := false
-			if errors.Is(err, ErrImportUnsupported) {
+			field := "metadata"
+			if errors.Is(err, ErrCRMActorContextRequired) {
+				code, retry, field = "IMPORT_CRM_SESSION_REQUIRED", true, "metadata.crm_customer_id"
+			} else if errors.Is(err, ErrImportUnsupported) {
 				code = "IMPORT_POLICY_UNSUPPORTED"
 			} else if errors.Is(err, ErrForbidden) {
 				code = "IMPORT_AUTHORIZATION_REQUIRED"
@@ -476,7 +479,7 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 				code = "IMPORT_DEPENDENCY_UNAVAILABLE"
 				retry = true
 			}
-			item.Issues = []contract.ImportIssue{{Field: "metadata", Code: code, Retryable: retry}}
+			item.Issues = []contract.ImportIssue{{Field: field, Code: code, Retryable: retry}}
 		} else {
 			item.State, item.Digest = "READY", digest
 			item.NormalizedMetadata = normalizedImportMetadata(normalized)

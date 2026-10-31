@@ -35,12 +35,18 @@ var (
 	ErrCRMReferenceDirectoryUnavailable = errors.New("CRM contract reference directory is unavailable")
 )
 
+// validateExternalCRMReference 校验客户/商机引用并保留可恢复的授权上下文分类。
+// 参数：ctx限定调用，客户/商机ID定位引用，actorIdentityID限定真实操作者范围。
+// 返回值：最小权威引用；授权缺失、字段无效和依赖失败分别保留错误语义。
 func (service *Service) validateExternalCRMReference(ctx context.Context, customerID uint64, opportunityID, actorIdentityID string) (CRMContractReference, error) {
 	if service.CRMContractReferences == nil {
 		return CRMContractReference{}, fmt.Errorf("%w: CRM 只读目录未配置", ErrCRMReferenceDirectoryUnavailable)
 	}
 	result, err := service.CRMContractReferences.Resolve(ctx, customerID, opportunityID, actorIdentityID)
 	if err != nil {
+		if errors.Is(err, ErrCRMActorContextRequired) {
+			return CRMContractReference{}, ErrCRMActorContextRequired
+		}
 		if errors.Is(err, ErrCRMReferenceInvalid) {
 			return CRMContractReference{}, fmt.Errorf("%w: CRM 客户或商机无效", ErrValidation)
 		}
