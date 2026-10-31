@@ -51,6 +51,9 @@ func NewClientCredentialsTokenSource(ctx context.Context, tokenURL, clientID, cl
 	}
 }
 
+// Resolve 读取经过当前操作者权限及数据范围校验的权威CRM引用。
+// 参数：ctx限定请求，customerID/opportunityID定位引用，actorIdentityID标识真实操作者。
+// 返回值：引用或分类错误；缺少授权上下文不会被误报为客户无效。
 func (directory *ContractReferenceDirectory) Resolve(ctx context.Context, customerID uint64, opportunityID, actorIdentityID string) (application.CRMContractReference, error) {
 	if directory == nil || customerID == 0 || strings.TrimSpace(actorIdentityID) == "" || strings.TrimSpace(directory.BaseURL) == "" || directory.TokenSource == nil {
 		return application.CRMContractReference{}, errors.New("CRM contract reference integration is not configured")
@@ -108,6 +111,13 @@ func (directory *ContractReferenceDirectory) Resolve(ctx context.Context, custom
 	// CRM 将无效客户或操作者引用报告为 422。路由级 404
 	// 可能表示部署前缀缺失，而非客户无效。
 	if response.StatusCode == http.StatusUnprocessableEntity {
+		var failure struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(body, &failure) == nil &&
+			failure.Code == "CRM_CONTRACT_REFERENCE_ACTOR_CONTEXT_REQUIRED" {
+			return application.CRMContractReference{}, application.ErrCRMActorContextRequired
+		}
 		return application.CRMContractReference{}, application.ErrCRMReferenceInvalid
 	}
 	if response.StatusCode != http.StatusOK {
