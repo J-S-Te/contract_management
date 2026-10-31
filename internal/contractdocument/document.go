@@ -1,7 +1,6 @@
 package contractdocument
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"mime"
@@ -102,10 +101,6 @@ func validatePDF(body []byte) error {
 	if !contractpdf.Valid(body) {
 		return fmt.Errorf("PDF为空、损坏或超过20MiB")
 	}
-	for _, marker := range []string{"/JavaScript", "/JS", "/EmbeddedFile", "/Launch", "/Encrypt"} {
-		if bytes.Contains(body, []byte(marker)) {
-			return fmt.Errorf("PDF含不支持的活动、嵌入或加密内容")
-		}
-	}
+	// 名称策略交给解码后的对象检查，原始流、注释和字符串可能合法包含同名字节。
 	return validatePDFStructure(body)
 }

@@ -47,6 +47,11 @@ func validatePDFStructure(body []byte) error {
 		if err = inspectPDFObject(entry.Object, 0, &budget); err != nil {
 			return err
 		}
+		if stream, ok := entry.Object.(types.StreamDict); ok {
+			if err = validatePDFImageBudget(parsed.XRefTable, stream); err != nil {
+				return err
+			}
+		}
 	}
 	if err = api.ValidateContext(ctx, parsed); err != nil || parsed.PageCount < 1 {
 		return fmt.Errorf("PDF页面结构不完整或不符合接入要求")
