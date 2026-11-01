@@ -15,6 +15,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/j-s-te/contract-management/internal/application"
+	central "github.com/j-s-te/contract-management/internal/sessiongovernance"
 	"golang.org/x/oauth2"
 )
 
@@ -27,6 +28,9 @@ var (
 )
 
 type OIDCOptions struct {
+	CentralSessionEnabled                                           bool
+	CentralSessionPublicBaseURL                                     string
+	CentralClient                                                   central.Client
 	Issuer, BackchannelBaseURL, PlatformBaseURL                     string
 	ClientID, ClientSecret, RedirectURI, PostLogoutRedirectURI      string
 	IdentityProviderHint                                            string
@@ -45,10 +49,15 @@ type OIDCOptions struct {
 
 type oidcIDTokenClaims struct {
 	Subject, IdentityID, TenantID, PersonID, Nonce, TokenUse string
+	SessionID                                                string
 }
 
+// UnmarshalJSON 恢复持久化主体，同时保持旧快照兼容。
+// 参数：data为待解析的序列化主体。
+// 返回值：无；参数、校验、存储或依赖失败时返回错误。
 func (claims *oidcIDTokenClaims) UnmarshalJSON(data []byte) error {
 	type rawClaims struct {
+		SessionID  string `json:"sid"`
 		Subject    string `json:"sub"`
 		IdentityID string `json:"identity_id"`
 		TenantID   string `json:"tenant_id"`
@@ -60,7 +69,7 @@ func (claims *oidcIDTokenClaims) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*claims = oidcIDTokenClaims{Subject: raw.Subject, IdentityID: raw.IdentityID, TenantID: raw.TenantID, PersonID: raw.PersonID, Nonce: raw.Nonce, TokenUse: raw.TokenUse}
+	*claims = oidcIDTokenClaims{Subject: raw.Subject, IdentityID: raw.IdentityID, TenantID: raw.TenantID, PersonID: raw.PersonID, Nonce: raw.Nonce, TokenUse: raw.TokenUse, SessionID: raw.SessionID}
 	return nil
 }
 
@@ -68,6 +77,9 @@ type oidcUserInfoClaims struct {
 	Subject, Name, PreferredUsername, Email string
 }
 
+// UnmarshalJSON 恢复持久化主体，同时保持旧快照兼容。
+// 参数：data为待解析的序列化主体。
+// 返回值：无；参数、校验、存储或依赖失败时返回错误。
 func (claims *oidcUserInfoClaims) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Subject           string `json:"sub"`
@@ -97,9 +109,35 @@ type OIDCAuthenticator struct {
 	now                func() time.Time
 }
 
+// NewOIDCAuthenticator 装配原OIDC认证、持久存储及可选中央会话依赖。
+// 参数：ctx为调用上下文与取消边界。
+//
+//	options为本应用认证及运行选项。
+//
+// 返回值：装配后的应用或认证实例；配置与依赖装配失败时返回错误。
 func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthenticator, error) {
+	if options.CentralSessionEnabled && options.CentralClient == nil {
+		public := options.CentralSessionPublicBaseURL
+		if public == "" {
+			redirect, err := url.Parse(options.RedirectURI)
+			if err != nil {
+				return nil, err
+			}
+			public = redirect.Scheme + "://" + redirect.Host
+		}
+		client, err := central.NewHTTPClient(options.PlatformBaseURL, public, options.ClientID, options.RedirectURI)
+		if err != nil {
+			return nil, err
+		}
+		options.CentralClient = client
+	}
 	if options.Store == nil {
 		return nil, errors.New("OIDC persistent store is required")
+	}
+	if options.CentralClient != nil {
+		if _, ok := options.Store.(centralOIDCStore); !ok {
+			return nil, errors.New("central sessions require transactional storage")
+		}
 	}
 	codec, err := newSecretCodec(options.SessionEncryptionKey)
 	if err != nil {
@@ -147,6 +185,12 @@ func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthen
 	}, nil
 }
 
+// Authenticate 校验当前浏览器会话、中央期限与业务授权。
+// 参数：ctx为调用上下文与取消边界。
+//
+//	request为经过调用方校验的请求内容。
+//
+// 返回值：经过核验的主体或会话；明确失效与暂时依赖错误分别返回。
 func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Request) (application.Principal, error) {
 	cookie, err := request.Cookie(a.options.SessionCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
@@ -154,8 +198,17 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Requ
 	}
 	now := a.now().UTC()
 	record, err := a.store.FindSession(ctx, tokenHash(cookie.Value), now)
-	if err != nil || record.TenantID != a.options.TenantID {
+	if err != nil {
+		if errors.Is(err, ErrUnauthenticated) {
+			return application.Principal{}, ErrUnauthenticated
+		}
+		return application.Principal{}, ErrAuthorizationServiceUnavailable
+	}
+	if record.TenantID != a.options.TenantID {
 		return application.Principal{}, ErrUnauthenticated
+	}
+	if a.options.CentralClient != nil {
+		return a.authenticateCentral(ctx, record, now)
 	}
 	principal, err := principalFromJSON(record.PrincipalJSON)
 	if err != nil || principal.IdentityID != record.IdentityID || principal.TenantID != record.TenantID {
@@ -186,6 +239,12 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Requ
 	return application.Principal{}, ErrAuthorizationServiceUnavailable
 }
 
+// Login 建立原state、nonce和PKCE事务并进入可信登录流程。
+// 参数：writer为HTTP响应写入器。
+//
+//	request为经过调用方校验的请求内容。
+//
+// 返回值：无。
 func (a *OIDCAuthenticator) Login(writer http.ResponseWriter, request *http.Request) {
 	now := a.now().UTC()
 	state, stateErr := randomValue(32)
@@ -206,20 +265,39 @@ func (a *OIDCAuthenticator) Login(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	if err := a.store.SaveLoginTransaction(request.Context(), LoginTransactionRecord{
-		StateHash: tokenHash(state), TenantID: a.options.TenantID, NonceCiphertext: nonceCiphertext,
+		ForceLogin: strings.EqualFold(strings.TrimSpace(request.URL.Query().Get("prompt")), "login"),
+		StateHash:  tokenHash(state), TenantID: a.options.TenantID, NonceCiphertext: nonceCiphertext,
 		CodeVerifierCiphertext: verifierCiphertext, ReturnPath: a.publicPath("/"), ExpiresAt: now.Add(loginTransactionTTL), CreatedAt: now,
 	}); err != nil {
 		http.Error(writer, "cannot start login", http.StatusServiceUnavailable)
 		return
 	}
 	target := a.authorizationURL(state, nonce, verifier, strings.EqualFold(strings.TrimSpace(request.URL.Query().Get("prompt")), "login"))
+	if a.options.CentralClient != nil {
+		http.SetCookie(writer, a.stateCookie(state, 600))
+		target = a.options.CentralClient.BeginURL(state, nonce)
+	}
 	http.Redirect(writer, request, target, http.StatusFound)
 }
 
+// authorizationURL 使用原事务构造提供方授权地址。
+// 参数：state为原始登录事务随机状态。
+//
+//	nonce为原OIDC登录随机校验材料。
+//	verifier为原PKCE秘密。
+//	forceLogin为是否要求重新认证。
+//
+// 返回值：绑定原登录事务的授权地址；构造失败按原错误模型返回。
 func (a *OIDCAuthenticator) authorizationURL(state, nonce, verifier string, forceLogin bool) string {
 	options := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if a.options.CentralClient != nil {
+		options = append(options, oauth2.SetAuthURLParam("claims", `{"id_token":{"auth_time":{"essential":true}}}`))
+	}
 	if forceLogin {
 		options = append(options, oauth2.SetAuthURLParam("prompt", "login"))
+		if a.options.CentralClient != nil {
+			options = append(options, oauth2.SetAuthURLParam("max_age", "0"))
+		}
 	}
 	if hint := strings.TrimSpace(a.options.IdentityProviderHint); hint != "" {
 		options = append(options, oauth2.SetAuthURLParam("kc_idp_hint", hint))
@@ -227,7 +305,27 @@ func (a *OIDCAuthenticator) authorizationURL(state, nonce, verifier string, forc
 	return a.oauth2Config.AuthCodeURL(state, options...)
 }
 
+// Callback 消费原登录事务，验证身份并创建受中央期限约束的本地会话。
+// 参数：writer为HTTP响应写入器。
+//
+//	request为经过调用方校验的请求内容。
+//
+// 返回值：无。
 func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.Request) {
+	if a.options.CentralClient != nil {
+		cookie, err := request.Cookie(a.options.SessionCookieName + "_oidc_state")
+		if err != nil || cookie.Value == "" || cookie.Value != request.URL.Query().Get("state") {
+			a.writeCallbackError(writer, request, "browser_state", http.StatusUnauthorized, ErrUnauthenticated)
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		if ticket := request.URL.Query().Get("session_link_ticket"); ticket != "" {
+			a.acceptSessionLink(writer, request, cookie.Value, ticket)
+			return
+		}
+		http.SetCookie(writer, a.stateCookie("", -1))
+	}
 	if oauthError := strings.TrimSpace(request.URL.Query().Get("error")); oauthError != "" {
 		a.writeCallbackError(writer, request, "authorization", http.StatusUnauthorized, errors.New(oauthError))
 		return
@@ -264,6 +362,27 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		a.writeCallbackError(writer, request, "id_token", http.StatusUnauthorized, err)
 		return
 	}
+	var binding central.Binding
+	boundSID := identity.SessionID
+	if a.options.CentralClient != nil {
+		ticket, decryptErr := a.codec.decrypt(transaction.CentralTicketCiphertext)
+		if decryptErr != nil || ticket == "" {
+			a.writeCallbackError(writer, request, "central_ticket", http.StatusUnauthorized, ErrUnauthenticated)
+			return
+		}
+		binding, err = a.options.CentralClient.Complete(request.Context(), ticket, token.AccessToken, rawIDToken)
+		if err == nil {
+			err = central.Validate(binding.Context, a.centralExpectation(), identity.IdentityID)
+		}
+		if err != nil {
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, central.ErrInactive) || errors.Is(err, central.ErrBindingConflict) {
+				status = http.StatusUnauthorized
+			}
+			a.writeCallbackError(writer, request, "central_binding", status, errors.New("central session binding failed"))
+			return
+		}
+	}
 	contextSnapshot, token, identity, rawIDToken, idExpiry, err := a.resolveInitialAuthorization(oidcContext, token, identity, rawIDToken, idExpiry)
 	if err != nil {
 		status := http.StatusUnauthorized
@@ -275,6 +394,10 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 			status = http.StatusServiceUnavailable
 		}
 		a.writeCallbackError(writer, request, "authorization_context", status, err)
+		return
+	}
+	if a.options.CentralClient != nil && (boundSID == "" || identity.SessionID != boundSID) {
+		a.writeCallbackError(writer, request, "central_sid", http.StatusUnauthorized, ErrUnauthenticated)
 		return
 	}
 	principal, err := principalFromAuthorizationContext(identity, contextSnapshot, a.catalog, a.options.ClientID, a.options.ApplicationCode, a.options.EnvironmentCode)
@@ -305,6 +428,16 @@ func (a *OIDCAuthenticator) Callback(writer http.ResponseWriter, request *http.R
 		a.writeCallbackError(writer, request, "session", http.StatusInternalServerError, err)
 		return
 	}
+	if a.options.CentralClient != nil {
+		record.CentralBindingCiphertext, err = a.codec.encrypt(binding.Token)
+		if err != nil {
+			a.writeCallbackError(writer, request, "central_storage", http.StatusServiceUnavailable, err)
+			return
+		}
+		record.CentralSessionID = binding.Context.SessionID
+		record.SessionExpiresAt = binding.Context.AbsoluteExpiresAt
+		record.OIDCSessionID = identity.SessionID
+	}
 	if err := a.store.CreateSession(request.Context(), record); err != nil {
 		a.writeCallbackError(writer, request, "session", http.StatusServiceUnavailable, err)
 		return
@@ -334,6 +467,13 @@ func (a *OIDCAuthenticator) verifyIDToken(ctx context.Context, token *oauth2.Tok
 	return identity, rawIDToken, idToken.Expiry.UTC(), nil
 }
 
+// validateCompactIDTokenClaims 核验身份令牌的用途、应用、主体及时间边界。
+// 参数：claims为已经完成签名及用途校验的声明。
+//
+//	expectedNonce为原始登录事务保存的nonce。
+//	expectedTenantID为服务端配置的预期租户。
+//
+// 返回值：与该调用匹配的核验或持久化结果；失败保留原有错误语义。
 func validateCompactIDTokenClaims(claims oidcIDTokenClaims, expectedNonce, expectedTenantID string) (compactIdentity, error) {
 	subject := strings.TrimSpace(claims.Subject)
 	identityID := strings.TrimSpace(claims.IdentityID)
@@ -344,7 +484,7 @@ func validateCompactIDTokenClaims(claims oidcIDTokenClaims, expectedNonce, expec
 		claims.TenantID != expectedTenantID || expectedNonce != "" && claims.Nonce != expectedNonce {
 		return compactIdentity{}, errors.New("OIDC ID token stable identity claims are invalid")
 	}
-	return compactIdentity{Subject: subject, IdentityID: identityID, TenantID: claims.TenantID, PersonID: strings.TrimSpace(claims.PersonID)}, nil
+	return compactIdentity{Subject: subject, IdentityID: identityID, TenantID: claims.TenantID, PersonID: strings.TrimSpace(claims.PersonID), SessionID: claims.SessionID}, nil
 }
 
 func (a *OIDCAuthenticator) resolveInitialAuthorization(ctx context.Context, token *oauth2.Token, identity compactIdentity, rawIDToken string, expiry time.Time) (AuthorizationContext, *oauth2.Token, compactIdentity, string, time.Time, error) {
@@ -364,7 +504,11 @@ func (a *OIDCAuthenticator) resolveInitialAuthorization(ctx context.Context, tok
 	return snapshot, refreshed, refreshedIdentity, refreshedIDToken, refreshedExpiry, err
 }
 
-func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record SessionRecord, current application.Principal, now time.Time) (SessionRecord, bool, error) {
+// refreshAuthorization 复核权限并兼容旧模式刷新；中央模式由独立第一事务轮换凭据。
+// 参数：ctx为请求，record/current为现有记录和主体，now为时钟，allowRefresh限制第二事务不再轮换。
+// 返回值：新快照及变更标记；拒绝或依赖失败时不授予业务访问。
+func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record SessionRecord, current application.Principal, now time.Time, allowRefresh ...bool) (SessionRecord, bool, error) {
+	canRefresh := len(allowRefresh) == 0 || allowRefresh[0]
 	accessToken, err := a.codec.decrypt(record.AccessTokenCiphertext)
 	if err != nil {
 		return record, false, ErrAuthorizationInvalid
@@ -381,7 +525,10 @@ func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record Ses
 	subject := firstNonEmpty(current.Subject, current.UserID)
 	identity := compactIdentity{Subject: subject, IdentityID: current.IdentityID, TenantID: current.TenantID, PersonID: current.PersonID}
 	refreshedTokens := false
-	if !record.TokenExpiresAt.After(now) {
+	if !record.TokenExpiresAt.After(now) || a.options.CentralClient != nil && !record.TokenExpiresAt.After(now.Add(time.Minute)) {
+		if !canRefresh {
+			return record, false, ErrAuthorizationServiceUnavailable
+		}
 		token, err = a.refreshTokens(oidc.ClientContext(ctx, a.httpClient), token)
 		if err != nil {
 			return record, false, err
@@ -391,9 +538,10 @@ func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record Ses
 			return record, false, err
 		}
 		refreshedTokens = true
+		record.TokenExpiresAt = earliestExpiry(record.TokenExpiresAt, token.Expiry)
 	}
 	snapshot, err := a.authorization.Resolve(ctx, token.AccessToken)
-	if errors.Is(err, ErrAuthorizationUnauthorized) && !refreshedTokens {
+	if errors.Is(err, ErrAuthorizationUnauthorized) && !refreshedTokens && canRefresh {
 		token, err = a.refreshTokens(oidc.ClientContext(ctx, a.httpClient), token)
 		if err != nil {
 			return record, false, err
@@ -403,12 +551,16 @@ func (a *OIDCAuthenticator) refreshAuthorization(ctx context.Context, record Ses
 			return record, false, err
 		}
 		refreshedTokens = true
+		record.TokenExpiresAt = earliestExpiry(record.TokenExpiresAt, token.Expiry)
 		snapshot, err = a.authorization.Resolve(ctx, token.AccessToken)
 	}
 	if err != nil {
 		return record, false, err
 	}
 	principal, err := principalFromAuthorizationContext(identity, snapshot, a.catalog, a.options.ClientID, a.options.ApplicationCode, a.options.EnvironmentCode)
+	if a.options.CentralClient != nil && refreshedTokens && (record.OIDCSessionID == "" || identity.SessionID != record.OIDCSessionID) {
+		return record, false, ErrAuthorizationInvalid
+	}
 	if err != nil || principal.Subject != subject || principal.IdentityID != current.IdentityID || principal.TenantID != current.TenantID {
 		if err == nil {
 			err = ErrAuthorizationInvalid

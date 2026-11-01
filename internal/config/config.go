@@ -15,6 +15,8 @@ import (
 // 分组注释标明每组配置归属的子系统；字段取值合法性由 validate 统一校验，
 // 校验失败聚合返回全部问题，便于一次性修正部署配置。
 type Config struct {
+	CentralSessionEnabled           bool
+	CentralSessionPublicBaseURL     string
 	ExternalPDFEnabled              bool
 	ContractImportEnabled           bool
 	ContractImportHistoryEnabled    bool
@@ -258,6 +260,11 @@ func Load() (Config, error) {
 	if c.OIDCSessionTTL, err = duration("OIDC_SESSION_TTL", 8*time.Hour); err != nil {
 		return c, err
 	}
+	c.CentralSessionEnabled, err = strconv.ParseBool(env("CENTRAL_SESSION_ENABLED", "false"))
+	if err != nil {
+		return c, fmt.Errorf("CENTRAL_SESSION_ENABLED: %w", err)
+	}
+	c.CentralSessionPublicBaseURL = strings.TrimSpace(os.Getenv("CENTRAL_SESSION_PUBLIC_BASE_URL"))
 	if c.OIDCAuthorizationRefresh, err = duration("OIDC_AUTHORIZATION_REFRESH_INTERVAL", time.Minute); err != nil {
 		return c, err
 	}

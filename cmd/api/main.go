@@ -245,6 +245,7 @@ func main() {
 		}
 	}
 	identity, err := platform.NewOIDCAuthenticator(ctx, platform.OIDCOptions{
+		CentralSessionEnabled: cfg.CentralSessionEnabled, CentralSessionPublicBaseURL: cfg.CentralSessionPublicBaseURL,
 		Issuer: cfg.OIDCIssuer, BackchannelBaseURL: cfg.OIDCBackchannelBaseURL,
 		ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
 		RedirectURI: cfg.OIDCRedirectURI, PostLogoutRedirectURI: cfg.OIDCPostLogoutRedirectURI,
