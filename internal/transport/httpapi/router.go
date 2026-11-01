@@ -152,6 +152,13 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	if localLogout, ok := identity.(LocalSessionLogout); ok {
 		r.POST("/auth/local-logout", func(c *gin.Context) { localLogout.LogoutLocal(c.Writer, c.Request) })
 	}
+	if lifecycle, ok := identity.(interface {
+		SessionState(http.ResponseWriter, *http.Request)
+		Activity(http.ResponseWriter, *http.Request)
+	}); ok {
+		r.GET("/auth/session", func(c *gin.Context) { lifecycle.SessionState(c.Writer, c.Request) })
+		r.POST("/auth/activity", func(c *gin.Context) { lifecycle.Activity(c.Writer, c.Request) })
+	}
 	if backchannelLogout, ok := identity.(BackchannelLogout); ok {
 		r.POST("/auth/backchannel-logout", func(c *gin.Context) { backchannelLogout.BackchannelLogout(c.Writer, c.Request) })
 	}

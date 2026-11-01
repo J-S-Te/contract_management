@@ -16,32 +16,37 @@ import (
 )
 
 type LoginTransactionRecord struct {
-	StateHash              []byte
-	TenantID               string
-	NonceCiphertext        []byte
-	CodeVerifierCiphertext []byte
-	ReturnPath             string
-	ExpiresAt              time.Time
-	ConsumedAt             *time.Time
-	CreatedAt              time.Time
+	CentralTicketCiphertext []byte
+	ForceLogin              bool
+	StateHash               []byte
+	TenantID                string
+	NonceCiphertext         []byte
+	CodeVerifierCiphertext  []byte
+	ReturnPath              string
+	ExpiresAt               time.Time
+	ConsumedAt              *time.Time
+	CreatedAt               time.Time
 }
 
 type SessionRecord struct {
-	SessionIDHash          []byte
-	TenantID               string
-	IdentityID             string
-	PersonID               string
-	PrincipalJSON          []byte
-	AccessTokenCiphertext  []byte
-	RefreshTokenCiphertext []byte
-	IDTokenCiphertext      []byte
-	AuthorizationRevision  uint64
-	AuthorizationCheckedAt time.Time
-	TokenExpiresAt         time.Time
-	SessionExpiresAt       time.Time
-	RevokedAt              *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	CentralBindingCiphertext []byte
+	CentralSessionID         string
+	OIDCSessionID            string
+	SessionIDHash            []byte
+	TenantID                 string
+	IdentityID               string
+	PersonID                 string
+	PrincipalJSON            []byte
+	AccessTokenCiphertext    []byte
+	RefreshTokenCiphertext   []byte
+	IDTokenCiphertext        []byte
+	AuthorizationRevision    uint64
+	AuthorizationCheckedAt   time.Time
+	TokenExpiresAt           time.Time
+	SessionExpiresAt         time.Time
+	RevokedAt                *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type OIDCStore interface {
@@ -56,34 +61,39 @@ type OIDCStore interface {
 }
 
 type gormLoginTransaction struct {
-	StateHash              []byte `gorm:"column:state_hash;primaryKey"`
-	TenantID               string `gorm:"column:tenant_id"`
-	NonceCiphertext        []byte `gorm:"column:nonce_ciphertext"`
-	CodeVerifierCiphertext []byte `gorm:"column:code_verifier_ciphertext"`
-	ReturnPath             string `gorm:"column:return_path"`
-	ExpiresAt              time.Time
-	ConsumedAt             *time.Time
-	CreatedAt              time.Time
+	CentralTicketCiphertext []byte
+	ForceLogin              bool
+	StateHash               []byte `gorm:"column:state_hash;primaryKey"`
+	TenantID                string `gorm:"column:tenant_id"`
+	NonceCiphertext         []byte `gorm:"column:nonce_ciphertext"`
+	CodeVerifierCiphertext  []byte `gorm:"column:code_verifier_ciphertext"`
+	ReturnPath              string `gorm:"column:return_path"`
+	ExpiresAt               time.Time
+	ConsumedAt              *time.Time
+	CreatedAt               time.Time
 }
 
 func (gormLoginTransaction) TableName() string { return "con_oidc_login_transaction" }
 
 type gormSession struct {
-	SessionIDHash          []byte `gorm:"column:session_id_hash;primaryKey"`
-	TenantID               string
-	IdentityID             string
-	PersonID               *string
-	PrincipalJSON          []byte `gorm:"type:json"`
-	AccessTokenCiphertext  []byte
-	RefreshTokenCiphertext []byte
-	IDTokenCiphertext      []byte
-	AuthorizationRevision  uint64
-	AuthorizationCheckedAt time.Time
-	TokenExpiresAt         time.Time
-	SessionExpiresAt       time.Time
-	RevokedAt              *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	CentralBindingCiphertext []byte
+	CentralSessionID         string
+	OIDCSessionID            string `gorm:"column:oidc_sid"`
+	SessionIDHash            []byte `gorm:"column:session_id_hash;primaryKey"`
+	TenantID                 string
+	IdentityID               string
+	PersonID                 *string
+	PrincipalJSON            []byte `gorm:"type:json"`
+	AccessTokenCiphertext    []byte
+	RefreshTokenCiphertext   []byte
+	IDTokenCiphertext        []byte
+	AuthorizationRevision    uint64
+	AuthorizationCheckedAt   time.Time
+	TokenExpiresAt           time.Time
+	SessionExpiresAt         time.Time
+	RevokedAt                *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 func (gormSession) TableName() string { return "con_oidc_session" }
@@ -119,14 +129,28 @@ func NewGORMOIDCStore(db *gorm.DB) (*GORMOIDCStore, error) {
 	return &GORMOIDCStore{db: db}, nil
 }
 
+// SaveLoginTransaction 持久化一次性登录事务及受控桥接材料。
+// 参数：ctx为调用上下文与取消边界。
+//
+//	record为数据库中的会话投影。
+//
+// 返回值：无；参数、校验、存储或依赖失败时返回错误。
 func (s *GORMOIDCStore) SaveLoginTransaction(ctx context.Context, record LoginTransactionRecord) error {
 	return s.db.WithContext(ctx).Create(&gormLoginTransaction{
+		CentralTicketCiphertext: record.CentralTicketCiphertext, ForceLogin: record.ForceLogin,
 		StateHash: record.StateHash, TenantID: record.TenantID,
 		NonceCiphertext: record.NonceCiphertext, CodeVerifierCiphertext: record.CodeVerifierCiphertext,
 		ReturnPath: record.ReturnPath, ExpiresAt: record.ExpiresAt, CreatedAt: record.CreatedAt,
 	}).Error
 }
 
+// ConsumeLoginTransaction 原子消费未过期的登录事务，拒绝重复回调。
+// 参数：ctx为调用上下文与取消边界。
+//
+//	stateHash为原始登录状态的不可逆摘要。
+//	now为本次服务端校验时间。
+//
+// 返回值：匹配的有效持久记录；不存在、失效或存储失败返回错误。
 func (s *GORMOIDCStore) ConsumeLoginTransaction(ctx context.Context, stateHash []byte, now time.Time) (LoginTransactionRecord, error) {
 	var result gormLoginTransaction
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -144,7 +168,7 @@ func (s *GORMOIDCStore) ConsumeLoginTransaction(ctx context.Context, stateHash [
 	if err != nil {
 		return LoginTransactionRecord{}, err
 	}
-	return LoginTransactionRecord{StateHash: result.StateHash, TenantID: result.TenantID, NonceCiphertext: result.NonceCiphertext, CodeVerifierCiphertext: result.CodeVerifierCiphertext, ReturnPath: result.ReturnPath, ExpiresAt: result.ExpiresAt, ConsumedAt: result.ConsumedAt, CreatedAt: result.CreatedAt}, nil
+	return LoginTransactionRecord{StateHash: result.StateHash, TenantID: result.TenantID, NonceCiphertext: result.NonceCiphertext, CodeVerifierCiphertext: result.CodeVerifierCiphertext, ReturnPath: result.ReturnPath, ExpiresAt: result.ExpiresAt, ConsumedAt: result.ConsumedAt, CreatedAt: result.CreatedAt, CentralTicketCiphertext: result.CentralTicketCiphertext, ForceLogin: result.ForceLogin}, nil
 }
 
 func (s *GORMOIDCStore) CreateSession(ctx context.Context, record SessionRecord) error {
@@ -232,8 +256,12 @@ func (s *GORMOIDCStore) DeleteExpired(ctx context.Context, now time.Time) error 
 	})
 }
 
+// sessionToGORM 将加密会话映射为数据库记录。
+// 参数：record为数据库中的会话投影。
+// 返回值：包含原始认证时间和服务器端材料的持久投影。
 func sessionToGORM(record SessionRecord) gormSession {
 	return gormSession{SessionIDHash: record.SessionIDHash, TenantID: record.TenantID, IdentityID: record.IdentityID,
+		CentralBindingCiphertext: record.CentralBindingCiphertext, CentralSessionID: record.CentralSessionID, OIDCSessionID: record.OIDCSessionID,
 		PersonID: nullableString(record.PersonID), PrincipalJSON: record.PrincipalJSON,
 		AccessTokenCiphertext: record.AccessTokenCiphertext, RefreshTokenCiphertext: record.RefreshTokenCiphertext,
 		IDTokenCiphertext: record.IDTokenCiphertext, AuthorizationRevision: record.AuthorizationRevision,
@@ -241,12 +269,16 @@ func sessionToGORM(record SessionRecord) gormSession {
 		SessionExpiresAt: record.SessionExpiresAt, RevokedAt: record.RevokedAt, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 }
 
+// sessionFromGORM 将持久化会话恢复为认证记录。
+// 参数：row为数据库持久投影。
+// 返回值：包含原始认证时间和服务器端材料的持久投影。
 func sessionFromGORM(row gormSession) SessionRecord {
 	personID := ""
 	if row.PersonID != nil {
 		personID = *row.PersonID
 	}
 	return SessionRecord{SessionIDHash: row.SessionIDHash, TenantID: row.TenantID, IdentityID: row.IdentityID,
+		CentralBindingCiphertext: row.CentralBindingCiphertext, CentralSessionID: row.CentralSessionID, OIDCSessionID: row.OIDCSessionID,
 		PersonID: personID, PrincipalJSON: row.PrincipalJSON, AccessTokenCiphertext: row.AccessTokenCiphertext,
 		RefreshTokenCiphertext: row.RefreshTokenCiphertext, IDTokenCiphertext: row.IDTokenCiphertext,
 		AuthorizationRevision: row.AuthorizationRevision, AuthorizationCheckedAt: row.AuthorizationCheckedAt,
