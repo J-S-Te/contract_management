@@ -3,6 +3,7 @@ package workflows
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	core "github.com/J-S-Te/license-core"
 	"github.com/j-s-te/contract-management/internal/apperrors"
@@ -27,6 +28,13 @@ type LicenseChecker interface {
 type Activities struct {
 	Store       ApprovalStore
 	LicenseGate LicenseChecker
+	// NumberAuditor 是周期巡检的只读出口（由 *mysql.Repository 实现）；未接入时
+	// 巡检活动返回明确错误，而不是静默当成“零漂移”。
+	NumberAuditor NumberAuditor
+	// NumberAuditMetrics 是巡检指标出口，可为 nil（只记日志）。
+	NumberAuditMetrics NumberAuditMetricsSink
+	// Logger 是巡检日志出口，可为 nil（回落到 slog.Default()）。
+	Logger *slog.Logger
 }
 
 func (a *Activities) checkLicense(ctx context.Context) error {
@@ -63,14 +71,16 @@ func (a *Activities) CompleteApproval(ctx context.Context, in CompleteApprovalAc
 }
 
 // criticalActivityError 区分可重试执行故障与确定性业务冲突：版本/状态/找不到/
-// 非法流转不应被无限重试，必须立即暴露给调用方；数据库/网络错误保持可重试。
+// 非法流转/编号规则非法/编号流水耗尽/租户内同号冲突不应被无限重试，必须立即暴露给
+// 调用方；数据库/网络错误保持可重试。
 func criticalActivityError(err error) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, apperrors.ErrNotFound) || errors.Is(err, apperrors.ErrVersionConflict) ||
 		errors.Is(err, apperrors.ErrStateConflict) || errors.Is(err, contract.ErrInvalidTransition) ||
-		errors.Is(err, contract.ErrInvalidStatus) {
+		errors.Is(err, contract.ErrInvalidStatus) || errors.Is(err, contract.ErrNumberExhausted) ||
+		errors.Is(err, contract.ErrInvalidNumberRule) || errors.Is(err, contract.ErrNumberConflict) {
 		return temporal.NewNonRetryableApplicationError(err.Error(), "CONTRACT_BUSINESS_CONFLICT", err)
 	}
 	return err

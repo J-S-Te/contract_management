@@ -2,9 +2,33 @@ package mysql
 
 import (
 	"context"
+	"strings"
 
 	"github.com/j-s-te/contract-management/internal/domain/contract"
+	"gorm.io/gorm"
 )
+
+// approvedContractKeywordPattern 把用户关键字转成只匹配字面量的 LIKE 模式。
+// 参数：keyword 为已去空白的搜索关键字。
+// 返回值：首尾带通配符、内部 % _ \ 均已转义的模式串。
+// LIKE 默认以反斜杠为转义符，因此这里先转义反斜杠再转义通配符，
+// 避免关键字里的 % 或 _ 变成通配符把整表扫成"匹配"。
+func approvedContractKeywordPattern(keyword string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(keyword)
+	return "%" + escaped + "%"
+}
+
+// applyApprovedContractKeyword 为已批准合同引用查询追加关键字过滤。
+// 参数：query 为已带来源与范围谓词的查询，keyword 为原始关键字。
+// 返回值：追加了绑定参数谓词的查询；空关键字原样返回。
+func applyApprovedContractKeyword(query *gorm.DB, keyword string) *gorm.DB {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return query
+	}
+	pattern := approvedContractKeywordPattern(keyword)
+	return query.Where("(contract_number LIKE ? OR title LIKE ? OR customer_name LIKE ?)", pattern, pattern, pattern)
+}
 
 // ListApprovedContracts 读取租户内普通已批准合同的有界列表。
 // 参数：ctx为上下文，tenantID为可信租户，limit为数量上限。
@@ -26,24 +50,26 @@ func (r *Repository) ListApprovedContracts(ctx context.Context, tenantID string,
 }
 
 // ListApprovedContractReferences 按游标读取普通已批准合同引用，避免载入原件。
-// 参数：ctx为上下文，tenantID为租户，afterID为游标，limit为页大小。
+// 参数：ctx为上下文，tenantID为租户，keyword为可选关键字，afterID为游标，limit为页大小。
 // 返回值：可见引用列表或数据库错误。
-func (r *Repository) ListApprovedContractReferences(ctx context.Context, tenantID, afterID string, limit int) ([]contract.Contract, error) {
+func (r *Repository) ListApprovedContractReferences(ctx context.Context, tenantID, keyword, afterID string, limit int) ([]contract.Contract, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
 	query := ordinaryContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), "").
 		Where("tenant_id = ? AND status IN ?", tenantID, contract.ApprovalPassedStatuses())
+	query = applyApprovedContractKeyword(query, keyword)
 	if afterID != "" {
 		query = query.Where("id > ?", afterID)
 	}
 	var records []contractRecord
-	if err := query.Select("id", "contract_number", "version").Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
+	if err := query.Select("id", "contract_number", "title", "customer_name", "status", "version").
+		Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]contract.Contract, 0, len(records))
 	for _, record := range records {
-		result = append(result, contract.Contract{ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Version: record.Version})
+		result = append(result, approvedContractReferenceFromRecord(record))
 	}
 	return result, nil
 }
@@ -69,24 +95,36 @@ func (r *Repository) ListApprovedContractsScoped(ctx context.Context, filter con
 }
 
 // ListApprovedContractReferencesScoped 按责任范围和游标读取普通已批准合同引用。
-// 参数：ctx为上下文，filter为可信范围，afterID为游标，limit为页大小。
+// 参数：ctx为上下文，filter为可信范围，keyword为可选关键字，afterID为游标，limit为页大小。
 // 返回值：可见合同引用或数据库错误。
-func (r *Repository) ListApprovedContractReferencesScoped(ctx context.Context, filter contract.ScopeFilter, afterID string, limit int) ([]contract.Contract, error) {
+func (r *Repository) ListApprovedContractReferencesScoped(ctx context.Context, filter contract.ScopeFilter, keyword, afterID string, limit int) ([]contract.Contract, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
 	query := ordinaryContractScope(applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter), "").
 		Where("status IN ?", contract.ApprovalPassedStatuses())
+	query = applyApprovedContractKeyword(query, keyword)
 	if afterID != "" {
 		query = query.Where("id > ?", afterID)
 	}
 	var records []contractRecord
-	if err := query.Select("id", "contract_number", "version").Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
+	if err := query.Select("id", "contract_number", "title", "customer_name", "status", "version").
+		Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]contract.Contract, 0, len(records))
 	for _, record := range records {
-		result = append(result, contract.Contract{ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Version: record.Version})
+		result = append(result, approvedContractReferenceFromRecord(record))
 	}
 	return result, nil
+}
+
+// approvedContractReferenceFromRecord 把引用列映射为合同摘要。
+// 参数：record 为只选了引用列与展示列的行。
+// 返回值：不含正文、价格与附件的合同摘要。
+func approvedContractReferenceFromRecord(record contractRecord) contract.Contract {
+	return contract.Contract{
+		ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Title: record.Title,
+		CustomerName: valueOrEmpty(record.CustomerName), Status: contract.Status(record.Status), Version: record.Version,
+	}
 }

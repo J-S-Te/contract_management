@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/domain/contract"
@@ -128,34 +127,49 @@ func (r *Repository) ReconcileContractResponsibilities(ctx context.Context) (int
 	}
 }
 
-// ClaimContractResponsibilityDelivery 认领到期责任事件并回收过期租约。
+// ClaimContractResponsibilityDelivery 认领一条到期责任事件并回收过期租约。
 // 参数：ctx 控制认领事务及租约回收。
 // 返回值：认领载荷、是否存在和存储错误。
 func (r *Repository) ClaimContractResponsibilityDelivery(ctx context.Context) (settlementintegration.Delivery, bool, error) {
-	var delivery settlementintegration.Delivery
-	found := false
+	deliveries, err := r.ClaimContractResponsibilityDeliveries(ctx, 1)
+	if err != nil || len(deliveries) == 0 {
+		return settlementintegration.Delivery{}, false, err
+	}
+	return deliveries[0], true, nil
+}
+
+// ClaimContractResponsibilityDeliveries 在单个事务内按积压顺序批量认领到期责任事件。
+// 参数：ctx 控制认领事务，limit 为本轮上限（<=0 或 >200 时取 100）。
+// 返回值：认领行及存储错误。每行仍各自写 processing + locked_at 租约 + attempts+1，
+// 与财务队列同一形态，批量不改变逐事件幂等与失败退避语义。
+func (r *Repository) ClaimContractResponsibilityDeliveries(ctx context.Context, limit int) ([]settlementintegration.Delivery, error) {
+	limit = boundedDeliveryClaimLimit(limit)
+	deliveries := make([]settlementintegration.Delivery, 0, limit)
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var row contractResponsibilityOutbox
+		var rows []contractResponsibilityOutbox
 		now := time.Now().UTC()
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 			Where("(delivery_status = ? AND next_attempt_at <= ?) OR (delivery_status = ? AND locked_at < ?)", "pending", now, "processing", now.Add(-5*time.Minute)).
-			Order("next_attempt_at ASC, created_at ASC").Take(&row).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
+			Order("next_attempt_at ASC, created_at ASC").Limit(limit).Find(&rows).Error
 		if err != nil {
 			return err
 		}
-		attempts := row.Attempts + 1
-		if err := tx.Model(&contractResponsibilityOutbox{}).Where("id = ?", row.ID).
-			Updates(map[string]any{"delivery_status": "processing", "attempts": attempts, "locked_at": now}).Error; err != nil {
-			return err
+		for index := range rows {
+			attempts := rows[index].Attempts + 1
+			if err := tx.Model(&contractResponsibilityOutbox{}).Where("id = ?", rows[index].ID).
+				Updates(map[string]any{"delivery_status": "processing", "attempts": attempts, "locked_at": now}).Error; err != nil {
+				return err
+			}
+			deliveries = append(deliveries, settlementintegration.Delivery{
+				ID: rows[index].ID, TenantID: rows[index].TenantID, Payload: rows[index].PayloadJSON, Attempts: attempts,
+			})
 		}
-		delivery = settlementintegration.Delivery{ID: row.ID, TenantID: row.TenantID, Payload: row.PayloadJSON, Attempts: attempts}
-		found = true
 		return nil
 	})
-	return delivery, found, err
+	if err != nil {
+		return nil, err
+	}
+	return deliveries, nil
 }
 
 // MarkContractResponsibilityDelivered 记录责任事件已被结算接受。

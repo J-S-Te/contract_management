@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/apperrors"
@@ -46,6 +47,17 @@ type OIDCFlow interface {
 
 type LocalSessionLogout interface {
 	LogoutLocal(http.ResponseWriter, *http.Request)
+}
+
+// SessionActivity 由支持"显式浏览器交互续期"的身份实现。
+// 只有独立活动接口才能推进空闲基准；普通业务请求（含轮询）不得调用。
+type SessionActivity interface {
+	RecordActivity(context.Context, *http.Request) (idleTimeout, idleRemaining time.Duration, err error)
+}
+
+// SessionIdleInspector 返回不续期的空闲窗口快照，供 /auth/me 追加可选字段。
+type SessionIdleInspector interface {
+	SessionIdle(context.Context, *http.Request) (idleTimeout, idleRemaining time.Duration, err error)
 }
 
 type BackchannelLogout interface {
@@ -104,6 +116,9 @@ type CRMSignedCountIntegrationOptions struct {
 	OpportunityIntakeEnabled        bool
 	OpportunityIntakeRequireBearer  bool
 	OpportunityIntakeBearerVerifier platform.ClientCredentialsTokenVerifier
+	// ContractSummary 是 CRM 商机签约前的只读合同摘要核验（P0-2）。
+	// 单独一组配置/校验器，不能用商机接收的写入身份替代。
+	ContractSummary *ContractSummaryIntegrationOptions
 }
 
 // NewRouter 创建兼容现有调用方的合同管理路由。
@@ -180,8 +195,30 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 			status = http.StatusServiceUnavailable
 			state = "not_ready"
 		}
-		writeJSON(c, status, envelope{Code: "OK", Message: state, Data: map[string]string{"status": state, "audit": auditAvailability(audit), "signing_phone_key": phoneKeyState}})
+		// 合同四类集成 Outbox（financial/responsibility/project/link）的死信积压
+		// 一旦不可见，运维只能等结算/项目/CRM 反馈"没收到"。这里把 dead 计数
+		// 直接挂到就绪探针上：查询失败按现有失败关闭风格置 not_ready，不伪造 0。
+		outboxState, outboxDead, outboxDeadTotal := integrationOutboxReadiness(c.Request.Context(), h.service)
+		if outboxState == "unavailable" {
+			status = http.StatusServiceUnavailable
+			state = "not_ready"
+		}
+		data := map[string]any{
+			"status": state, "audit": auditAvailability(audit), "signing_phone_key": phoneKeyState,
+			"integration_outbox": outboxState,
+		}
+		if outboxState == "ready" {
+			data["integration_outbox_dead"] = outboxDead
+			data["integration_outbox_dead_total"] = outboxDeadTotal
+		}
+		writeJSON(c, status, envelope{Code: "OK", Message: state, Data: data})
 	})
+	// BIZ-XEVT2-03：Prometheus 文本指标端点（集成 Outbox dead 计数）。
+	// 与 /healthz、/readyz 同级注册，刻意不进入 /api/v1 组：那条链路带
+	// authenticate/auditWrites/requireSameOriginWrite/licenseOperation，而监控抓取
+	// 没有用户会话与许可证操作上下文。只暴露聚合计数，不含租户/合同/事件 id；
+	// 生产必须由网络层（Ingress/NetworkPolicy）限制为集群内监控抓取。
+	r.GET("/metrics", h.integrationOutboxMetrics)
 	if dashboardOptions != nil && dashboardOptions.Enabled {
 		internal := r.Group("/internal/v1")
 		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions), h.licenseOperation())
@@ -222,6 +259,21 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		)
 		internal.POST("", h.acceptOpportunityIntake)
 	}
+	if crmSignedCountOptions != nil && crmSignedCountOptions.ContractSummary != nil && crmSignedCountOptions.ContractSummary.Enabled {
+		// CRM 商机签约前核验：租户只来自验签 claims，scope 由机器令牌校验器
+		// 固定为 contract.summary.read，调用方固定 customer_and_opportunity。
+		internal := r.Group("/internal/contract-summary")
+		internal.Use(
+			h.authenticateServiceIntegration(struct {
+				Enabled        bool
+				RequireBearer  bool
+				BearerVerifier platform.ClientCredentialsTokenVerifier
+			}{crmSignedCountOptions.ContractSummary.Enabled, crmSignedCountOptions.ContractSummary.RequireBearer, crmSignedCountOptions.ContractSummary.BearerVerifier}, "客户与商机管理系统"),
+			h.licenseOperation(),
+			h.grantContractSummaryPermission(),
+		)
+		internal.GET("", h.contractSummary)
+	}
 	if h.handover != nil {
 		// 人员离职交接机器协议：租户边界来自令牌绑定，与结算/项目集成同一模式。
 		internal := r.Group("/internal/v1/handover")
@@ -239,8 +291,12 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	// 放在 auditWrites 之后使跨站拒绝尝试同样进入审计。
 	api := r.Group("/api/v1", h.authenticate(), h.auditWrites(), h.requireSameOriginWrite(), h.licenseOperation())
 	api.GET("/auth/me", h.me)
+	// 浏览器显式活动探测：只有该接口推进空闲基准，Cookie 会话与同源写保护沿用 api 组。
+	api.POST("/auth/activity", h.activity)
 	api.GET("/audit-outbox/failed", h.listFailedAuditEvents)
 	api.POST("/audit-outbox/failed/:id/retry", h.retryFailedAuditEvent)
+	api.GET("/integration-outbox/failed", h.listFailedIntegrationEvents)
+	api.POST("/integration-outbox/failed/:kind/:id/retry", h.retryFailedIntegrationEvent)
 	api.GET("/dashboard", h.dashboard)
 	api.POST("/opportunity-intakes", h.acceptOpportunityIntake)
 	api.GET("/opportunity-intakes", h.listOpportunityIntakes)
@@ -276,8 +332,14 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.PUT("/contract-templates/:templateID/source", h.replaceTemplateSource)
 	api.DELETE("/contract-templates/:templateID", h.deleteTemplate)
 	api.POST("/contract-templates/:templateID/preview", h.previewTemplate)
+	// 系统级编号规则是跨租户的全系统单行配置：读取沿用 contract.read（普通用户只读查看当前规则），
+	// 写入只认专用高权权限码 contract.number_rule.manage，且不由合同 admin 角色旁路。
+	api.GET("/contract-number-rule", h.getContractNumberRule)
+	api.PUT("/contract-number-rule", h.updateContractNumberRule)
 	api.POST("/contracts/:contractID/submit-approval", h.submitApproval)
 	api.POST("/contracts/:contractID/status-changes", h.changeStatus)
+	// 受控财务变更（BIZ-XEVT2-05 合同侧）：默认关闭，开启后仍需权限/审批前置/审计。
+	api.PUT("/contracts/:contractID/financial-terms", h.changeContractFinancialTerms)
 	api.GET("/approvals", h.listApprovals)
 	api.GET("/approvals/tasks", h.listTasks)
 	api.GET("/approvals/:approvalID", h.getApproval)
@@ -350,6 +412,32 @@ func auditRequired() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("PLATFORM_ENVIRONMENT_CODE")), "prod")
 }
 
+// integrationOutboxReadiness 汇总四类集成 Outbox 的死信计数，供 /readyz 暴露积压。
+// 参数：ctx 为请求上下文；service 为业务服务，单测/未装配时为 nil。
+// 返回值：state 为 ready/disabled/unavailable；counts 与 total 仅在 ready 时有效。
+// 取舍：探针自带 2s 上限，避免 DB 抖动时 kubelet 的 /readyz 请求挂住；
+// 查询失败按仓库现有失败关闭风格参与 503，而不是用 0 掩盖"已生效未送达"。
+func integrationOutboxReadiness(ctx context.Context, service *application.Service) (string, map[string]int64, int64) {
+	if service == nil {
+		return "disabled", nil, 0
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	counts, err := service.IntegrationOutboxDeadCounts(probeCtx)
+	if err != nil {
+		if errors.Is(err, application.ErrIntegrationOutboxCountsUnsupported) {
+			return "disabled", nil, 0
+		}
+		slog.ErrorContext(ctx, "integration outbox dead count query failed", "error", err)
+		return "unavailable", nil, 0
+	}
+	var total int64
+	for _, kind := range application.IntegrationOutboxKinds() {
+		total += counts[kind]
+	}
+	return "ready", counts, total
+}
+
 func (h *Handler) acceptOpportunityIntake(c *gin.Context) {
 	if !principal(c).Has("opportunity_intake.receive") {
 		writeError(c, application.ErrForbidden)
@@ -420,11 +508,46 @@ func (h *Handler) me(c *gin.Context) {
 	if len(roles) > 0 {
 		role["code"] = roles[0]
 	}
-	writeData(c, http.StatusOK, map[string]any{
+	data := map[string]any{
 		"tenant_id": p.TenantID, "user_id": p.UserID, "identity_id": p.IdentityID, "person_id": p.PersonID,
 		"display_name": p.DisplayName, "user_name": p.UserName, "email": p.Email, "role": role, "roles": roles,
 		"permissions": permissions, "data_scopes": p.DataScopes, "authorization_revision": p.AuthorizationRevision,
 		"catalog_version": p.CatalogVersion,
+	}
+	// 新增字段是可选的向后兼容扩展：旧前端/其他调用方忽略即可。
+	// 读取失败（非未认证）不改变既有 /auth/me 契约，只降级为缺省字段。
+	if inspector, ok := h.identity.(SessionIdleInspector); ok {
+		idleTimeout, idleRemaining, idleErr := inspector.SessionIdle(c.Request.Context(), c.Request)
+		switch {
+		case errors.Is(idleErr, platform.ErrUnauthenticated):
+			writeError(c, idleErr)
+			return
+		case idleErr != nil:
+			slog.WarnContext(c.Request.Context(), "read session idle window failed",
+				"request_id", requestIDFrom(c.Request.Context()), "error", idleErr)
+		default:
+			data["idle_timeout_seconds"] = int64(idleTimeout / time.Second)
+			data["idle_remaining_ms"] = idleRemaining.Milliseconds()
+		}
+	}
+	writeData(c, http.StatusOK, data)
+}
+
+// activity 记录浏览器显式交互并返回新的空闲窗口；这是普通业务请求之外唯一的续期入口。
+func (h *Handler) activity(c *gin.Context) {
+	recorder, ok := h.identity.(SessionActivity)
+	if !ok {
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_SESSION_ACTIVITY_UNAVAILABLE", "当前身份提供方不支持会话活动续期", nil)
+		return
+	}
+	idleTimeout, idleRemaining, err := recorder.RecordActivity(c.Request.Context(), c.Request)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, map[string]any{
+		"idle_timeout_seconds": int64(idleTimeout / time.Second),
+		"idle_remaining_ms":    idleRemaining.Milliseconds(),
 	})
 }
 
@@ -596,6 +719,11 @@ func containsAnyAudit(value string, candidates ...string) bool {
 
 // skipAudit 跳过普通读请求；写请求和敏感读（下载/导出/令牌签发）仍会审计。
 func skipAudit(method, path string) bool {
+	// 浏览器会话活动探针不是业务写操作：不产生审计写，也避免强制审计模式
+	// 不可用时阻断用户保持在线（该接口不改变任何业务数据）。
+	if method == http.MethodPost && isSessionActivityPath(path) {
+		return true
+	}
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return !sensitiveRead(path)
@@ -607,6 +735,11 @@ func skipAudit(method, path string) bool {
 // sensitiveRead 识别正文、原件及导出读取，确保实际下载路径受审计约束。
 // 参数：path为当前请求路径，包含普通及导入原件入口。
 // 返回值：涉及敏感原件或导出返回true，否则返回false。
+// isSessionActivityPath 兼容前置代理保留或去除 APP_PATH_PREFIX 两种部署形态。
+func isSessionActivityPath(path string) bool {
+	return strings.HasSuffix(strings.TrimRight(path, "/"), "/api/v1/auth/activity")
+}
+
 func sensitiveRead(path string) bool {
 	lowered := strings.ToLower(path)
 	if containsAnyAudit(lowered, "embed", "download", "export") {
@@ -767,6 +900,9 @@ func auditResource(c *gin.Context) (string, string) {
 	}
 	if strings.Contains(c.Request.URL.Path, "contract-templates") {
 		return "CONTRACT_TEMPLATE", ""
+	}
+	if strings.Contains(c.Request.URL.Path, "contract-number-rule") {
+		return "CONTRACT_NUMBER_RULE", ""
 	}
 	if strings.Contains(c.Request.URL.Path, "approval-rules") {
 		return "APPROVAL_RULE", ""
@@ -1487,7 +1623,14 @@ func (h *Handler) listProjectApprovedContractReferences(c *gin.Context) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	contracts, err := h.service.ListApprovedContractReferences(c.Request.Context(), principal(c), strings.TrimSpace(c.Query("after_id")), limit)
+	// 关键字只用于按合同编号/标题/客户名做字面量模糊匹配；长度上限与前端输入
+	// 上限一致，超出即 422，避免把无效输入变成依赖侧的不可用。
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	if utf8.RuneCountInString(keyword) > 100 {
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "关键字长度不能超过 100 个字符", nil)
+		return
+	}
+	contracts, err := h.service.ListApprovedContractReferences(c.Request.Context(), principal(c), keyword, strings.TrimSpace(c.Query("after_id")), limit)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -1498,7 +1641,11 @@ func (h *Handler) listProjectApprovedContractReferences(c *gin.Context) {
 	}
 	references := make([]gin.H, 0, len(contracts))
 	for _, item := range contracts {
-		references = append(references, gin.H{"id": item.ID, "contract_number": item.Number, "version": item.Version})
+		references = append(references, gin.H{
+			"id": item.ID, "contract_number": item.Number, "title": item.Title,
+			"customer_name": item.CustomerName, "version": item.Version,
+			"status": string(item.Status), "approval_passed": item.Status.ApprovalPassed(),
+		})
 	}
 	writeData(c, http.StatusOK, gin.H{"contracts": references, "next_after_id": nextAfterID})
 }
@@ -1858,8 +2005,22 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DETECTION_CATEGORY_DIRECTORY_UNAVAILABLE", "检测类别目录暂时不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrCRMReferenceDirectoryUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_CRM_REFERENCE_DIRECTORY_UNAVAILABLE", "CRM 客户与商机目录暂时不可用，请稍后重试", nil)
+	case errors.Is(err, application.ErrOpportunityLinkRejected):
+		// 来源/状态/客户归属门禁命中：不是幂等或参数错误，必须提示走受控更正。
+		writeEnvelopeError(c, http.StatusConflict, "CON_OPPORTUNITY_LINK_REJECTED", "合同的来源、状态或客户归属不允许该商机关联；如确需变更客户，请走受控更正流程", nil)
+	case errors.Is(err, application.ErrContractSummarySourceUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_CONTRACT_SUMMARY_UNAVAILABLE", "合同摘要查询依赖不可用", nil)
 	case errors.Is(err, contractpdf.ErrConversionUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_PDF_CONVERSION_BUSY", "PDF 转换并发已达上限，请稍后重试", nil)
+	case errors.Is(err, application.ErrFinancialChangeDisabled):
+		// 受控入口默认关闭：明确告知未启用，不走 404/500 以免被当成合同不存在或故障。
+		writeEnvelopeError(c, http.StatusForbidden, "CON_FINANCIAL_CHANGE_DISABLED", "合同财务变更入口未启用", nil)
+	case errors.Is(err, application.ErrFinancialChangeApprovalRequired):
+		writeEnvelopeError(c, http.StatusConflict, "CON_FINANCIAL_CHANGE_APPROVAL_REQUIRED", "合同缺少有效审批或有在途审批，不允许财务变更", nil)
+	case errors.Is(err, application.ErrFinancialChangeCurrencyLocked):
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_FINANCIAL_CHANGE_CURRENCY_LOCKED", "合同财务变更不允许改变币种", nil)
+	case errors.Is(err, application.ErrFinancialChangeEventNotQueued):
+		writeEnvelopeError(c, http.StatusConflict, "CON_FINANCIAL_CHANGE_EVENT_NOT_QUEUED", "财务变更未生成结算事件，本次变更已回滚", nil)
 	case errors.Is(err, application.ErrForbidden):
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, application.ErrApprovalTargetForbidden):
@@ -1870,6 +2031,14 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusConflict, "CON_VERSION_CONFLICT", "数据版本已变化，请刷新后重试", nil)
 	case errors.Is(err, apperrors.ErrStateConflict), errors.Is(err, contract.ErrInvalidTransition):
 		writeEnvelopeError(c, http.StatusConflict, "CON_STATE_CONFLICT", "当前状态不允许该操作", nil)
+	case errors.Is(err, contract.ErrNumberExhausted):
+		// 流水位宽耗尽或顺延取号预算用尽是确定性配置问题，重试不会成功。
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_CONTRACT_NUMBER_EXHAUSTED",
+			"合同编号流水号已用尽，请在合同编号规则中调整流水位宽或前缀后重新提交审批", nil)
+	case errors.Is(err, contract.ErrInvalidNumberRule):
+		// 库内规则行内容非法属于确定性配置问题，重试不会成功。
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_CONTRACT_NUMBER_RULE_INVALID",
+			"合同编号规则配置非法，请管理员在合同编号规则中修正后重新提交审批", nil)
 	case errors.Is(err, application.ErrValidation), errors.Is(err, contract.ErrInvalidStatus):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", nil)
 	default:

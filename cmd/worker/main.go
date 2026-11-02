@@ -86,8 +86,12 @@ func main() {
 		}
 		go (&application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}).Run(ctx)
 	}
-	go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMDeliveryBaseURL, Token: cfg.CRMDeliveryToken, MaxAttempts: 20, Poll: 2 * time.Second}).Run(ctx)
-	workflows.Register(w, &workflows.Activities{Store: repository, LicenseGate: licenseGate})
+	// 合同→CRM 关联回写与 API 进程使用同一平台 client_credentials 专用用途令牌；
+	// 未配置 CRM_LINK_BASE_URL 时 Run 记录“disabled”后直接返回。
+	go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
+		TokenSource: crm.NewClientCredentialsTokenSource(ctx, cfg.CRMLinkTokenURL, cfg.CRMLinkClientID, cfg.CRMLinkClientSecret, cfg.CRMLinkScope)}).Run(ctx)
+	workflows.Register(w, &workflows.Activities{Store: repository, LicenseGate: licenseGate,
+		NumberAuditor: repository, NumberAuditMetrics: metrics, Logger: logger})
 	if cfg.ProjectIntegrationEnabled {
 		dispatcher := &projectintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
 			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)}
@@ -120,6 +124,31 @@ func main() {
 			}
 		}
 	}()
+	// 合同编号登记表漂移的每日只读巡检：沿用归档 cron 的同一注册范式（30s ticker +
+	// 固定 workflow ID + CronSchedule），漂移只记日志/指标，不主动通知任何人。
+	// NUMBER_AUDIT_CRON_SCHEDULE 显式配成空串表示禁用：此时不注册该 cron。不能把空串
+	// 直接传给 CronSchedule——Temporal 会把空 cron 当成“只跑一次”而不是“不跑”。
+	// 巡检只读，因此刻意不套商业许可证写权限门禁（许可过期时仍需要看到数据漂移）。
+	if cfg.NumberAuditCron != "" {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				_, scheduleErr := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: "contract-number-audit-daily", TaskQueue: cfg.TemporalTaskQueue, CronSchedule: cfg.NumberAuditCron}, workflows.ContractNumberAuditWorkflowName)
+				var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+				if scheduleErr != nil && !errors.As(scheduleErr, &alreadyStarted) && ctx.Err() == nil {
+					logger.Error("start contract number audit cron workflow failed", "error", scheduleErr)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	} else {
+		logger.Info("contract number audit cron disabled", "reason", "NUMBER_AUDIT_CRON_SCHEDULE 为空")
+	}
 	logger.Info("contract workflow worker started", "task_queue", cfg.TemporalTaskQueue,
 		"deployment", cfg.TemporalWorkerDeploymentName, "build_id", cfg.TemporalWorkerBuildID,
 		"versioning_enabled", cfg.TemporalWorkerVersioning, "versioning_policy", cfg.TemporalWorkerVersioningPolicy)

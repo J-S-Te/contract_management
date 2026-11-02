@@ -44,6 +44,13 @@ func loadImportHistoryConfig(c *Config) error {
 		if !validImportURL(out.BaseURL) || !validImportURL(out.TokenURL) || out.ClientID == "" || out.ClientSecret == "" || out.Scope != target.scope {
 			return fmt.Errorf("%s requires complete URL, token client and exact SCOPE", p)
 		}
+		// BASE_URL 是服务 origin：调用方按 origin + 绝对契约路径拼接请求。
+		// 带路径的 BASE_URL 会静默改写目标端点（例如请求落到
+		// /prefix/internal/v1/...），使“实际调用的接口”与配置看起来不同，
+		// 因此启动期即拒绝。错误只含键名，不回显配置值。
+		if !validImportBaseURL(out.BaseURL) {
+			return fmt.Errorf("%sBASE_URL must be a service origin without path", p)
+		}
 	}
 	p := "CONTRACT_IMPORT_REPORT_READ_"
 	read := &c.ImportReportRead
@@ -67,4 +74,16 @@ func loadImportHistoryConfig(c *Config) error {
 func validImportURL(value string) bool {
 	u, e := url.Parse(value)
 	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == ""
+}
+
+// validImportBaseURL 要求 *_BASE_URL 是不带路径的服务 origin。
+// 参数：value为已通过 validImportURL 的 BASE_URL。
+// 返回值：只有 scheme+host（允许末尾单个 /）时为true。
+//
+// TOKEN_URL 通常自带 /oauth2/token 之类的路径，因此该约束只适用于 BASE_URL：
+// 调用方用 BASE_URL + 绝对契约路径拼请求，带路径的 origin 会把契约路径挪到
+// 前缀之后，导致调用目标与审计/网关心智模型不一致。
+func validImportBaseURL(value string) bool {
+	u, e := url.Parse(value)
+	return e == nil && (u.Path == "" || u.Path == "/") && u.RawPath == ""
 }

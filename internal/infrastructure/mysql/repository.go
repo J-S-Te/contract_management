@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/auditctx"
+	"github.com/j-s-te/contract-management/internal/businessclock"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
@@ -133,22 +133,15 @@ func (r *Repository) ReviewOpportunityIntake(ctx context.Context, tenant, id, re
 		row.ReviewReason = &review.Reason
 		row.UpdatedAt = now
 		if review.Decision == application.OpportunityIntakeLinkConfirmed {
-			var linked contractRecord
-			if e := tx.Where("tenant_id=? AND (id=? OR contract_number=?)", tenant, reviewContractRef(row), row.ContractRef).First(&linked).Error; e != nil {
-				return apperrors.ErrNotFound
+			linkedID, linkedNumber, linkErr := confirmOpportunityContractLink(tx, tenant, row, reviewer, display)
+			if linkErr != nil {
+				return linkErr
 			}
-			updated := tx.Model(&contractRecord{}).Where("tenant_id=? AND id=?", tenant, linked.ID).Updates(map[string]any{"opportunity_id": strconv.FormatUint(row.OpportunityID, 10), "crm_customer_id": row.CustomerID})
-			if updated.Error != nil {
-				return updated.Error
-			}
-			if updated.RowsAffected == 0 {
-				return apperrors.ErrNotFound
-			}
-			out.ContractID = linked.ID
-			out.ContractNumber = stringValue(linked.ContractNumber)
-			row.ContractID = &linked.ID
-			if linked.ContractNumber != nil {
-				row.ContractNumber = linked.ContractNumber
+			out.ContractID = linkedID
+			out.ContractNumber = linkedNumber
+			row.ContractID = &linkedID
+			if linkedNumber != "" {
+				row.ContractNumber = &linkedNumber
 			}
 		}
 		if e := tx.Save(&row).Error; e != nil {
@@ -174,7 +167,6 @@ func (r *Repository) ReviewOpportunityIntake(ctx context.Context, tenant, id, re
 	})
 	return out, err
 }
-func reviewContractRef(row opportunityIntakeRecord) string { return row.ContractRef }
 
 type Repository struct{ db *gorm.DB }
 
@@ -817,14 +809,37 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 				return fmt.Errorf("%w: contract changed during approval", apperrors.ErrStateConflict)
 			}
 			if in.Status == approval.StatusApproved {
-				if current.ContractNumber == nil {
-					number := formatContractNumber(current.ContractNumberFormat, current.ID, time.Now().UTC())
+				if current.ContractNumber == nil || *current.ContractNumber == "" {
+					// 系统级规则优先；规则行缺失时 allocateContractNumberInTx 回退到
+					// 模板级格式串。取号与写号都在本审批事务内，与上行 FOR UPDATE 同锁。
+					// 存量库可能把“无编号”存成空串（000038 回填显式排除 ''），因此这里
+					// 与写号谓词一致地把 NULL 和 '' 都视为“待发号”。
+					number, err := allocateContractNumberInTx(tx, in.TenantID, current.ID, current.ContractNumberFormat, time.Now().UTC())
+					if err != nil {
+						return err
+					}
 					updates, err := approvedNumberUpdates(current, number)
 					if err != nil {
 						return err
 					}
-					if err := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND contract_number IS NULL", in.TenantID, in.ContractID).Updates(updates).Error; err != nil {
-						return err
+					updated := tx.Model(&contractRecord{}).
+						Where("tenant_id = ? AND id = ? AND (contract_number IS NULL OR contract_number = '')", in.TenantID, in.ContractID).
+						Updates(updates)
+					if updated.Error != nil {
+						// 命中 uk_con_contract_number(tenant_id, contract_number) 说明该租户
+						// 已存在同号合同：这是确定性数据冲突，重试永远不会成功。
+						if isContractNumberDuplicate(updated.Error) {
+							return fmt.Errorf("%w: %s 已被本租户的另一份合同占用，请执行 cmd/contract-number-audit 核对全系统编号，受控更正后再重试审批",
+								contract.ErrNumberConflict, number)
+						}
+						return updated.Error
+					}
+					if updated.RowsAffected != 1 {
+						// 影响行数不是 1 说明合同行在前置判定之后被并发改动（例如别处已写号）。
+						// 必须显式失败并整体回滚：否则登记表行会随事务提交被永久占用，而合同
+						// 仍然没有编号，还会掩盖真实的并发写号。
+						return fmt.Errorf("%w: 审批写号影响 %d 行（期望 1 行），合同状态或编号已被并发修改，登记表预占已回滚",
+							apperrors.ErrStateConflict, updated.RowsAffected)
 					}
 				}
 				if err := updateStatus(tx, in.TenantID, in.ContractID, contract.StatusPending, contract.StatusApproved, actor); err != nil {
@@ -843,9 +858,10 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 					return err
 				}
 				// 财务生效事件（contract.financial_effective.v1）与项目投递同源同事务。
-				// 未维护付款计划或合计不符时 enqueueFinancialEffective 保持静默不写行，
-				// 由 ReconcileFinancialEffectives 在条件具备后补建，绝不合成财务分期。
-				if err := enqueueFinancialEffective(tx, in.TenantID, in.ContractID); err != nil {
+				// 未维护付款计划或合计不符时不写行（失败关闭，绝不合成财务分期），
+				// 但必须返回显式 SkipReason，并由周期补建在条件满足后补建事件；
+				// 真实存储错误在此返回并回滚整个审批事务，不允许静默吞掉。
+				if _, err := enqueueFinancialEffective(tx, in.TenantID, in.ContractID); err != nil {
 					return err
 				}
 			} else {
@@ -1007,6 +1023,14 @@ func contractFromRecord(record contractRecord) contract.Contract {
 	return result
 }
 
+// formatContractNumber 按模板级格式串拼装单号。
+//
+// 日期占位符（{YYYYMMDD}/{YYYY}/{MM}/{DD}）一律按北京日历日取值，因此在函数内部把 now
+// 归一到业务时区再 Format：生产调用方传的是 UTC 时刻，直接 Format 会让北京时间
+// 00:00–08:00 签发的合同拿到前一天的日期段（写错数据，不只是显示问题）。归一放在函数
+// 内部而不是各个调用点，是为了防止以后新增调用点漏改拿到反直觉的结果。
+// 参数：format 为格式串（空串用默认格式），id 为合同 ID，now 为调用方给出的时刻。
+// 返回值：拼装后的单号。
 func formatContractNumber(format, id string, now time.Time) string {
 	if format == "" {
 		format = contracttemplate.DefaultNumberFormat
@@ -1015,11 +1039,12 @@ func formatContractNumber(format, id string, now time.Time) string {
 	if len(id8) > 8 {
 		id8 = id8[len(id8)-8:]
 	}
+	businessNow := now.In(businessclock.Location())
 	return strings.NewReplacer(
-		"{YYYYMMDD}", now.Format("20060102"),
-		"{YYYY}", now.Format("2006"),
-		"{MM}", now.Format("01"),
-		"{DD}", now.Format("02"),
+		"{YYYYMMDD}", businessNow.Format("20060102"),
+		"{YYYY}", businessNow.Format("2006"),
+		"{MM}", businessNow.Format("01"),
+		"{DD}", businessNow.Format("02"),
 		"{ID8}", id8,
 	).Replace(format)
 }

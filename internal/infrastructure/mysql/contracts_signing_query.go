@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/businessclock"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"gorm.io/gorm"
 )
@@ -57,8 +58,10 @@ func (r *Repository) ListSigningRecordsScoped(ctx context.Context, filter contra
 	if query.Offset < 0 {
 		query.Offset = 0
 	}
-	now := time.Now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	// 台账的“今天”是业务日期（北京日历日）。库里的 DATE 列（end_date）按 UTC 墙钟保存，
+	// 驱动默认 loc=UTC 又会把参数换算成 UTC 再格式化，因此这里必须用 CalendarDay 的
+	// 「同日 00:00 UTC 墙钟」形式；直接传北京市区 00:00 会变成前一天 16:00，整条比较错开 8 小时。
+	today := businessclock.CalendarDay(businessclock.Now())
 	db := r.db.WithContext(ctx)
 
 	countQuery := applySigningRecordFilters(signingLedgerQuery(db, filter), query, today)
@@ -108,8 +111,12 @@ func (r *Repository) ListSigningRecordsScoped(ctx context.Context, filter contra
 	}, nil
 }
 
+// signingStatsScoped 汇总签署台账统计。
+// 参数：today 为数据库口径的业务日期（见 ListSigningRecordsScoped 的 CalendarDay 说明），
+// 只用于 DATE 列比较；“本月已确认”与 confirmed_at 这类 DATETIME 绝对时刻比较时，
+// 月界必须换成北京时间月初对应的真实瞬间（月界.UTC()），不能用 today 推。
 func (r *Repository) signingStatsScoped(ctx context.Context, filter contract.ScopeFilter, today time.Time) (contract.SigningStats, error) {
-	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthStart := businessclock.MonthStart()
 	nextMonth := monthStart.AddDate(0, 1, 0)
 	var stats contract.SigningStats
 	err := signingLedgerQuery(r.db.WithContext(ctx), filter).Select(`COUNT(*) AS total,
@@ -118,7 +125,7 @@ func (r *Repository) signingStatsScoped(ctx context.Context, filter contract.Sco
 			AND (c.end_date IS NULL OR c.end_date >= ?) THEN 1 ELSE 0 END), 0) AS processing,
 		COALESCE(SUM(CASE WHEN s.status = 'completed' AND s.confirmed_at >= ? AND s.confirmed_at < ? THEN 1 ELSE 0 END), 0) AS monthly,
 		COALESCE(SUM(CASE WHEN (s.status IS NULL OR s.status <> 'completed') AND c.end_date IS NOT NULL AND c.end_date < ? THEN 1 ELSE 0 END), 0) AS expired`,
-		today, monthStart, nextMonth, today).Scan(&stats).Error
+		today, monthStart.UTC(), nextMonth.UTC(), today).Scan(&stats).Error
 	if err != nil {
 		return contract.SigningStats{}, err
 	}

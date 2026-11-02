@@ -108,3 +108,35 @@ func TestContractImporterRoleGrantsOnlyApprovedRead(t *testing.T) {
 		}
 	}
 }
+
+// 编号规则是全系统单行配置（无 tenant_id），因此写入权限只能挂在专用角色上：
+// 一旦它出现在 admin、contract_specialist 等既有租户级角色里，任一租户的合同管理员
+// 就能改全系统前缀，跨租户影响所有租户后续签发。这里把该边界钉在清单上。
+func TestNumberRuleManagePermissionIsGrantedOnlyByDedicatedRole(t *testing.T) {
+	catalog, err := LoadAuthorizationCatalog()
+	if err != nil {
+		t.Fatalf("LoadAuthorizationCatalog() error = %v", err)
+	}
+	const permission = "contract.number_rule.manage"
+	if _, ok := catalog.Permissions[permission]; !ok {
+		t.Fatalf("manifest is missing permission %s", permission)
+	}
+	if _, ok := catalog.Roles["number_rule_admin"]; !ok {
+		t.Fatal("manifest is missing role number_rule_admin")
+	}
+	granted, ok := catalog.RolePermissions["number_rule_admin"]
+	if !ok || len(granted) != 1 {
+		t.Fatalf("number_rule_admin permissions = %v, want exactly one", granted)
+	}
+	if _, ok := granted[permission]; !ok {
+		t.Fatalf("number_rule_admin must grant %s, got %v", permission, granted)
+	}
+	for roleCode, rolePermissions := range catalog.RolePermissions {
+		if roleCode == "number_rule_admin" {
+			continue
+		}
+		if _, granted := rolePermissions[permission]; granted {
+			t.Fatalf("role %s must not grant %s: 编号规则写入不得退回租户级角色旁路", roleCode, permission)
+		}
+	}
+}

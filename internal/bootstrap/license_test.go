@@ -13,6 +13,7 @@ func TestCommercialBootstrapCompatibilityAndConfiguredFailClosed(t *testing.T) {
 	defer cancel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	t.Setenv("COMMERCIAL_LICENSE_ENABLED", "false")
+	t.Setenv("COMMERCIAL_LICENSE_COMPATIBILITY", "true")
 	gate, err := StartCommercialLicense(ctx, logger)
 	if err != nil || gate.Check(ctx, core.MUTATE_BUSINESS) != nil {
 		t.Fatal("explicit compatibility startup failed")
