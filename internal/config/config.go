@@ -659,7 +659,8 @@ func (c Config) validate() error {
 	if c.OIDCSessionIdleTTL < time.Minute || c.OIDCSessionIdleTTL > 24*time.Hour {
 		return fmt.Errorf("OIDC_SESSION_IDLE_TTL must be between 60s and 24h")
 	}
-	if c.OIDCSessionAbsoluteTTL <= c.OIDCSessionIdleTTL {
+	// 中央模式由平台裁定真实空闲与原认证截止，本地期限关系只约束旧模式。
+	if !c.CentralSessionEnabled && c.OIDCSessionAbsoluteTTL <= c.OIDCSessionIdleTTL {
 		return fmt.Errorf("OIDC_SESSION_ABSOLUTE_TTL must be greater than OIDC_SESSION_IDLE_TTL")
 	}
 	if strings.TrimSpace(c.OIDCSessionCookieName) == "" ||
