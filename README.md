@@ -15,7 +15,7 @@
 - MySQL 事务保存合同状态、生命周期事件、审批实例、任务和动作；Activity、通知 outbox 均有幂等键，可安全重试。
 - 合同激活事务同步写入项目投递 Outbox；API/Worker 通过受控内部网络异步投递，失败指数退避重试，项目侧按稳定合同ID唯一建项（历史无ID回退合同号），行版本仅用于并发/审计/展示，不释放重复建项。项目迁移000033对存量同合同多项目失败关闭。
 - 草稿可维护结构化付款计划；审批生效事务同时写项目投递及合法的 `contract.financial_effective.v1` 财务事件。财务 Dispatcher 启用并取得结算认可的机器身份后投递；结算消费后生成待确认应收计划。旧无分期合同、签署完成、履约 completed 和正文模板付款变量均不会合成默认分期。
-- Worker 启动时确保每日自动归档 Cron Workflow 存在；默认北京时间零点执行，通知合同负责人、销售总监角色和管理员角色。
+- Worker 启动时确保每日自动归档 Cron Workflow 存在；默认按 UTC 表达式 `0 16 * * *` 执行（Temporal 按 UTC 解析 = 北京 00:00，不要按北京时间理解成下午 4 点），通知合同负责人、销售总监角色和管理员角色；业务日历值（单号年份段、年度流水桶、台账与看板的“今天/本月”、到期判定）统一走 `internal/businessclock` 的北京时间。
 - 使用 `github.com/coreos/go-oidc/v3` 对接 Keycloak OIDC Authorization Code + PKCE：通过 discovery 获取授权、Token、UserInfo、JWKS 和登出端点，独立校验 `state`、`nonce`、ID Token 签名/Issuer/Audience/有效期，并校验 Keycloak 映射的 `tenant_id`、`roles`、`permissions`、`role_config_hash`、`authz_revision` 后建立仅作用于子路径的 `contract_management_session`。
 - 本地会话通过轮换 Refresh Token 定期取得最新授权快照；角色撤销、权限变更和授权版本更新默认在一分钟内生效。
 - 启用 `PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED` 后，API 启动时使用独立机器 Client 将内嵌权限清单发布到平台；同步失败时拒绝启动，避免运行时权限与平台目录漂移。
@@ -69,6 +69,8 @@ draft -> pending -> approved -> active -> in_progress -> pending_pay -> complete
 | PUT | `/api/v1/contract-templates/{id}` | `contract.template.manage`（兼容 `admin` 角色） | 编辑模板名称、字段标签、默认值和管理员锁定状态 |
 | DELETE | `/api/v1/contract-templates/{id}` | `contract.template.manage`（兼容 `admin` 角色） | 删除模板；已生成合同保存的是冻结文档，不受影响 |
 | POST | `/api/v1/contract-templates/{id}/preview` | `contract.create` | 根据表单值渲染安全的 HTML 预览 |
+| GET | `/api/v1/contract-number-rule` | `contract.read` | 查看全系统单行编号规则、示例单号与当年流水水位；普通用户只读 |
+| PUT | `/api/v1/contract-number-rule` | `contract.number_rule.manage`（`number_rule_admin` 角色，无 `admin` 旁路） | 全量覆盖全系统单行编号规则；`contract.template.manage` 与合同 `admin` 角色均不放行 |
 | GET | `/api/v1/contracts/{id}` | `contract.read` | 查询实际授权范围内合同及服务端 can_edit_draft |
 | PUT | `/api/v1/contracts/{id}/draft` | `contract.edit` | 当前范围内 admin 或草稿创建销售按 expected_version 保存 |
 | GET | `/api/v1/contracts/{id}/lifecycle` | `contract.read` | 查询实际授权范围内合同生命周期 |

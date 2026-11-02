@@ -130,7 +130,8 @@ func TestArchiveImportExcludedEveryPath(t *testing.T) {
 		if e := enqueueProjectActivation(tx, tenant, id); e != nil {
 			return e
 		}
-		return enqueueFinancialEffective(tx, tenant, id)
+		_, e := enqueueFinancialEffective(tx, tenant, id)
+		return e
 	}); e != nil {
 		t.Fatal(e)
 	}
@@ -151,7 +152,7 @@ func TestArchiveImportExcludedEveryPath(t *testing.T) {
 		if e != nil || len(list) != 0 {
 			t.Fatalf("approved scope leaked %v", e)
 		}
-		refs, e := r.ListApprovedContractReferencesScoped(ctx, scope, "", 50)
+		refs, e := r.ListApprovedContractReferencesScoped(ctx, scope, "", "", 50)
 		if e != nil || len(refs) != 0 {
 			t.Fatalf("reference scope leaked %v", e)
 		}

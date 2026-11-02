@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -26,7 +27,37 @@ import (
 // draftE2ERepository 只在显式隔离DSN下初始化并清理本测试租户。
 // 参数：t 为测试上下文，DSN必须指向回环专用测试库。
 // 返回值：仓储和随机测试租户；未配置DSN时跳过。
+//
+// 注意：这里的 gorm.Config 刻意保持与历史一致（不启用 TranslateError），
+// 因此本 helper 建出的仓储走的是裸 *mysql.MySQLError 分支。生产配置（含
+// TranslateError）下的 1062 分支由 contractNumberE2ERepositoryWithTranslateError 覆盖。
 func draftE2ERepository(t *testing.T) (*Repository, string) {
+	t.Helper()
+	cfg := draftE2ETestDSN(t)
+	db, err := gorm.Open(gormmysql.Open(cfg), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal("dedicated test database connection failed")
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(8)
+	tenant := ulid.Make().String()
+	t.Cleanup(func() {
+		draftE2ECleanupTenant(t, db, sqlDB, tenant)
+		if err := sqlDB.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return NewRepository(db), tenant
+}
+
+// draftE2ETestDSN 校验并迁移隔离测试库，返回连库用的 DSN。
+//
+// 参数：t 为测试上下文；要求 CONTRACT_TEST_DSN 指向 contract_test_* 回环 TCP 库。
+// 返回值：已按 ParseTime 归一、并已迁移到最新版本的 DSN；未配置 DSN 时跳过用例。
+func draftE2ETestDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("CONTRACT_TEST_DSN")
 	if dsn == "" {
@@ -40,38 +71,41 @@ func draftE2ERepository(t *testing.T) (*Repository, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := migration.Run(ctx, cfg.FormatDSN(), migrations.Files); err != nil {
-		t.Fatal("dedicated test database migrations failed")
+		// 带上原始错误：多包并行共用同一个隔离库时，并发 migration.Run 可能撞上
+		// 1213/1062，没有细节会很难判断是环境问题还是迁移本身出错。
+		t.Fatalf("dedicated test database migrations failed: %v", err)
 	}
-	db, err := gorm.Open(gormmysql.Open(cfg.FormatDSN()), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatal("dedicated test database connection failed")
+	return cfg.FormatDSN()
+}
+
+// draftE2ECleanupTenant 按 tenant_id 精确清理本测试造的数据，不做全表删除。
+//
+// 参数：t 为测试上下文，db 为 GORM 连接，sqlDB 为其底层连接池（仅用于关闭），
+// tenant 为测试租户。
+// 返回值：无；清理失败记为测试错误。
+func draftE2ECleanupTenant(t *testing.T, db *gorm.DB, sqlDB *sql.DB, tenant string) {
+	t.Helper()
+	if err := db.Where("tenant_id = ?", tenant).Delete(&templateFileOutboxRecord{}).Error; err != nil {
+		t.Error("dedicated test template-file cleanup failed")
 	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
+	// 任务通过审批外键绑定租户，而非 tenant_id
+	// 列。清理必须限定为本测试实例。
+	instances := db.Model(&approvalInstanceRecord{}).Select("id").Where("tenant_id = ?", tenant)
+	if err := db.Where("approval_id IN (?)", instances).Delete(&approvalTaskRecord{}).Error; err != nil {
+		t.Error("dedicated test approval-task cleanup failed")
 	}
-	sqlDB.SetMaxOpenConns(8)
-	tenant := ulid.Make().String()
-	t.Cleanup(func() {
-		if err := db.Where("tenant_id = ?", tenant).Delete(&templateFileOutboxRecord{}).Error; err != nil {
-			t.Error("dedicated test template-file cleanup failed")
+	for _, model := range []any{&contractResponsibilityOutbox{}, &contractResponsibilityStream{}, &signingConfirmationRecord{}, &stampedDocumentRecord{}, &signingRecord{}, &financialEffectiveOutboxRecord{}, &paymentTermRecord{}, &projectDeliveryOutboxRecord{}, &notificationOutboxRecord{}, &approvalActionRecord{}, &lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractNumberRegistryRecord{}, &contractRecord{}, &contractTemplateRecord{}} {
+		if err := db.Where("tenant_id = ?", tenant).Delete(model).Error; err != nil {
+			t.Error("dedicated test tenant cleanup failed")
 		}
-		// 任务通过审批外键绑定租户，而非 tenant_id
-		// 列。清理必须限定为本测试实例。
-		instances := db.Model(&approvalInstanceRecord{}).Select("id").Where("tenant_id = ?", tenant)
-		if err := db.Where("approval_id IN (?)", instances).Delete(&approvalTaskRecord{}).Error; err != nil {
-			t.Error("dedicated test approval-task cleanup failed")
-		}
-		for _, model := range []any{&contractResponsibilityOutbox{}, &contractResponsibilityStream{}, &signingConfirmationRecord{}, &stampedDocumentRecord{}, &signingRecord{}, &financialEffectiveOutboxRecord{}, &paymentTermRecord{}, &projectDeliveryOutboxRecord{}, &notificationOutboxRecord{}, &approvalActionRecord{}, &lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractRecord{}, &contractTemplateRecord{}} {
-			if err := db.Where("tenant_id = ?", tenant).Delete(model).Error; err != nil {
-				t.Error("dedicated test tenant cleanup failed")
-			}
-		}
-		if err := sqlDB.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return NewRepository(db), tenant
+	}
+	// 审批/草稿用例会在事务内写 con_audit_outbox，而 internal/auditoutbox 的领取用例
+	// 是按时间顺序全局 Claim（不按租户过滤）。残留行会把别处用例的旧行喂给 Claim，
+	// 让「过期租约可重领」用例拿到不属于自己的行而失败，因此这里必须按租户清干净。
+	// 同包其它用例（pdf_approval/import 等）也各自按租户清理这张表。
+	if err := db.Where("tenant_id = ?", tenant).Delete(&auditOutboxRecord{}).Error; err != nil {
+		t.Error("dedicated test audit-outbox cleanup failed")
+	}
 }
 
 func draftE2EContract(t *testing.T, r *Repository, tenant string) contract.Contract {

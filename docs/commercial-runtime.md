@@ -1,9 +1,16 @@
 # Commercial runtime enforcement
 
 The controlled deployment defaults to `COMMERCIAL_LICENSE_ENABLED=false` for
-compatibility during rollout. API and Worker always construct a shared consumer
+compatibility during rollout. That compatibility mode is an explicit opt-in: an
+empty or `false` switch is rejected at startup unless
+`COMMERCIAL_LICENSE_COMPATIBILITY=true` is also set (normalized exact `true`;
+empty, `1` or `yes` fail closed), and it is still refused for components that
+carry binding fields or persisted runtime state. API and Worker always construct a shared consumer
 gate. Explicit `true` requires valid trust, binding, durable state and independent
 machine credentials; missing configuration fails startup, never reverts to false.
+The compatibility flag is ignored on the enabled path and never substitutes for
+platform registration: production must not use `false` to impersonate an
+authorized installation.
 Do not manually enable before platform registration and snapshot activation.
 
 ## Independent API and Worker components
@@ -46,6 +53,10 @@ Runtime configuration is supplied by the platform's controlled onboarding flow:
 - `COMMERCIAL_LICENSE_PLATFORM_BASE_URL`, `COMMERCIAL_LICENSE_ALLOW_HTTP`
 - `COMMERCIAL_LICENSE_CLIENT_ID`, `COMMERCIAL_LICENSE_CLIENT_SECRET`
 - `COMMERCIAL_LICENSE_COVERAGE_DIGEST`, `COMMERCIAL_LICENSE_IMAGE_DIGEST`
+
+`COMMERCIAL_LICENSE_COMPATIBILITY` is deliberately absent from the managed set:
+it only marks a never-enrolled component as intentionally running without
+controlled licensing, and it has no effect while `ENABLED=true`.
 
 Only a platform public key is delivered. Vendor trust is compiled into the audited
 shared module; neither runtime credentials nor private keys belong in Git/images.

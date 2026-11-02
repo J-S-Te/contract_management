@@ -27,18 +27,20 @@ var (
 )
 
 type OIDCOptions struct {
-	Issuer, BackchannelBaseURL, PlatformBaseURL                     string
-	ClientID, ClientSecret, RedirectURI, PostLogoutRedirectURI      string
-	IdentityProviderHint                                            string
-	ApplicationCode, EnvironmentCode, TenantID                      string
-	Scopes                                                          []string
-	SessionCookieName, PathPrefix                                   string
-	SessionTTL, AuthorizationRefreshInterval, AuthorizationMaxStale time.Duration
-	AuthorizationTimeout                                            time.Duration
-	SessionSecure                                                   bool
-	SessionEncryptionKey                                            []byte
-	Store                                                           OIDCStore
-	AuthorizationClient                                             AuthorizationContextClient
+	Issuer, BackchannelBaseURL, PlatformBaseURL                string
+	ClientID, ClientSecret, RedirectURI, PostLogoutRedirectURI string
+	IdentityProviderHint                                       string
+	ApplicationCode, EnvironmentCode, TenantID                 string
+	Scopes                                                     []string
+	SessionCookieName, PathPrefix                              string
+	// SessionTTL 是会话绝对期限，SessionIdleTTL 是空闲期限；绝对期限必须严格更长。
+	SessionTTL, SessionIdleTTL                          time.Duration
+	AuthorizationRefreshInterval, AuthorizationMaxStale time.Duration
+	AuthorizationTimeout                                time.Duration
+	SessionSecure                                       bool
+	SessionEncryptionKey                                []byte
+	Store                                               OIDCStore
+	AuthorizationClient                                 AuthorizationContextClient
 	// Audit 可选；非空时在登录/登出成功后向平台审计上报 auth.login / auth.logout。
 	Audit AuditReporter
 }
@@ -101,6 +103,11 @@ func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthen
 	if options.Store == nil {
 		return nil, errors.New("OIDC persistent store is required")
 	}
+	// 空闲机制依赖"绝对期限更长"这一前提；配置非法时启动失败关闭，
+	// 不在运行期退化成只有绝对期限的旧语义。
+	if options.SessionIdleTTL <= 0 || options.SessionTTL <= options.SessionIdleTTL {
+		return nil, errors.New("OIDC session idle TTL must be positive and shorter than the absolute TTL")
+	}
 	codec, err := newSecretCodec(options.SessionEncryptionKey)
 	if err != nil {
 		return nil, err
@@ -162,6 +169,18 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Requ
 		_ = a.store.RevokeSession(ctx, record.SessionIDHash, now)
 		return application.Principal{}, ErrUnauthenticated
 	}
+	// 空闲到期与绝对到期一样直接拒绝且不撤销、不广播：由前端探测后回到本系统登录。
+	if !a.sessionIdleValid(record, now) {
+		return application.Principal{}, ErrUnauthenticated
+	}
+	// 普通已认证请求只更新 last_seen_at：浏览器轮询不能顺带延长空闲期限，
+	// 续期只能由显式活动接口（POST /api/v1/auth/activity）触发。
+	if err := a.store.TouchSessionLastSeen(ctx, tokenHash(cookie.Value), now); err != nil {
+		if errors.Is(err, ErrUnauthenticated) {
+			return application.Principal{}, ErrUnauthenticated
+		}
+		return application.Principal{}, ErrAuthorizationServiceUnavailable
+	}
 	refreshDue := now.Sub(record.AuthorizationCheckedAt) >= a.options.AuthorizationRefreshInterval || !record.TokenExpiresAt.After(now)
 	if !refreshDue {
 		return principal, nil
@@ -184,6 +203,89 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Requ
 		return principal, nil
 	}
 	return application.Principal{}, ErrAuthorizationServiceUnavailable
+}
+
+// SessionIdle 返回当前会话的空闲期限与剩余窗口，不推进任何时间基准。
+// 参数：ctx 为请求上下文，request 为携带会话 Cookie 的浏览器请求。
+// 返回值：空闲期限与剩余窗口长度；会话无效、空闲到期或绝对到期返回 ErrUnauthenticated。
+func (a *OIDCAuthenticator) SessionIdle(ctx context.Context, request *http.Request) (time.Duration, time.Duration, error) {
+	now := a.now().UTC()
+	record, _, err := a.interactiveSession(ctx, request, now)
+	if err != nil {
+		return 0, 0, err
+	}
+	return a.options.SessionIdleTTL, a.sessionIdleRemaining(record, now), nil
+}
+
+// RecordActivity 记录浏览器显式交互：推进 last_interactive_at 与 last_seen_at，
+// 绝对期限保持不变。只有当前仍处于空闲/绝对窗口内的会话可以续期，失效会话不会复活。
+// 参数：ctx 为请求上下文，request 为携带会话 Cookie 的浏览器请求。
+// 返回值：空闲期限与续期后的剩余窗口；会话失效返回 ErrUnauthenticated。
+func (a *OIDCAuthenticator) RecordActivity(ctx context.Context, request *http.Request) (time.Duration, time.Duration, error) {
+	now := a.now().UTC()
+	record, hash, err := a.interactiveSession(ctx, request, now)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := a.store.RecordInteraction(ctx, hash, now, a.options.SessionIdleTTL); err != nil {
+		if errors.Is(err, ErrUnauthenticated) {
+			return 0, 0, ErrUnauthenticated
+		}
+		return 0, 0, ErrAuthorizationServiceUnavailable
+	}
+	record.LastInteractiveAt = &now
+	record.LastSeenAt = &now
+	return a.options.SessionIdleTTL, a.sessionIdleRemaining(record, now), nil
+}
+
+// interactiveSession 读取并校验当前 Cookie 会话，供显式活动接口复用。
+// 参数：ctx 为请求上下文，request 为浏览器请求，now 为服务端当前时间。
+// 返回值：有效会话记录与会话哈希；任何失效场景返回 ErrUnauthenticated。
+func (a *OIDCAuthenticator) interactiveSession(ctx context.Context, request *http.Request, now time.Time) (SessionRecord, []byte, error) {
+	cookie, err := request.Cookie(a.options.SessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return SessionRecord{}, nil, ErrUnauthenticated
+	}
+	hash := tokenHash(cookie.Value)
+	record, err := a.store.FindSession(ctx, hash, now)
+	if err != nil || record.TenantID != a.options.TenantID {
+		return SessionRecord{}, nil, ErrUnauthenticated
+	}
+	principal, err := principalFromJSON(record.PrincipalJSON)
+	if err != nil || principal.IdentityID != record.IdentityID || principal.TenantID != record.TenantID {
+		return SessionRecord{}, nil, ErrUnauthenticated
+	}
+	if !a.sessionIdleValid(record, now) {
+		return SessionRecord{}, nil, ErrUnauthenticated
+	}
+	return record, hash, nil
+}
+
+// sessionIdleValid 判断会话是否同时处于绝对期限与空闲窗口内。
+// 旧行 last_interactive_at 为空时按 created_at 计算，与迁移回填语义一致。
+func (a *OIDCAuthenticator) sessionIdleValid(record SessionRecord, now time.Time) bool {
+	if a.options.SessionIdleTTL <= 0 || !record.SessionExpiresAt.After(now) {
+		return false
+	}
+	return now.Before(interactiveBaseline(record).Add(a.options.SessionIdleTTL))
+}
+
+// sessionIdleRemaining 返回 min(last_interactive+idle, absolute) - now，非负。
+func (a *OIDCAuthenticator) sessionIdleRemaining(record SessionRecord, now time.Time) time.Duration {
+	deadline := earliestExpiry(interactiveBaseline(record).Add(a.options.SessionIdleTTL), record.SessionExpiresAt)
+	remaining := deadline.Sub(now)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// interactiveBaseline 返回空闲计时基准：显式交互时间优先，旧行缺失时回退 created_at。
+func interactiveBaseline(record SessionRecord) time.Time {
+	if record.LastInteractiveAt != nil && !record.LastInteractiveAt.IsZero() {
+		return record.LastInteractiveAt.UTC()
+	}
+	return record.CreatedAt.UTC()
 }
 
 func (a *OIDCAuthenticator) Login(writer http.ResponseWriter, request *http.Request) {
@@ -474,7 +576,8 @@ func (a *OIDCAuthenticator) newSessionRecord(rawSession string, principal applic
 		PersonID: principal.PersonID, PrincipalJSON: principalJSON, AccessTokenCiphertext: accessCiphertext,
 		RefreshTokenCiphertext: refreshCiphertext, IDTokenCiphertext: idCiphertext,
 		AuthorizationRevision: principal.AuthorizationRevision, AuthorizationCheckedAt: now,
-		TokenExpiresAt: tokenExpiry, SessionExpiresAt: now.Add(a.options.SessionTTL), CreatedAt: now, UpdatedAt: now}, nil
+		TokenExpiresAt: tokenExpiry, SessionExpiresAt: now.Add(a.options.SessionTTL),
+		LastSeenAt: &now, LastInteractiveAt: &now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func principalFromJSON(raw []byte) (application.Principal, error) {

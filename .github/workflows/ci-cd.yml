@@ -16,6 +16,23 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 合同编号巡检冒烟与漂移夹具需要真实 MySQL。服务只服务于该 job 的两项巡检验证
+    # （干净库退出码契约 + 三类漂移夹具，范围声明见下方两个 step 的注释），
+    # 不承载任何业务库或生产凭据。
+    services:
+      contract-audit-mysql:
+        image: mysql:8.4
+        env:
+          # 仅本作业独占的临时库口令；刻意不使用仓库/环境的任何 Secret。
+          MYSQL_ROOT_PASSWORD: isolated-contract-audit-ci
+          MYSQL_DATABASE: contract_test_audit
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pisolated-contract-audit-ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -30,6 +47,157 @@ jobs:
         env:
           CONTRACT_RUNTIME_ENV_FILE: .env.example
         run: docker compose --env-file .env.example config --quiet
+      # 范围声明（请勿扩大解读）：本 step 只验证三件事——cmd/contract-number-audit 能在
+      # 真实 MySQL 上跑通、干净库的退出码契约（0）、以及 SET SESSION TRANSACTION READ ONLY
+      # 只读会话能建立。它刻意不构造漂移数据；三类漂移判定（重复编号 / 未登记 / 登记错配）
+      # 的覆盖在紧随其后的夹具 step 里，本 step 不重复。两者都不替代现场对真实业务库执行
+      # 巡检后落盘的证据。
+      - name: Smoke contract-number-audit exit-code contract on isolated MySQL (clean database)
+        env:
+          # 仓内纪律：库名为 contract_test_*，走回环 TCP，仅本作业独占的临时库。
+          CONTRACT_NUMBER_AUDIT_TEST_DSN: root:isolated-contract-audit-ci@tcp(127.0.0.1:3306)/contract_test_audit?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
+        run: |
+          set -Eeuo pipefail
+          echo '范围：仅验证命令可运行、只读会话可用、干净库退出码为 0；三类漂移判定由紧随其后的夹具 step 覆盖。'
+          MYSQL_DSN="$CONTRACT_NUMBER_AUDIT_TEST_DSN" go run ./cmd/migrate
+          audit_status=0
+          MYSQL_DSN="$CONTRACT_NUMBER_AUDIT_TEST_DSN" go run ./cmd/contract-number-audit >"$RUNNER_TEMP/audit-smoke.log" 2>&1 || audit_status=$?
+          cat "$RUNNER_TEMP/audit-smoke.log"
+          echo "contract-number-audit exit code = $audit_status"
+          if [[ "$audit_status" -ne 0 ]]; then
+            echo "巡检在干净测试库上的退出码应为 0，实际为 ${audit_status}" >&2
+            exit 1
+          fi
+          # 退出码 0 必须伴随「真的读到了库」：断言干净结论，避免空跑也被当成通过。
+          grep -q '合同编号与登记表一致' "$RUNNER_TEMP/audit-smoke.log"
+      # 漂移检测覆盖声明：本 step 才证明巡检能发现真实漂移。它在上一步已迁移好的同一个干净库上
+      # 注入三类夹具，逐个断言「退出码 1 + 三类段落非零 + 指名到本 step 造的编号」，再按租户/
+      # 编号精确清理，断言退出码回到 0 且输出干净结论。三类夹具：
+      #   1) 重复编号：同一 contract_number 落在两个不同 tenant_id 上（跨租户同号，绕过
+      #      uk_con_contract_number(tenant_id, contract_number) 这一租户内唯一键）。
+      #   2) 未登记：con_contract 有编号，con_contract_number_registry 无对应行。
+      #   3) 登记错配：两边都有该编号，但 tenant_id 与 contract_id 都不一致。
+      # 仍未覆盖（不要扩大解读）：明细 20 条上限之后的「其余 N 条未显示」分支、大表/慢查询下的
+      # 耗时与索引表现、只读会话在并发写入下的行为，以及现场真实业务库的数据分布；
+      # 现场仍需对业务库执行 cmd/contract-number-audit 并落盘巡检证据。
+      - name: Detect real drift with contract-number-audit on isolated MySQL (drift fixtures)
+        env:
+          # 仓内纪律：库名 contract_test_*，回环 TCP，仅本作业独占的临时库与测试口令，
+          # 刻意不引用仓库/环境的任何 Secret。
+          CONTRACT_NUMBER_AUDIT_TEST_DSN: root:isolated-contract-audit-ci@tcp(127.0.0.1:3306)/contract_test_audit?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
+          CONTRACT_NUMBER_AUDIT_TEST_DB: contract_test_audit
+          CONTRACT_NUMBER_AUDIT_TEST_USER: root
+          CONTRACT_NUMBER_AUDIT_TEST_PASSWORD: isolated-contract-audit-ci
+        run: |
+          set -Eeuo pipefail
+          export MYSQL_PWD="$CONTRACT_NUMBER_AUDIT_TEST_PASSWORD"
+          drift_log="$RUNNER_TEMP/audit-drift.log"
+          clean_log="$RUNNER_TEMP/audit-clean.log"
+
+          # mysql_run 用 runner 自带的 mysql 客户端执行一段 SQL（口令走 MYSQL_PWD，不进 argv）。
+          mysql_run() {
+            mysql --protocol=TCP -h 127.0.0.1 -P 3306 -u "$CONTRACT_NUMBER_AUDIT_TEST_USER" \
+              --default-character-set=utf8mb4 --connect-timeout=10 \
+              "$CONTRACT_NUMBER_AUDIT_TEST_DB" "$@"
+          }
+
+          # assert_contains 断言输出含固定片段；失败时回显完整巡检输出便于排查。
+          assert_contains() {
+            if ! grep -qF -- "$2" "$1"; then
+              {
+                echo "断言失败：$3"
+                echo "（未在巡检输出中找到固定片段：$2）"
+                echo "—— 实际巡检输出 ——"
+                cat "$1"
+              } >&2
+              exit 1
+            fi
+          }
+
+          # assert_matches 断言输出匹配正则；失败时同样回显完整巡检输出。
+          assert_matches() {
+            if ! grep -qE -- "$2" "$1"; then
+              {
+                echo "断言失败：$3"
+                echo "（未匹配正则：$2）"
+                echo "—— 实际巡检输出 ——"
+                cat "$1"
+              } >&2
+              exit 1
+            fi
+          }
+
+          # 夹具只用固定字面量：id/tenant_id 列宽 26，编号与租户带 CI-AUDIT-/ci-audit- 前缀，
+          # 便于精确清理且不会与真实业务数据碰撞。
+          echo '注入三类漂移夹具：跨租户重复编号 / 未登记 / 登记错配。'
+          mysql_run <<'SQL'
+          INSERT INTO con_contract
+            (id, tenant_id, contract_number, title, contract_type, service_type, owner_user_id,
+             amount_minor, currency, content, status, created_at, created_by, updated_at, updated_by)
+          VALUES
+            ('ci-audit-dup-ca-01', 'ci-audit-dup-ta-01', 'CI-AUDIT-DUP-0001',
+             'CI 漂移夹具-重复编号-A', 'sales', 'service', 'ci-audit-owner-0001',
+             1, 'CNY', '{}', 'draft', UTC_TIMESTAMP(3), 'ci-audit-fixture', UTC_TIMESTAMP(3), 'ci-audit-fixture'),
+            ('ci-audit-dup-cb-01', 'ci-audit-dup-tb-01', 'CI-AUDIT-DUP-0001',
+             'CI 漂移夹具-重复编号-B', 'sales', 'service', 'ci-audit-owner-0001',
+             1, 'CNY', '{}', 'draft', UTC_TIMESTAMP(3), 'ci-audit-fixture', UTC_TIMESTAMP(3), 'ci-audit-fixture'),
+            ('ci-audit-unreg-c-01', 'ci-audit-unreg-t-01', 'CI-AUDIT-UNREG-0001',
+             'CI 漂移夹具-未登记', 'sales', 'service', 'ci-audit-owner-0001',
+             1, 'CNY', '{}', 'draft', UTC_TIMESTAMP(3), 'ci-audit-fixture', UTC_TIMESTAMP(3), 'ci-audit-fixture'),
+            ('ci-audit-mis-c-01', 'ci-audit-mis-t-01', 'CI-AUDIT-MISMATCH-0001',
+             'CI 漂移夹具-登记错配', 'sales', 'service', 'ci-audit-owner-0001',
+             1, 'CNY', '{}', 'draft', UTC_TIMESTAMP(3), 'ci-audit-fixture', UTC_TIMESTAMP(3), 'ci-audit-fixture');
+          -- 登记表故意记成另一个租户与另一个合同 ID：同一条覆盖租户错配与合同 ID 错配。
+          INSERT INTO con_contract_number_registry
+            (contract_number, tenant_id, contract_id, seq_year, rule_key)
+          VALUES
+            ('CI-AUDIT-MISMATCH-0001', 'ci-audit-mis-t-02', 'ci-audit-mis-reg-01', 0, '');
+          SQL
+
+          # 第一遍：存在三类漂移，退出码必须是 1。
+          drift_status=0
+          MYSQL_DSN="$CONTRACT_NUMBER_AUDIT_TEST_DSN" go run ./cmd/contract-number-audit \
+            >"$drift_log" 2>&1 || drift_status=$?
+          cat "$drift_log"
+          echo "contract-number-audit exit code (drift fixtures) = $drift_status"
+          if [[ "$drift_status" -ne 1 ]]; then
+            echo "存在三类漂移时巡检退出码应为 1，实际为 ${drift_status}" >&2
+            exit 1
+          fi
+          # 三类段落标题必须都出现（文案取自 internal/migration 与 cmd/contract-number-audit 的渲染函数）。
+          assert_matches "$drift_log" '^\[重复编号\] 共 [1-9][0-9]* 组$' '未报出重复编号段落'
+          assert_matches "$drift_log" '^\[未登记\] 共 [1-9][0-9]* 条$' '未报出未登记段落'
+          assert_matches "$drift_log" '^\[登记错配\] 共 [1-9][0-9]* 条$' '未报出登记错配段落'
+          # 每类必须指名到本 step 造的具体编号（句式来自 Duplicate/Unregistered/RegistryMismatch 的 String()）。
+          assert_contains "$drift_log" '编号 CI-AUDIT-DUP-0001 出现 2 次' '重复编号段落未指名被注入的跨租户同号编号'
+          assert_contains "$drift_log" '编号 CI-AUDIT-UNREG-0001 未登记' '未登记段落未指名被注入的未登记编号'
+          assert_contains "$drift_log" '编号 CI-AUDIT-MISMATCH-0001 登记错配' '登记错配段落未指名被注入的错配编号'
+          # 结论行三类计数都必须非零。夹具恰好产生「重复编号 1 组 / 未登记 3 条 / 登记错配 1 条」，
+          # 这里用 >=1 的宽松断言：多出行只说明被别人污染，不应掩盖「三类都能判出」这个目的。
+          assert_contains "$drift_log" '结论：共发现' '缺少巡检结论行'
+          assert_matches "$drift_log" '重复编号 [1-9][0-9]* 组、未登记 [1-9][0-9]* 条、登记错配 [1-9][0-9]* 条' \
+            '结论行未同时报出三类问题的非零计数'
+
+          # 按本 step 造的 tenant_id / contract_number 精确清理，不做全表删除。
+          mysql_run <<'SQL'
+          DELETE FROM con_contract
+          WHERE tenant_id IN ('ci-audit-dup-ta-01', 'ci-audit-dup-tb-01', 'ci-audit-unreg-t-01', 'ci-audit-mis-t-01');
+          DELETE FROM con_contract_number_registry
+          WHERE contract_number IN ('CI-AUDIT-DUP-0001', 'CI-AUDIT-UNREG-0001', 'CI-AUDIT-MISMATCH-0001')
+             OR tenant_id = 'ci-audit-mis-t-02';
+          SQL
+
+          # 第二遍：清理后必须回到干净结论与退出码 0，证明第一遍的告警来自真实数据而非常量错误。
+          clean_status=0
+          MYSQL_DSN="$CONTRACT_NUMBER_AUDIT_TEST_DSN" go run ./cmd/contract-number-audit \
+            >"$clean_log" 2>&1 || clean_status=$?
+          cat "$clean_log"
+          echo "contract-number-audit exit code (after cleanup) = $clean_status"
+          if [[ "$clean_status" -ne 0 ]]; then
+            echo "清理夹具后巡检退出码应为 0，实际为 ${clean_status}" >&2
+            exit 1
+          fi
+          assert_contains "$clean_log" '合同编号与登记表一致' '清理夹具后巡检未给出干净结论'
 
   image:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

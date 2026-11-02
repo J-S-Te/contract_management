@@ -32,19 +32,19 @@ func TestListApprovedContractReferencesUsesStableCursorAndAuthorizedTenant(t *te
 		PermissionScopes: allowAllScope("contract.approved.read"),
 	}
 
-	references, err := service.ListApprovedContractReferences(context.Background(), actor, "C-1", 500)
+	references, err := service.ListApprovedContractReferences(context.Background(), actor, "HT-2", "C-1", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(references) != 1 || references[0].ID != "C-2" {
 		t.Fatalf("references=%+v", references)
 	}
-	if repository.approvedReferenceTenant != "tenant-1" || repository.approvedReferenceAfter != "C-1" || repository.approvedReferenceLimit != 500 {
-		t.Fatalf("tenant=%q after=%q limit=%d", repository.approvedReferenceTenant, repository.approvedReferenceAfter, repository.approvedReferenceLimit)
+	if repository.approvedReferenceTenant != "tenant-1" || repository.approvedReferenceKeyword != "HT-2" || repository.approvedReferenceAfter != "C-1" || repository.approvedReferenceLimit != 500 {
+		t.Fatalf("tenant=%q keyword=%q after=%q limit=%d", repository.approvedReferenceTenant, repository.approvedReferenceKeyword, repository.approvedReferenceAfter, repository.approvedReferenceLimit)
 	}
 
 	actor.Permissions = map[string]bool{}
-	if _, err := service.ListApprovedContractReferences(context.Background(), actor, "", 500); !errors.Is(err, ErrForbidden) {
+	if _, err := service.ListApprovedContractReferences(context.Background(), actor, "", "", 500); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("missing permission error=%v, want ErrForbidden", err)
 	}
 }
@@ -61,6 +61,7 @@ type recordingRepository struct {
 	dashboardOwnerUserID       string
 	approvedContractReferences []contract.Contract
 	approvedReferenceTenant    string
+	approvedReferenceKeyword   string
 	approvedReferenceAfter     string
 	approvedReferenceLimit     int
 	approvalSnapshot           contract.Contract
@@ -117,8 +118,9 @@ func (r *recordingRepository) ListContracts(_ context.Context, _, _, ownerUserID
 func (r *recordingRepository) ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error) {
 	return nil, nil
 }
-func (r *recordingRepository) ListApprovedContractReferences(_ context.Context, tenantID, afterID string, limit int) ([]contract.Contract, error) {
+func (r *recordingRepository) ListApprovedContractReferences(_ context.Context, tenantID, keyword, afterID string, limit int) ([]contract.Contract, error) {
 	r.approvedReferenceTenant = tenantID
+	r.approvedReferenceKeyword = keyword
 	r.approvedReferenceAfter = afterID
 	r.approvedReferenceLimit = limit
 	return r.approvedContractReferences, nil
@@ -782,6 +784,71 @@ func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 	}
 	if commandID == "" {
 		t.Fatal("Command() returned an empty command id")
+	}
+}
+
+// BIZ-CONTRACT-03 分离职责：申请人在 application 层预检就被拒绝，不能把注定
+// 会被工作流丢弃的自批信号当成成功返回 commandID（假成功）。
+func TestCommandRejectsApplicantSelfApprove(t *testing.T) {
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
+		Return(encodedApprovalState(t, state), nil)
+	repository := &recordingRepository{
+		approvalMeta: approval.Meta{
+			ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", Status: approval.StatusRunning,
+			ApplicantUserID: "applicant-1", WorkflowID: "workflow-1", RunID: "run-1",
+		},
+		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "applicant-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
+
+	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("Command(self-approve) error = %v, want ErrForbidden", err)
+	}
+	if commandID != "" {
+		t.Fatalf("Command(self-approve) commandID = %q, want empty", commandID)
+	}
+	temporal.AssertNotCalled(t, "SignalWorkflow", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// 非申请人且持有 approval.process 的审批人仍正常拿到 commandID 并发出信号。
+func TestCommandAllowsNonApplicantApprove(t *testing.T) {
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
+		Return(encodedApprovalState(t, state), nil)
+	temporal.On("SignalWorkflow", mock.Anything, "workflow-1", "run-1", workflows.CommandSignalName, mock.MatchedBy(func(command workflows.ApprovalCommand) bool {
+		return command.CommandID != "" && command.ActorUserID == "approver-1" && command.Action == workflows.ActionApprove
+	})).Return(nil)
+	repository := &recordingRepository{
+		approvalMeta: approval.Meta{
+			ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", Status: approval.StatusRunning,
+			ApplicantUserID: "applicant-1", WorkflowID: "workflow-1", RunID: "run-1",
+		},
+		contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"},
+	}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
+
+	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	if err != nil {
+		t.Fatalf("Command(approve) error = %v", err)
+	}
+	if commandID == "" {
+		t.Fatal("Command(approve) returned an empty command id")
 	}
 }
 

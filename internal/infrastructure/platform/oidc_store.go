@@ -39,9 +39,13 @@ type SessionRecord struct {
 	AuthorizationCheckedAt time.Time
 	TokenExpiresAt         time.Time
 	SessionExpiresAt       time.Time
-	RevokedAt              *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	// LastSeenAt 记录任意一次已认证请求；LastInteractiveAt 只由显式浏览器交互推进。
+	// 旧会话行可能为 nil，空闲基准回退到 CreatedAt（迁移已按 created_at 回填）。
+	LastSeenAt        *time.Time
+	LastInteractiveAt *time.Time
+	RevokedAt         *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type OIDCStore interface {
@@ -49,6 +53,10 @@ type OIDCStore interface {
 	ConsumeLoginTransaction(context.Context, []byte, time.Time) (LoginTransactionRecord, error)
 	CreateSession(context.Context, SessionRecord) error
 	FindSession(context.Context, []byte, time.Time) (SessionRecord, error)
+	// TouchSessionLastSeen 在会话仍有效时记录普通已认证请求；不得推进空闲基准。
+	TouchSessionLastSeen(context.Context, []byte, time.Time) error
+	// RecordInteraction 在会话仍处于空闲窗口内时推进显式交互时间；绝对期限不变。
+	RecordInteraction(context.Context, []byte, time.Time, time.Duration) error
 	UpdateSession(context.Context, SessionRecord) error
 	RevokeSession(context.Context, []byte, time.Time) error
 	RevokeSessionsForIdentity(context.Context, string, string, time.Time) error
@@ -81,6 +89,8 @@ type gormSession struct {
 	AuthorizationCheckedAt time.Time
 	TokenExpiresAt         time.Time
 	SessionExpiresAt       time.Time
+	LastSeenAt             *time.Time
+	LastInteractiveAt      *time.Time
 	RevokedAt              *time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -164,6 +174,59 @@ func (s *GORMOIDCStore) FindSession(ctx context.Context, hash []byte, now time.T
 	return sessionFromGORM(row), nil
 }
 
+// TouchSessionLastSeen 只推进普通已认证请求的观测时间。
+// 参数：ctx 为请求上下文，hash 为会话 Cookie 哈希，now 为服务端当前时间。
+// 返回值：会话已撤销或绝对到期返回 ErrUnauthenticated；写入冲突时复核而不是误判登出。
+func (s *GORMOIDCStore) TouchSessionLastSeen(ctx context.Context, hash []byte, now time.Time) error {
+	result := s.db.WithContext(ctx).Model(&gormSession{}).
+		Where("session_id_hash = ? AND revoked_at IS NULL AND session_expires_at > ?", hash, now).
+		Update("last_seen_at", now)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	// MySQL 对并发请求写入相同 DATETIME(3) 值的 no-op 更新也返回零变更行，
+	// 因此零行时必须复核会话是否真实失效，不能直接把无害 no-op 当成登出。
+	var row gormSession
+	err := s.db.WithContext(ctx).Select("session_id_hash").
+		Where("session_id_hash = ? AND revoked_at IS NULL AND session_expires_at > ?", hash, now).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrUnauthenticated
+	}
+	return err
+}
+
+// RecordInteraction 只有显式活动接口才能调用：推进 last_interactive_at 以延长空闲窗口，
+// 但绝不修改 session_expires_at（绝对期限）。
+// 参数：ctx 为请求上下文，hash 为会话 Cookie 哈希，now 为交互时间，idleTimeout 为当前空闲期限。
+// 返回值：会话已撤销、绝对到期或空闲到期返回 ErrUnauthenticated，不复活任何失效会话。
+func (s *GORMOIDCStore) RecordInteraction(ctx context.Context, hash []byte, now time.Time, idleTimeout time.Duration) error {
+	if idleTimeout <= 0 {
+		return ErrUnauthenticated
+	}
+	idleCutoff := now.Add(-idleTimeout)
+	condition := "session_id_hash = ? AND revoked_at IS NULL AND session_expires_at > ? AND COALESCE(last_interactive_at, created_at) > ?"
+	result := s.db.WithContext(ctx).Model(&gormSession{}).
+		Where(condition, hash, now, idleCutoff).
+		Updates(map[string]any{"last_seen_at": now, "last_interactive_at": now})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	// 并发活动 ping 写入相同 DATETIME(3) 值时同样返回零变更行：复核后再决定是否拒绝。
+	var row gormSession
+	err := s.db.WithContext(ctx).Select("session_id_hash").Where(condition, hash, now, idleCutoff).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrUnauthenticated
+	}
+	return err
+}
+
 func (s *GORMOIDCStore) UpdateSession(ctx context.Context, record SessionRecord) error {
 	row := sessionToGORM(record)
 	updates := map[string]any{
@@ -238,7 +301,8 @@ func sessionToGORM(record SessionRecord) gormSession {
 		AccessTokenCiphertext: record.AccessTokenCiphertext, RefreshTokenCiphertext: record.RefreshTokenCiphertext,
 		IDTokenCiphertext: record.IDTokenCiphertext, AuthorizationRevision: record.AuthorizationRevision,
 		AuthorizationCheckedAt: record.AuthorizationCheckedAt, TokenExpiresAt: record.TokenExpiresAt,
-		SessionExpiresAt: record.SessionExpiresAt, RevokedAt: record.RevokedAt, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
+		SessionExpiresAt: record.SessionExpiresAt, LastSeenAt: record.LastSeenAt, LastInteractiveAt: record.LastInteractiveAt,
+		RevokedAt: record.RevokedAt, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 }
 
 func sessionFromGORM(row gormSession) SessionRecord {
@@ -250,7 +314,8 @@ func sessionFromGORM(row gormSession) SessionRecord {
 		PersonID: personID, PrincipalJSON: row.PrincipalJSON, AccessTokenCiphertext: row.AccessTokenCiphertext,
 		RefreshTokenCiphertext: row.RefreshTokenCiphertext, IDTokenCiphertext: row.IDTokenCiphertext,
 		AuthorizationRevision: row.AuthorizationRevision, AuthorizationCheckedAt: row.AuthorizationCheckedAt,
-		TokenExpiresAt: row.TokenExpiresAt, SessionExpiresAt: row.SessionExpiresAt, RevokedAt: row.RevokedAt,
+		TokenExpiresAt: row.TokenExpiresAt, SessionExpiresAt: row.SessionExpiresAt,
+		LastSeenAt: row.LastSeenAt, LastInteractiveAt: row.LastInteractiveAt, RevokedAt: row.RevokedAt,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 

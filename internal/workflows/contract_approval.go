@@ -187,6 +187,12 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 	}
 	switch command.Action {
 	case ActionApprove:
+		// BIZ-CONTRACT-03 分离职责：申请人不得批准自己发起的合同审批，
+		// 即使其同时是当前节点审批人。命令被拒绝时不改变节点/状态，
+		// 也不写入审批结果。
+		if command.ActorUserID == state.ApplicantUserID {
+			return false, false, fmt.Errorf("applicant cannot approve own contract approval")
+		}
 		node.ApprovedBy[command.ActorUserID] = true
 		passed := approvalNodePassed(node, command.RoleNodeOrSign)
 		if passed {

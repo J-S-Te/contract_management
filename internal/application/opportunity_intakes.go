@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,10 @@ const (
 	OpportunityIntakeLinkConfirmed = "LINK_CONFIRMED"
 	OpportunityIntakeLinkException = "LINK_EXCEPTION"
 )
+
+// ErrOpportunityLinkRejected 表示商机核对命中了来源/状态/客户归属门禁。
+// HTTP 层据此返回 409 并要求走受控更正，而不是把改写当成成功。
+var ErrOpportunityLinkRejected = errors.New("opportunity link rejected")
 
 type OpportunityIntake struct {
 	IntakeID            string     `json:"intake_id"`

@@ -112,6 +112,44 @@ type contractRecord struct {
 
 func (contractRecord) TableName() string { return "con_contract" }
 
+// contractNumberRuleRecord 是系统级编号规则的单行配置（id 固定为 1）。
+type contractNumberRuleRecord struct {
+	ID          uint8 `gorm:"primaryKey"`
+	Prefix      string
+	YearSegment string
+	SeqWidth    uint8
+	Suffix      string
+	UpdatedBy   string
+	UpdatedAt   time.Time
+}
+
+func (contractNumberRuleRecord) TableName() string { return "con_contract_number_rule" }
+
+// contractNumberSequenceRecord 是 (年度, 规则指纹) 维度的全系统流水水位。
+// 不按租户拆分：同一桶在所有租户间共享，保证系统单号跨租户也不重号。
+type contractNumberSequenceRecord struct {
+	SeqYear      uint16 `gorm:"primaryKey"`
+	RuleKey      string `gorm:"primaryKey"`
+	CurrentValue uint32
+	UpdatedAt    time.Time
+}
+
+func (contractNumberSequenceRecord) TableName() string { return "con_contract_number_sequence" }
+
+// contractNumberRegistryRecord 是全系统合同编号唯一登记表：主键 contract_number 保证
+// 一个单号在全系统只签发一次，跨租户不重号由数据库强制，而不是靠流水恰好连续。
+// 行只随签发事务提交或回滚，回滚即释放，不烧号。
+type contractNumberRegistryRecord struct {
+	ContractNumber string `gorm:"primaryKey"`
+	TenantID       string
+	ContractID     string
+	SeqYear        uint16
+	RuleKey        string
+	IssuedAt       time.Time
+}
+
+func (contractNumberRegistryRecord) TableName() string { return "con_contract_number_registry" }
+
 type contractTemplateRecord struct {
 	ID                   string `gorm:"primaryKey"`
 	TenantID             string

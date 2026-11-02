@@ -73,7 +73,10 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		switch {
 		case command.Action == ActionWithdraw && command.ActorUserID == input.ApplicantUserID:
 			state.Status = approval.StatusWithdrawn
-		case contains(node.AssigneeIDs, command.ActorUserID) && command.Action == ActionApprove:
+		// BIZ-CONTRACT-03 分离职责：申请人不得批准自己发起的状态变更审批，
+		// 即使其同时是当前节点审批人。application 层已做预检，这里是防御性
+		// 第二道：被忽略的命令不改变状态，也不写入审批记录。
+		case contains(node.AssigneeIDs, command.ActorUserID) && command.Action == ActionApprove && command.ActorUserID != input.ApplicantUserID:
 			state.Status, state.Nodes[0].Status = approval.StatusApproved, approval.NodeApproved
 		case contains(node.AssigneeIDs, command.ActorUserID) && command.Action == ActionReject:
 			state.Status, state.Nodes[0].Status, state.FailureReason = approval.StatusRejected, approval.NodeRejected, command.Comment

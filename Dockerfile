@@ -29,7 +29,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./c
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/file-backfill ./cmd/file-backfill \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker ./cmd/worker \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/worker-rollout ./cmd/worker-rollout \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/contract-number-audit ./cmd/contract-number-audit
 
 FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 ARG APP_VERSION
@@ -45,6 +46,9 @@ COPY --from=builder /out/file-backfill ./file-backfill
 COPY --from=builder /out/worker ./worker
 COPY --from=builder /out/worker-rollout ./worker-rollout
 COPY --from=builder /out/migrate ./migrate
+# 合同编号巡检是只读运维命令，与 migrate 同镜像同用户；发布后由
+# platform/deploy/production/bin/deploy-service.sh 以一次性服务调用。
+COPY --from=builder /out/contract-number-audit ./contract-number-audit
 COPY docker-entrypoint.sh /usr/local/bin/contract-management-entrypoint
 
 RUN chmod +x /usr/local/bin/contract-management-entrypoint

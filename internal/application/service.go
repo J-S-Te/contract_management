@@ -14,6 +14,7 @@ import (
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/auditctx"
+	"github.com/j-s-te/contract-management/internal/businessclock"
 	"github.com/j-s-te/contract-management/internal/docx"
 	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
@@ -72,7 +73,7 @@ type Repository interface {
 	GetContract(context.Context, string, string) (contract.Contract, error)
 	ListContracts(context.Context, string, string, string, string, int) ([]contract.Contract, error)
 	ListApprovedContracts(context.Context, string, int) ([]contract.Contract, error)
-	ListApprovedContractReferences(context.Context, string, string, int) ([]contract.Contract, error)
+	ListApprovedContractReferences(context.Context, string, string, string, int) ([]contract.Contract, error)
 	SaveStampedDocument(context.Context, string, contract.StampedDocumentUpload) (contract.StampedDocument, error)
 	GetStampedDocument(context.Context, string, string) (contract.StampedDocument, error)
 	ListSigningRecords(context.Context, string, int) ([]contract.SigningRecord, error)
@@ -113,7 +114,7 @@ type ScopedRepository interface {
 	GetContractScoped(context.Context, contract.ScopeFilter, string) (contract.Contract, error)
 	ListContractsScoped(context.Context, contract.ScopeFilter, string, string, int) ([]contract.Contract, error)
 	ListApprovedContractsScoped(context.Context, contract.ScopeFilter, int) ([]contract.Contract, error)
-	ListApprovedContractReferencesScoped(context.Context, contract.ScopeFilter, string, int) ([]contract.Contract, error)
+	ListApprovedContractReferencesScoped(context.Context, contract.ScopeFilter, string, string, int) ([]contract.Contract, error)
 	ListSigningRecordsScoped(context.Context, contract.ScopeFilter, contract.SigningRecordQuery) (contract.SigningRecordPage, error)
 	GetSigningRecordScoped(context.Context, contract.ScopeFilter, string) (contract.SigningRecord, error)
 	ContractDashboardScoped(context.Context, contract.ScopeFilter, time.Time, int) (contract.Dashboard, error)
@@ -148,6 +149,10 @@ type Service struct {
 	StampedFileApplicationID string
 	DetectionCategories      DetectionCategoryDirectory
 	CRMContractReferences    CRMContractReferenceDirectory
+	// ContractFinancialChangeEnabled 是受控“合同财务变更”入口开关
+	// （CONTRACT_FINANCIAL_CHANGE_ENABLED，默认 false）。关闭时写用例直接拒绝，
+	// 开启后仍需 contract.edit 权限、已审批且无在途审批的合同、审计留痕。
+	ContractFinancialChangeEnabled bool
 	// HandoverFreeze 在写路径上阻止把新责任分配给交接中的用户。
 	HandoverFreeze HandoverFreezeChecker
 }
@@ -191,19 +196,20 @@ func (s *Service) ListApprovedContracts(ctx context.Context, actor Principal, li
 // ListApprovedContractReferences 是按 ID 稳定排序的集成数据流，
 // 用于将合同管理与项目管理中已持久化的项目
 // 对账。游标避免 UI 列表 200 行上限，并限制每次跨
-// 服务请求规模。
-func (s *Service) ListApprovedContractReferences(ctx context.Context, actor Principal, afterID string, limit int) ([]contract.Contract, error) {
+// 服务请求规模。keyword 非空时按合同编号、标题、客户名做字面量模糊匹配，
+// 使项目建项选择器可以跨分页搜索而不是静默截断。
+func (s *Service) ListApprovedContractReferences(ctx context.Context, actor Principal, keyword, afterID string, limit int) ([]contract.Contract, error) {
 	filter, ok := s.contractScope(actor, "contract.approved.read")
 	if !ok {
 		return nil, ErrForbidden
 	}
 	if scoped, ok := s.Repo.(ScopedRepository); ok {
-		return scoped.ListApprovedContractReferencesScoped(ctx, filter, afterID, limit)
+		return scoped.ListApprovedContractReferencesScoped(ctx, filter, keyword, afterID, limit)
 	}
 	if !filter.AllowAll {
 		return nil, ErrForbidden
 	}
-	return s.Repo.ListApprovedContractReferences(ctx, actor.TenantID, afterID, limit)
+	return s.Repo.ListApprovedContractReferences(ctx, actor.TenantID, keyword, afterID, limit)
 }
 
 // GetApprovedContract 按授权范围读取普通已批准合同，排除历史及未知来源。
@@ -389,19 +395,26 @@ func signingRecordMatches(item contract.SigningRecord, query contract.SigningRec
 	case "completed", "pending_shipment", "in_return", "pending_review":
 		return string(item.Status) == strings.TrimSpace(query.Status)
 	case "expired":
-		return item.Status != contract.SigningCompleted && item.Contract.EndDate != nil && item.Contract.EndDate.Before(time.Now().UTC())
+		// 与 SQL 台账同口径：按北京日历日比较，到期当天仍有效，次日才算“已失效”。
+		return item.Status != contract.SigningCompleted && item.Contract.EndDate != nil &&
+			businessclock.CalendarDayBefore(*item.Contract.EndDate, businessclock.Now())
 	default:
 		return false
 	}
 }
 
+// signingStatsOf 是内存替身/旧仓储兼容路径的台账统计。
+//
+// 月界按北京业务月（ConfirmedAt 是绝对时刻，取北京本月 1 日 00:00 对应的真实瞬间），
+// 到期判定按北京日历日与 SQL 路径保持一致：到期当天仍有效，次日才算过期。
 func signingStatsOf(items []contract.SigningRecord) contract.SigningStats {
-	now := time.Now().UTC()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	now := businessclock.Now()
+	monthStart := businessclock.MonthStart()
 	nextMonth := monthStart.AddDate(0, 1, 0)
 	stats := contract.SigningStats{Total: int64(len(items))}
 	for _, item := range items {
-		expired := item.Status != contract.SigningCompleted && item.Contract.EndDate != nil && item.Contract.EndDate.Before(now)
+		expired := item.Status != contract.SigningCompleted && item.Contract.EndDate != nil &&
+			businessclock.CalendarDayBefore(*item.Contract.EndDate, now)
 		if item.Status == contract.SigningCompleted {
 			stats.Completed++
 			if item.ConfirmedAt != nil && !item.ConfirmedAt.Before(monthStart) && item.ConfirmedAt.Before(nextMonth) {
@@ -1020,6 +1033,16 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 		if !actor.Has("approval.view") && meta.ApplicantUserID != actor.UserID {
 			return "", ErrForbidden
 		}
+	case workflows.ActionApprove:
+		// BIZ-CONTRACT-03 分离职责：申请人不得批准自己发起的审批。工作流层
+		// 已有同样的门禁，这里提前拒绝是为了不把注定被丢弃的 Signal 当成
+		// 成功返回 commandID（假成功）。
+		if !actor.Has("approval.process") {
+			return "", ErrForbidden
+		}
+		if meta.ApplicantUserID == actor.UserID {
+			return "", ErrForbidden
+		}
 	default:
 		if !actor.Has("approval.process") {
 			return "", ErrForbidden
@@ -1368,8 +1391,10 @@ func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contr
 	if s.Repo == nil {
 		return contract.Dashboard{}, fmt.Errorf("contract repository is not configured")
 	}
-	now := time.Now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	// 看板的“今天”是业务日期：按北京日历日取，再以数据库参数的 UTC 墙钟口径传入仓储
+	// （库里的 DATE/DATETIME 列都按 UTC 墙钟保存）。用 UTC 的 now 会把每天 00:00–08:00
+	// 的到期判定整体算错一天。
+	today := businessclock.CalendarDay(businessclock.Now())
 	var (
 		dashboard contract.Dashboard
 		err       error

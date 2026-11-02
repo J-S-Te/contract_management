@@ -13,5 +13,7 @@ func Register(w worker.Worker, activities *Activities) {
 	w.RegisterWorkflowWithOptions(StatusChangeWorkflow, workflow.RegisterOptions{Name: StatusChangeWorkflowName})
 	w.RegisterWorkflowWithOptions(ExpiredContractArchiveWorkflow, workflow.RegisterOptions{Name: ExpiredArchiveWorkflowName})
 	w.RegisterWorkflowWithOptions(ImportConfirmationWorkflow, workflow.RegisterOptions{Name: ImportConfirmationWorkflowName})
+	// 合同编号登记表漂移的每日只读巡检，由 worker 的 Cron 通道启动。
+	w.RegisterWorkflowWithOptions(ContractNumberAuditWorkflow, workflow.RegisterOptions{Name: ContractNumberAuditWorkflowName})
 	w.RegisterActivity(activities)
 }
