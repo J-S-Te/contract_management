@@ -92,7 +92,7 @@ func preflightE2ECleanupTenant(t *testing.T, database *sql.DB, tenantIDs ...stri
 			continue
 		}
 		for _, table := range []string{registryTable, contractTable} {
-			// 用例 C 会故意把 000037 回退成未应用并 DROP 登记表。清理必须跳过缺失的表，
+			// 用例 C 会故意把 000038 回退成未应用并 DROP 登记表。清理必须跳过缺失的表，
 			// 否则「预检确实拦住了迁移」这个成功用例会被 cleanup 的错误判成失败。
 			exists, err := tableExists(context.Background(), database, table)
 			if err != nil {
@@ -110,15 +110,15 @@ func preflightE2ECleanupTenant(t *testing.T, database *sql.DB, tenantIDs ...stri
 	}
 }
 
-// preflightE2ERevertRegistryMigration 把 000037 回退成“未应用”，让 Run 必须经过预检。
+// preflightE2ERevertRegistryMigration 把 000038 回退成“未应用”，让 Run 必须经过预检。
 //
 // 参数：t 为测试上下文，database 为隔离库连接。
 // 返回值：无。
 func preflightE2ERevertRegistryMigration(t *testing.T, database *sql.DB) {
 	t.Helper()
 	if _, err := database.ExecContext(context.Background(),
-		`DELETE FROM `+metadataTable+` WHERE version = ?`, 37); err != nil {
-		t.Fatalf("revert migration 37 record failed: %v", err)
+		`DELETE FROM `+metadataTable+` WHERE version = ?`, 38); err != nil {
+		t.Fatalf("revert migration 38 record failed: %v", err)
 	}
 	if _, err := database.ExecContext(context.Background(), `DROP TABLE IF EXISTS `+registryTable+``); err != nil {
 		t.Fatalf("drop contract number registry failed: %v", err)
@@ -186,7 +186,7 @@ func TestPreflightContractNumbersDetectsCrossTenantDuplicate(t *testing.T) {
 }
 
 // TestRunPreflightAbortsRegistryMigration 覆盖用例 C：
-// Run 的自动预检在存在重号时中止，且不执行 000037 的任何语句。
+// Run 的自动预检在存在重号时中止，且不执行 000038 的任何语句。
 //
 // 参数：t 为测试上下文；仅 CONTRACT_TEST_DSN 指向隔离库时运行。
 // 返回值：无。
@@ -197,7 +197,7 @@ func TestRunPreflightAbortsRegistryMigration(t *testing.T) {
 	number := "GTSR-PREFLIGHT-RUN-" + strings.ToUpper(ulid.Make().String()[:8])
 	t.Cleanup(func() {
 		preflightE2ECleanupTenant(t, database, tenantA, tenantB)
-		// 本用例把 000037 回退成未应用，必须恢复，不能把隔离库留在半迁移状态。
+		// 本用例把 000038 回退成未应用，必须恢复，不能把隔离库留在半迁移状态。
 		if err := Run(context.Background(), dsn, migrations.Files); err != nil {
 			t.Errorf("restore migration state after preflight case failed: %v", err)
 		}
@@ -219,12 +219,12 @@ func TestRunPreflightAbortsRegistryMigration(t *testing.T) {
 		t.Fatalf("check registry table failed: %v", checkErr)
 	}
 	if exists {
-		t.Fatal("预检失败后 000037 的建表语句不得执行")
+		t.Fatal("预检失败后 000038 的建表语句不得执行")
 	}
-	// 迁移记录也没有写回：con_schema_migration 里仍无 37。
+	// 迁移记录也没有写回：con_schema_migration 里仍无 38。
 	var applied int
 	if scanErr := database.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM `+metadataTable+` WHERE version = ?`, 37).Scan(&applied); scanErr != nil {
+		`SELECT COUNT(*) FROM `+metadataTable+` WHERE version = ?`, 38).Scan(&applied); scanErr != nil {
 		t.Fatalf("read applied migration failed: %v", scanErr)
 	}
 	if applied != 0 {
@@ -297,7 +297,7 @@ func containsMismatch(details []RegistryMismatch, number, contractTenantID, cont
 	return false
 }
 
-// TestRunResumesRegistryBackfillAfterInterruption 覆盖 000037 的可续跑回填：
+// TestRunResumesRegistryBackfillAfterInterruption 覆盖 000038 的可续跑回填：
 // 进程若在「回填已提交、con_schema_migration 记账前」被中断，重跑必须成功，
 // 而不是对每个已登记编号报 1062 让运维误以为存在重号。
 //
@@ -324,8 +324,8 @@ func TestRunResumesRegistryBackfillAfterInterruption(t *testing.T) {
 	preflightE2ERegistry(t, database, number, tenant, contractID)
 	// 模拟“metadata 未写”：只删迁移记录，保留登记表（这正是中断窗口的状态）。
 	if _, err := database.ExecContext(ctx,
-		`DELETE FROM `+metadataTable+` WHERE version = ?`, 37); err != nil {
-		t.Fatalf("revert migration 37 record failed: %v", err)
+		`DELETE FROM `+metadataTable+` WHERE version = ?`, 38); err != nil {
+		t.Fatalf("revert migration 38 record failed: %v", err)
 	}
 
 	// 重跑：回填语句必须跳过已登记编号，不能报重复键。
@@ -352,7 +352,7 @@ func TestRunResumesRegistryBackfillAfterInterruption(t *testing.T) {
 	// 迁移记录已补写。
 	var applied int
 	if err := database.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM `+metadataTable+` WHERE version = ?`, 37).Scan(&applied); err != nil {
+		`SELECT COUNT(*) FROM `+metadataTable+` WHERE version = ?`, 38).Scan(&applied); err != nil {
 		t.Fatalf("read applied migration failed: %v", err)
 	}
 	if applied != 1 {

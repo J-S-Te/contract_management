@@ -812,7 +812,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 				if current.ContractNumber == nil || *current.ContractNumber == "" {
 					// 系统级规则优先；规则行缺失时 allocateContractNumberInTx 回退到
 					// 模板级格式串。取号与写号都在本审批事务内，与上行 FOR UPDATE 同锁。
-					// 存量库可能把“无编号”存成空串（000037 回填显式排除 ''），因此这里
+					// 存量库可能把“无编号”存成空串（000038 回填显式排除 ''），因此这里
 					// 与写号谓词一致地把 NULL 和 '' 都视为“待发号”。
 					number, err := allocateContractNumberInTx(tx, in.TenantID, current.ID, current.ContractNumberFormat, time.Now().UTC())
 					if err != nil {

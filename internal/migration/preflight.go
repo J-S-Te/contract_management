@@ -16,7 +16,7 @@ import (
 const (
 	// contractTable 是合同主数据表，编号与租户的唯一事实来源。
 	contractTable = "con_contract"
-	// registryTable 是 000037 建立的全系统合同编号登记表。
+	// registryTable 是 000038 建立的全系统合同编号登记表。
 	registryTable = "con_contract_number_registry"
 	// preflightSampleLimit 限制迁移错误信息里逐条列出的重复编号组数。
 	preflightSampleLimit = 20
@@ -163,7 +163,7 @@ func (r AuditReport) Total() int {
 	return len(r.Duplicates) + r.UnregisteredTotal + r.MismatchedTotal
 }
 
-// PreflightContractNumbers 在应用 000037 之前检查 con_contract 是否存在重复编号。
+// PreflightContractNumbers 在应用 000038 之前检查 con_contract 是否存在重复编号。
 //
 // 放行判定只有一条：按 contract_number 原值 GROUP BY 是否出现重复组。该列排序规则是
 // utf8mb4_unicode_ci，分组天然继承它，因此“大小写/尾随空格视为相同”与登记表主键
@@ -208,7 +208,7 @@ func PreflightContractNumbers(ctx context.Context, database *sql.DB) error {
 func AuditContractNumberRegistry(ctx context.Context, database *sql.DB) (AuditReport, error) {
 	for _, required := range []struct{ table, hint string }{
 		{contractTable, "合同主数据表 con_contract 不存在：当前库还不是合同服务库，请确认 MYSQL_DSN 指向正确的数据库。"},
-		{registryTable, "合同编号登记表 con_contract_number_registry 不存在：当前库尚未部署迁移 000037，请先执行 cmd/migrate 后再巡检。"},
+		{registryTable, "合同编号登记表 con_contract_number_registry 不存在：当前库尚未部署迁移 000038，请先执行 cmd/migrate 后再巡检。"},
 	} {
 		exists, err := tableExists(ctx, database, required.table)
 		if err != nil {
@@ -240,7 +240,7 @@ func AuditContractNumberRegistry(ctx context.Context, database *sql.DB) (AuditRe
 }
 
 // contractNumberFilter 限定「有编号」的合同行；prefix 为查询里的表别名或表名。
-// NULL 与空串不参与唯一性裁决，与 000037 回填的 WHERE 完全一致。
+// NULL 与空串不参与唯一性裁决，与 000038 回填的 WHERE 完全一致。
 func contractNumberFilter(prefix string) string {
 	return prefix + ".contract_number IS NOT NULL AND " + prefix + ".contract_number <> ''"
 }

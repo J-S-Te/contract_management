@@ -814,7 +814,7 @@ func TestCompleteApprovalAppliesRuleNumberOnceOnMySQL(t *testing.T) {
 }
 
 // TestCompleteApprovalIssuesNumberForEmptyStringNumberOnMySQL 覆盖“存量空串编号”场景：
-// 000037 回填条件显式排除 ”，说明历史库可能把“无编号”存成空串。审批写号谓词必须把
+// 000038 回填条件显式排除 ”，说明历史库可能把“无编号”存成空串。审批写号谓词必须把
 // NULL 与 ” 同等视为待发号，并在影响行数不是 1 时显式失败，不能静默提交。
 //
 // 断言：审批后合同行拿到按规则拼出的编号，登记表恰好一行，水位为 1。

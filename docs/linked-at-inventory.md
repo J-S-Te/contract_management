@@ -30,7 +30,7 @@
 - 每条语句都强制 `tenant_id = :tenant_id`；**禁止**去掉租户条件做跨租户统计。
 - 建议在只读副本执行，并按 `:limit` 分页；生产高峰期不要对 `con_audit_outbox` 做全表聚合。
 - 第 3 层需要 `idx_con_audit_outbox_resource (tenant_id, resource_type, resource_id, action, created_at)`
-  （迁移 `000039_con_audit_outbox_resource_index.sql`）。索引缺失时本盘点与线上摘要查询都会退化为大范围扫描，
+  （迁移 `000040_con_audit_outbox_resource_index.sql`）。索引缺失时本盘点与线上摘要查询都会退化为大范围扫描，
   应先确认索引存在：
 
 ```sql
