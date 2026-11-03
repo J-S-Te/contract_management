@@ -605,3 +605,59 @@ func TestLoadTreatsEmptyNumberAuditCronAsDisabled(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadScopesLocalSessionDeadlineRelationToLegacyMode 验证本地期限关系仅约束旧模式。
+// 参数：t 为测试上下文，中央模式模拟受控环境保留的8h/8h本地配置。
+// 返回值：无；中央误拒绝、旧模式放行或配置被静默改写时失败。
+func TestLoadScopesLocalSessionDeadlineRelationToLegacyMode(t *testing.T) {
+	for _, mode := range []string{"true", "false"} {
+		t.Run(mode, func(t *testing.T) {
+			validEnvironment(t)
+			t.Setenv("CENTRAL_SESSION_ENABLED", mode)
+			t.Setenv("OIDC_SESSION_IDLE_TTL", "8h")
+			t.Setenv("OIDC_SESSION_ABSOLUTE_TTL", "8h")
+			cfg, err := Load()
+			if mode == "false" {
+				if err == nil || !strings.Contains(err.Error(), "OIDC_SESSION_ABSOLUTE_TTL") {
+					t.Fatalf("legacy equal deadlines error=%v, want fail closed", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("central configuration rejected: %v", err)
+			}
+			if !cfg.CentralSessionEnabled || cfg.OIDCSessionIdleTTL != 8*time.Hour ||
+				cfg.OIDCSessionAbsoluteTTL != 8*time.Hour {
+				t.Fatal("central configuration was silently rewritten")
+			}
+		})
+	}
+}
+
+// TestLoadCentralSessionsKeepOtherSessionValidation 验证中央模式仍拒绝非法本地配置。
+// 参数：t 为测试上下文，逐项替换期限格式、区间及认证刷新输入。
+// 返回值：无；中央开关绕过其它启动校验时失败。
+func TestLoadCentralSessionsKeepOtherSessionValidation(t *testing.T) {
+	for _, check := range []struct{ name, key, value, want string }{
+		{"idle format", "OIDC_SESSION_IDLE_TTL", "invalid", "OIDC_SESSION_IDLE_TTL"},
+		{"absolute format", "OIDC_SESSION_ABSOLUTE_TTL", "invalid", "OIDC_SESSION_ABSOLUTE_TTL"},
+		{"idle lower bound", "OIDC_SESSION_IDLE_TTL", "30s", "OIDC_SESSION_IDLE_TTL"},
+		{"idle upper bound", "OIDC_SESSION_IDLE_TTL", "25h", "OIDC_SESSION_IDLE_TTL"},
+		{"absolute nonpositive", "OIDC_SESSION_ABSOLUTE_TTL", "0s", "OIDC session cookie name and authorization"},
+		{"refresh nonpositive", "OIDC_AUTHORIZATION_REFRESH_INTERVAL", "0s", "OIDC session cookie name and authorization"},
+		{"refresh exceeds absolute", "OIDC_AUTHORIZATION_REFRESH_INTERVAL", "8h", "OIDC session cookie name and authorization"},
+		{"stale exceeds absolute", "OIDC_AUTHORIZATION_MAX_STALE", "8h", "OIDC session cookie name and authorization"},
+		{"cookie name", "OIDC_SESSION_COOKIE_NAME", "   ", "OIDC session cookie name and authorization"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			validEnvironment(t)
+			t.Setenv("CENTRAL_SESSION_ENABLED", "true")
+			t.Setenv("OIDC_SESSION_IDLE_TTL", "8h")
+			t.Setenv("OIDC_SESSION_ABSOLUTE_TTL", "8h")
+			t.Setenv(check.key, check.value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), check.want) {
+				t.Fatalf("invalid central session option error=%v, want %s", err, check.want)
+			}
+		})
+	}
+}
