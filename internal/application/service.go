@@ -445,6 +445,9 @@ func (s *Service) GetSigningRecord(ctx context.Context, actor Principal, id stri
 	return item, err
 }
 
+// SaveSigningShipment 校验寄送信息与当前签署状态后登记合同寄出。
+// 参数：ctx 为请求上下文，actor 为可信操作者，id 为合同标识，shipment 为寄出信息。
+// 返回值：校验、权限、状态或持久化失败时返回错误。
 func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id string, shipment contract.SigningShipment) error {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
@@ -463,6 +466,9 @@ func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id s
 		len([]rune(strings.TrimSpace(shipment.RecipientAddress))) > 500 {
 		return fmt.Errorf("%w: 快递单号/收件人/地址超出长度限制", ErrValidation)
 	}
+	// 以下为尽早失败的快速预检，非权威：判定与写入之间仍可能有并发上传/确认。
+	// 权威判定在仓储层的合同行锁内条件更新（status IN pending_shipment/in_return），
+	// 命中 pending_review/completed 时由仓储返回 ErrStateConflict。
 	current, err := s.Repo.GetSigningRecord(ctx, actor.TenantID, id)
 	if err != nil {
 		return err
