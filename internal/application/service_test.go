@@ -23,6 +23,10 @@ func allowSelfScope(permission string) map[string]contract.ScopeFilter {
 	return map[string]contract.ScopeFilter{permission: {AllowSelf: true}}
 }
 
+// TestListApprovedContractReferencesUsesStableCursorAndAuthorizedTenant 验证已批准合同引用按稳定
+// 游标及可信租户查询。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestListApprovedContractReferencesUsesStableCursorAndAuthorizedTenant(t *testing.T) {
 	repository := &recordingRepository{approvedContractReferences: []contract.Contract{{ID: "C-2", Number: "HT-2", Version: 3}}}
 	service := &Service{Repo: repository}
@@ -66,6 +70,8 @@ type recordingRepository struct {
 	approvedReferenceLimit     int
 	approvalSnapshot           contract.Contract
 	hasApprovalSnapshot        bool
+	signingRecord              contract.SigningRecord
+	signingShipmentWrites      int
 }
 
 type personnelStub struct {
@@ -134,10 +140,19 @@ func (r *recordingRepository) GetStampedDocument(context.Context, string, string
 func (r *recordingRepository) ListSigningRecords(context.Context, string, int) ([]contract.SigningRecord, error) {
 	return nil, nil
 }
+
+// GetSigningRecord 返回测试预置的签署记录。
+// 参数：上下文、租户和合同标识由服务传入，本替身忽略查询条件。
+// 返回值：预置签署记录；无错误。
 func (r *recordingRepository) GetSigningRecord(context.Context, string, string) (contract.SigningRecord, error) {
-	return contract.SigningRecord{}, nil
+	return r.signingRecord, nil
 }
+
+// SaveSigningShipment 记录寄送写入次数以验证状态预检。
+// 参数：上下文、租户、合同、操作者及寄送信息为服务传入的写入输入。
+// 返回值：无错误；实际持久化由专用仓储测试覆盖。
 func (r *recordingRepository) SaveSigningShipment(context.Context, string, string, string, contract.SigningShipment) error {
+	r.signingShipmentWrites++
 	return nil
 }
 func (r *recordingRepository) MarkSigningReceived(context.Context, string, string, string) error {

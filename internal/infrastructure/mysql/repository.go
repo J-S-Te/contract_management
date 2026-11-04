@@ -630,6 +630,15 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 			if in.ContentHash == "" || current.ContentHash == nil || *current.ContentHash != in.ContentHash {
 				return fmt.Errorf("%w: contract SHA-256 mismatch", apperrors.ErrStateConflict)
 			}
+			// 合同行已在本事务内 FOR UPDATE：在途合同审批计数与 draft→pending 同处一个
+			// 临界区，Temporal 重试或重复提交都无法留下第二份在途合同审批。
+			activeContracts, err := countRunningApprovals(tx, in.TenantID, in.ContractID, approval.KindContract)
+			if err != nil {
+				return err
+			}
+			if activeContracts > 0 {
+				return fmt.Errorf("%w: 该合同已有在途合同审批，请先在审批中心撤回或等待完成", apperrors.ErrStateConflict)
+			}
 			if err := updateStatus(tx, in.TenantID, in.ContractID, in.FromStatus, in.TargetStatus, in.ApplicantUserID); err != nil {
 				return err
 			}
@@ -637,10 +646,8 @@ func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprov
 				return err
 			}
 		} else if in.Kind == approval.KindStatusChange {
-			var active int64
-			if err := tx.Model(&approvalInstanceRecord{}).
-				Where("tenant_id = ? AND contract_id = ? AND kind = ? AND status = ?", in.TenantID, in.ContractID, approval.KindStatusChange, approval.StatusRunning).
-				Count(&active).Error; err != nil {
+			active, err := countRunningApprovals(tx, in.TenantID, in.ContractID, approval.KindStatusChange)
+			if err != nil {
 				return err
 			}
 			if active > 0 {
@@ -936,6 +943,22 @@ func updateStatus(tx *gorm.DB, tenantID, contractID string, from, to contract.St
 		return apperrors.ErrStateConflict
 	}
 	return enqueueContractResponsibility(tx, tenantID, contractID)
+}
+
+// countRunningApprovals 统计同租户同合同下指定审批类型的在途实例数。
+// 参数：tx 为业务事务，tenantID/contractID 限定合同，kinds 为审批类型。
+// 返回值：在途实例数或查询错误。调用方必须已持有合同行锁，计数与后续写入才同处一个临界区。直迁、
+// 发起审批、自动归档共用本函数，避免三处谓词各自漂移。
+func countRunningApprovals(tx *gorm.DB, tenantID, contractID string, kinds ...approval.Kind) (int64, error) {
+	values := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		values = append(values, string(kind))
+	}
+	var active int64
+	err := tx.Model(&approvalInstanceRecord{}).
+		Where("tenant_id = ? AND contract_id = ? AND kind IN ? AND status = ?", tenantID, contractID, values, approval.StatusRunning).
+		Count(&active).Error
+	return active, err
 }
 
 func insertLifecycle(tx *gorm.DB, in workflows.StartApprovalActivityInput, from, to contract.Status, actor, reason, key string) error {
