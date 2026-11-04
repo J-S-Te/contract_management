@@ -90,7 +90,7 @@ func contractNumberSequenceValue(db *gorm.DB, ruleKey string, year int) (uint64,
 // 返回值：已由登记表主键独占的可写入 con_contract 的唯一单号，或流水耗尽等业务错误；
 // 调用方必须整体回滚，登记表行随回滚释放，不会烧号。
 //
-// 降级条件被严格限定为「数据库尚未应用 000036/000037」这一种情况：规则表或登记表不存在
+// 降级条件被严格限定为「数据库尚未应用 000037/000038」这一种情况：规则表或登记表不存在
 // （MySQL 1146）时回退旧的模板级格式串，且降级本身打一次告警便于观测。规则表读取的其它
 // 错误（超时、权限、语法、连接中断等）一律原样返回，绝不静默降级——静默降级会绕过登记表，
 // 让单号唯一性闭环出现缺口，也违反不吞错原则。规则行存在但内容非法时同样显式失败。
@@ -105,12 +105,12 @@ func allocateContractNumberInTx(tx *gorm.DB, tenantID, contractID, legacyFormat 
 		if !isContractNumberRelationMissing(err) {
 			return "", err
 		}
-		warnContractNumberLegacyFallback("合同编号规则表不存在（迁移 000036 未应用），本次审批回退模板级编号格式且不写全系统登记表",
+		warnContractNumberLegacyFallback("合同编号规则表不存在（迁移 000037 未应用），本次审批回退模板级编号格式且不写全系统登记表",
 			tenantID, contractID, err)
 		return formatContractNumber(legacyFormat, contractID, now), nil
 	}
 	if !found {
-		warnContractNumberLegacyFallback("合同编号规则行为空（迁移 000036 尚未写入种子行），本次审批回退模板级编号格式且不写全系统登记表",
+		warnContractNumberLegacyFallback("合同编号规则行为空（迁移 000037 尚未写入种子行），本次审批回退模板级编号格式且不写全系统登记表",
 			tenantID, contractID, nil)
 		return formatContractNumber(legacyFormat, contractID, now), nil
 	}
@@ -186,7 +186,7 @@ func nextContractNumberSequence(tx *gorm.DB, ruleKey string, year int, now time.
 const contractNumberDuplicateKey = 1062
 
 // contractNumberRelationMissingCode 是 MySQL 表不存在（ER_NO_SUCH_TABLE）的错误码。
-// 命中它说明本库还没应用 000036/000037，是唯一允许降级到旧编号格式的场景。
+// 命中它说明本库还没应用 000037/000038，是唯一允许降级到旧编号格式的场景。
 const contractNumberRelationMissingCode = 1146
 
 // reserveContractNumberInTx 在事务内预占一个合同单号。
@@ -251,7 +251,7 @@ func contractNumberRegisteredInTx(tx *gorm.DB, number string) (bool, error) {
 // 但候选号在登记表主键上仍然等于历史号，盲目保存会让全系统在 50 次顺延后停发。
 //
 // 参数：ctx 为上下文，number 为候选单号。
-// 返回值：是否已占用；登记表不存在（尚未应用 000037）时按未占用处理并打一次告警。
+// 返回值：是否已占用；登记表不存在（尚未应用 000038）时按未占用处理并打一次告警。
 func (r *Repository) ContractNumberRegistryContains(ctx context.Context, number string) (bool, error) {
 	var found int
 	err := r.db.WithContext(ctx).Raw(
@@ -261,7 +261,7 @@ func (r *Repository) ContractNumberRegistryContains(ctx context.Context, number 
 	}
 	if err != nil {
 		if isContractNumberRelationMissing(err) {
-			slog.Warn("合同编号登记表不存在（迁移 000037 未应用），跳过保存规则前的号码占用干跑检查",
+			slog.Warn("合同编号登记表不存在（迁移 000038 未应用），跳过保存规则前的号码占用干跑检查",
 				"contract_number", number, "error", err)
 			return false, nil
 		}

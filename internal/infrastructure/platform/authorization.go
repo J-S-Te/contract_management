@@ -12,6 +12,7 @@ import (
 
 type compactIdentity struct {
 	Subject, IdentityID, TenantID, PersonID string
+	SessionID                               string
 }
 
 func principalFromAuthorizationContext(identity compactIdentity, context AuthorizationContext, catalog AuthorizationCatalog, clientID, applicationCode, environmentCode string) (application.Principal, error) {

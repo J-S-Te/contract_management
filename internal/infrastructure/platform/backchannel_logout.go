@@ -31,8 +31,16 @@ type backchannelLogoutClaims struct {
 	Events   map[string]json.RawMessage `json:"events"`
 }
 
-// BackchannelLogout 接收并验证 OIDC Back-Channel Logout logout_token，然后撤销本地会话。
-// 该接口只接受表单中的 logout_token，普通 ID 令牌 会因缺少事件声明而拒绝。
+// BackchannelLogout 验证后台注销消息并撤销匹配的本地会话。
+//
+//	BackchannelLogout 接收并验证 OIDC Back-Channel Logout logout_token，然后撤销本地会话。
+//	该接口只接受表单中的 logout_token，普通 ID 令牌 会因缺少事件声明而拒绝。
+//
+// 参数：writer为HTTP响应写入器。
+//
+//	request为经过调用方校验的请求内容。
+//
+// 返回值：无。
 func (a *OIDCAuthenticator) BackchannelLogout(writer http.ResponseWriter, request *http.Request) {
 	store, ok := a.store.(BackchannelLogoutStore)
 	if !ok {
@@ -63,7 +71,19 @@ func (a *OIDCAuthenticator) BackchannelLogout(writer http.ResponseWriter, reques
 		return
 	}
 	now := a.now().UTC()
-	claimed, err := store.ProcessBackchannelLogout(request.Context(), a.options.TenantID, claims.Subject, claims.JTI, now)
+	var claimed bool
+	if a.options.CentralClient != nil && claims.Session != "" {
+		scoped, ok := a.store.(interface {
+			ProcessScopedBackchannelLogout(context.Context, string, string, string, string, time.Time) (bool, error)
+		})
+		if !ok {
+			http.Error(writer, "scoped logout unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		claimed, err = scoped.ProcessScopedBackchannelLogout(request.Context(), a.options.TenantID, claims.Subject, claims.Session, claims.JTI, now)
+	} else {
+		claimed, err = store.ProcessBackchannelLogout(request.Context(), a.options.TenantID, claims.Subject, claims.JTI, now)
+	}
 	if err != nil {
 		http.Error(writer, "logout storage unavailable", http.StatusServiceUnavailable)
 		return

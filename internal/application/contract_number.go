@@ -154,6 +154,8 @@ func (s *Service) checkContractNumberRuleIssuable(ctx context.Context, store Con
 //
 // 规则行内容不合法或水位已耗尽时同样留空示例并给出原因，读取本身不失败，
 // 管理员仍可通过 PUT 修正规则。
+// 参数：ctx 为规则与编号登记查询的请求上下文。
+// 返回值：实际规则视图；依赖故障返回错误，无法推算时不伪造示例。
 func (s *Service) contractNumberRuleView(ctx context.Context) (ContractNumberRuleView, error) {
 	store, err := s.contractNumberRuleStore()
 	if err != nil {
@@ -171,7 +173,7 @@ func (s *Service) contractNumberRuleView(ctx context.Context) (ContractNumberRul
 		return ContractNumberRuleView{
 			Prefix: rule.Prefix, YearSegment: rule.YearSegment, SeqWidth: rule.SeqWidth, Suffix: rule.Suffix,
 			SeqYear: year, CurrentValue: 0, UpdatedBy: rule.UpdatedBy, UpdatedAt: rule.UpdatedAt,
-			SampleUnavailableReason: "编号规则未初始化（迁移 000036 未应用或规则行缺失），" +
+			SampleUnavailableReason: "编号规则未初始化（迁移 000037 未应用或规则行缺失），" +
 				"系统当前按模板级编号格式签发，无法预估下一个系统编号",
 		}, nil
 	}

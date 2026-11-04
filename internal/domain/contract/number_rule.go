@@ -52,8 +52,9 @@ type ContractNumberRule struct {
 	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }
 
-// DefaultContractNumberRule 与迁移 000036 的种子行一致；只在规则行缺失时用于展示。
-// 编号生成不回退到本规则，而是回退到模板级格式串，以免旧部署行为改变。
+// DefaultContractNumberRule 提供与迁移 000037 种子行一致的展示默认规则。
+// 参数：无；本规则只供缺失规则行时展示，不参与旧部署取号回退。
+// 返回值：默认合同编号规则。
 func DefaultContractNumberRule() ContractNumberRule {
 	return ContractNumberRule{Prefix: "HT-", YearSegment: NumberYearSegmentYYYY, SeqWidth: 4}
 }

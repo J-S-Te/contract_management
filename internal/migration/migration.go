@@ -32,7 +32,7 @@ var migrationName = regexp.MustCompile(`^([0-9]{6})_([a-z0-9_]+)\.sql$`)
 // （版本号不存在就不再“跳过”，而是直接失败）。
 // 并发写 map 是数据竞争，因此只在初始化阶段构建，运行期只读。
 var preflights = map[uint64]func(context.Context, *sql.DB) error{
-	37: PreflightContractNumbers,
+	38: PreflightContractNumbers,
 }
 
 type item struct {

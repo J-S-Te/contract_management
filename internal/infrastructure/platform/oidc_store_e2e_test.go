@@ -89,7 +89,7 @@ func loadE2ESession(t *testing.T, store *GORMOIDCStore, hash []byte, now time.Ti
 	return record
 }
 
-// TestGORMOIDCStoreSessionColumnsExistAfterMigration 验证 000038 迁移已落地到隔离库：
+// TestGORMOIDCStoreSessionColumnsExistAfterMigration 验证 000039 迁移已落地到隔离库：
 // 空闲基准列与普通请求观测列都必须存在，避免缺少列时所有已认证请求直接 401。
 func TestGORMOIDCStoreSessionColumnsExistAfterMigration(t *testing.T) {
 	_, db, _ := oidcIdleE2EStore(t)
