@@ -103,7 +103,12 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 		}
 	}
 	for _, item := range b.Items {
-		if item.Item.Mode == contract.ImportNormal || contract.ValidateHistoryEvidence(item.Item) != nil || len(importFieldIssues(item.Item)) > 0 || item.Digest == "" {
+		issues := importFieldIssues(item.Item)
+		// 历史开立通道的客户由编排先查重/创建，清单不声明 crm_customer_id 是正常输入。
+		if s.importProvisionItemApplies(item.Item) {
+			issues = withoutProvisionCustomerRequirement(issues)
+		}
+		if item.Item.Mode == contract.ImportNormal || contract.ValidateHistoryEvidence(item.Item) != nil || len(issues) > 0 || item.Digest == "" {
 			return b, ErrValidation
 		}
 		if _, e = s.importHistoryOwner(ctx, actor, item.Item); e != nil {
