@@ -66,6 +66,8 @@ type recordingRepository struct {
 	approvedReferenceLimit     int
 	approvalSnapshot           contract.Contract
 	hasApprovalSnapshot        bool
+	signingRecord              contract.SigningRecord
+	signingShipmentWrites      int
 }
 
 type personnelStub struct {
@@ -135,9 +137,10 @@ func (r *recordingRepository) ListSigningRecords(context.Context, string, int) (
 	return nil, nil
 }
 func (r *recordingRepository) GetSigningRecord(context.Context, string, string) (contract.SigningRecord, error) {
-	return contract.SigningRecord{}, nil
+	return r.signingRecord, nil
 }
 func (r *recordingRepository) SaveSigningShipment(context.Context, string, string, string, contract.SigningShipment) error {
+	r.signingShipmentWrites++
 	return nil
 }
 func (r *recordingRepository) MarkSigningReceived(context.Context, string, string, string) error {

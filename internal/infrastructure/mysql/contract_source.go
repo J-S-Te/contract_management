@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"encoding/json"
+	"github.com/j-s-te/contract-management/internal/application"
 
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
@@ -20,6 +21,16 @@ func applyContractSource(row *contractRecord, source contract.Contract) error {
 	} else if source.OriginKind != "IMPORTED" || source.ImportMode == "" || source.ImportMode == contract.ImportNormal || contract.ValidateImportPolicy(source.ImportMode, source.ImportPolicy) != nil {
 		return contract.ErrImportPolicy
 	}
+	local := source.CounterpartySource == contract.CounterpartyLocal || source.CategorySource == contract.CategoryLocal
+	if local && (source.OriginKind != "NORMAL" || source.IntegrationPolicy != contract.IntegrationNotApplicable) {
+		return application.ErrContractSourceConflict
+	}
+	if source.CounterpartySource == contract.CounterpartyLocal && (source.CRMCustomerID != 0 || source.OpportunityID != "" || source.LocalCounterpartyID == "" || source.CounterpartyVersion == 0) {
+		return application.ErrValidation
+	}
+	row.CounterpartySource = source.CounterpartySource
+	row.LocalCounterpartyID, row.CounterpartyVersion = stringPtr(source.LocalCounterpartyID), uintPtr(source.CounterpartyVersion)
+	row.CategorySource, row.IntegrationPolicy = source.CategorySource, source.IntegrationPolicy
 	row.DocumentFormat, row.SourceMediaType = source.DocumentFormat, source.SourceMediaType
 	row.SourceFilename, row.SourceSHA256 = source.SourceFilename, source.SourceSHA256
 	row.ExternalPaperNumber, row.OriginKind = source.ExternalPaperNumber, source.OriginKind
@@ -43,6 +54,9 @@ func applyContractSource(row *contractRecord, source contract.Contract) error {
 // 参数：row为完整合同行，target为将交付应用层的合同。
 // 返回值：无；损坏策略以未知版本表示，由业务校验失败关闭。
 func readContractSource(row contractRecord, target *contract.Contract) {
+	target.CounterpartySource = row.CounterpartySource
+	target.LocalCounterpartyID, target.CounterpartyVersion = valueOrEmpty(row.LocalCounterpartyID), uintValueOrZero(row.CounterpartyVersion)
+	target.CategorySource, target.IntegrationPolicy = row.CategorySource, row.IntegrationPolicy
 	target.DocumentFormat, target.SourceMediaType = row.DocumentFormat, row.SourceMediaType
 	target.SourceFilename, target.SourceSHA256 = row.SourceFilename, row.SourceSHA256
 	target.ExternalPaperNumber, target.OriginKind = row.ExternalPaperNumber, row.OriginKind

@@ -87,6 +87,9 @@ func enqueueContractResponsibility(tx *gorm.DB, tenantID, contractID string) err
 	if err := tx.Save(&stream).Error; err != nil {
 		return err
 	}
+	if skip, err := localOutboundNotApplicable(row); err != nil || skip {
+		return err
+	}
 	record := contractResponsibilityOutbox{
 		ID: newID(), TenantID: tenantID, ContractID: contractID, ContractVersion: stream.Version,
 		DeliveryStatus: "pending", NextAttemptAt: stream.UpdatedAt, CreatedAt: stream.UpdatedAt}

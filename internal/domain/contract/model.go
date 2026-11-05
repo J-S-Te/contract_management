@@ -1,6 +1,9 @@
 package contract
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Contract struct {
 	ID                     string            `json:"id"`
@@ -13,6 +16,11 @@ type Contract struct {
 	OpportunityID          string            `json:"opportunity_id,omitempty"`
 	OpportunityName        string            `json:"opportunity_name,omitempty"`
 	CRMCustomerID          uint64            `json:"crm_customer_id,omitempty"`
+	CounterpartySource     string            `json:"counterparty_source,omitempty"`
+	LocalCounterpartyID    string            `json:"local_counterparty_id,omitempty"`
+	CounterpartyVersion    uint64            `json:"counterparty_version,omitempty"`
+	CategorySource         string            `json:"category_source,omitempty"`
+	IntegrationPolicy      string            `json:"-"`
 	CustomerName           string            `json:"customer_name,omitempty"`
 	CustomerAddress        string            `json:"customer_address,omitempty"`
 	CustomerContact        string            `json:"customer_contact,omitempty"`
@@ -68,21 +76,63 @@ type ScopeFilter struct {
 	AllowSelf       bool
 }
 
+// ContractListQuery 是合同台账的服务端筛选与分页条件。
+// Type 精确匹配 con_contract.contract_type：取值来自 CONTRACT_TYPE 字典（外部合同为
+// 直签/三方），这里按等值 SQL 过滤而不做枚举校验——未知值自然返回空集，与 Status 口径一致。
+// Offset 从 0 开始；Limit 越界由服务层钳制。
+type ContractListQuery struct {
+	Keyword string
+	Status  string
+	Type    string
+	// Expired 是台账「已过期」派生徽标的服务端筛选：只接受 "true"/"false"
+	// （忽略大小写与两端空白），其它取值（含空串、非法值）表示不筛选——与
+	// Status/Type 的宽松口径一致，非法值不返回 422，而是退化成不过滤。
+	Expired string
+	Offset  int
+	Limit   int
+}
+
+// ExpiredFilter 解析 Expired 筛选值，是「expired=true|false」参数契约的唯一解析点：
+// 仓储 SQL 与服务层内存兼容路径都必须经由它，避免两处口径分叉。
+// 返回值：filter 为是否只看已过期；ok 为是否启用该筛选（false 表示不追加任何谓词）。
+func (q ContractListQuery) ExpiredFilter() (filter bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(q.Expired)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// ContractPage 是合同台账的分页信封。只有显式带 page/page_size 的请求才返回该形状；
+// 旧调用方（内置 web 页、脚本、跨系统同步）继续收到裸数组，见
+// internal/transport/httpapi/router.go 的 listContracts。
+type ContractPage struct {
+	Items    []Contract `json:"items"`
+	Total    int64      `json:"total"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"page_size"`
+}
+
 type SystemInfo struct {
 	Name  string `json:"name"`
 	Level string `json:"level"`
 }
 
 type ServiceItem struct {
-	SourceID    string       `json:"source_id,omitempty"`
-	Name        string       `json:"name,omitempty"`
-	ServiceType string       `json:"service_type"`
-	Site        string       `json:"site,omitempty"`
-	Batch       string       `json:"batch,omitempty"`
-	Category    string       `json:"category,omitempty"`
-	Requirement string       `json:"requirement,omitempty"`
-	TestMode    string       `json:"test_mode,omitempty"`
-	Systems     []SystemInfo `json:"systems,omitempty"`
+	CategoryID      string       `json:"category_id,omitempty"`
+	CategoryVersion uint64       `json:"category_version,omitempty"`
+	SourceID        string       `json:"source_id,omitempty"`
+	Name            string       `json:"name,omitempty"`
+	ServiceType     string       `json:"service_type"`
+	Site            string       `json:"site,omitempty"`
+	Batch           string       `json:"batch,omitempty"`
+	Category        string       `json:"category,omitempty"`
+	Requirement     string       `json:"requirement,omitempty"`
+	TestMode        string       `json:"test_mode,omitempty"`
+	Systems         []SystemInfo `json:"systems,omitempty"`
 }
 
 type StampedDocument struct {

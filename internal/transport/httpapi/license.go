@@ -33,7 +33,8 @@ func contractLicenseOperation(method, path string) core.Operation {
 			return core.ESSENTIAL_SERVICE
 		case "/internal/v1/handover/responsibilities", "/internal/v1/handover/transfers/:itemID":
 			return core.READ_HISTORY
-		case "/api/v1/contracts/:contractID/export", "/api/v1/approved-contracts/:contractID/docx", "/api/v1/approved-contracts/:contractID/pdf", "/api/v1/approved-contracts/:contractID/stamped-pdf":
+		case "/api/v1/contracts/:contractID/export", "/api/v1/contracts/:contractID/source", "/api/v1/approvals/:approvalID/contract-source", "/api/v1/approved-contracts/:contractID/docx", "/api/v1/approved-contracts/:contractID/pdf", "/api/v1/approved-contracts/:contractID/stamped-pdf":
+			// 全部为只读历史原件/导出下载：与 /export 同一许可口径，不要求变更权限。
 			return core.EXPORT_HISTORY
 		case "/api/v1/dashboard", "/api/v1/opportunity-intakes", "/api/v1/opportunity-intakes/:intakeID", "/api/v1/detection-categories", "/api/v1/contracts", "/api/v1/approved-contracts", "/api/v1/signing-records", "/api/v1/signing-records/:contractID", "/api/v1/contracts/:contractID", "/api/v1/contracts/:contractID/lifecycle", "/api/v1/contracts/:contractID/preview", "/api/v1/contract-templates", "/api/v1/contract-number-rule", "/api/v1/approvals", "/api/v1/approvals/tasks", "/api/v1/approvals/:approvalID", "/api/v1/approvals/:approvalID/contract-preview", "/api/v1/approval-rules":
 			return core.READ_HISTORY

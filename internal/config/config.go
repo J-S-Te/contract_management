@@ -15,6 +15,8 @@ import (
 // 分组注释标明每组配置归属的子系统；字段取值合法性由 validate 统一校验，
 // 校验失败聚合返回全部问题，便于一次性修正部署配置。
 type Config struct {
+	CounterpartySource              string
+	CategorySource                  string
 	CentralSessionEnabled           bool
 	CentralSessionPublicBaseURL     string
 	ExternalPDFEnabled              bool
@@ -143,11 +145,12 @@ type Config struct {
 	// 默认 "0 17 * * *" 同样是 UTC 表达式（17:00 UTC = 北京 01:00，比归档 cron 的
 	// 北京 00:00 错开一小时），不要按北京时间理解；显式配置为空串表示禁用
 	// 该周期巡检，worker 见空值不注册 cron。巡检只读，不主动通知任何人。
-	NumberAuditCron           string
-	ProjectIntegrationEnabled bool
-	ProjectAPIBaseURL         string
-	ProjectIntegrationPoll    time.Duration
-	ProjectIntegrationRetries uint
+	NumberAuditCron                 string
+	ProjectCategoryDirectoryEnabled bool
+	ProjectIntegrationEnabled       bool
+	ProjectAPIBaseURL               string
+	ProjectIntegrationPoll          time.Duration
+	ProjectIntegrationRetries       uint
 
 	// ContractSummaryMachine* 是 CRM 商机签约前调用 GET /internal/contract-summary
 	// 的只读机器接入（scope 固定 contract.summary.read，caller 固定 customer_and_opportunity）。
@@ -188,11 +191,12 @@ type Config struct {
 	CRMReferenceClientSecret       string
 	CRMReferenceScope              string
 	// CRMLink*：合同→CRM 签约关联回写（crm.Dispatcher / crm.LinkNotifier）。
-	// 启用条件：CRM_LINK_BASE_URL 非空；此时必须通过平台 client_credentials
+	// 启用条件：CRM_LINK_ENABLED显式选择；缺省按原URL非空兼容。启用时必须通过平台 client_credentials
 	// 取得专用机器令牌（scope 固定 opportunity.signed.write），
 	// TOKEN_URL/CLIENT_ID/CLIENT_SECRET 缺一即启动失败关闭。
 	// BaseURL 为空表示该边未配置：dispatcher 不运行，启动日志明确说明，
 	// 不再出现“审核完成却静默不回写”。
+	CRMLinkEnabled      bool
 	CRMLinkBaseURL      string
 	CRMLinkTokenURL     string
 	CRMLinkClientID     string
@@ -210,6 +214,9 @@ type Config struct {
 // Load 加载并验证合同进程的运行与导入资源配置。
 // 参数：无；从当前进程环境读取，不读取业务数据库。
 // 返回值：完整配置；缺失必填项或非法值返回错误。
+// Load 装载合同进程配置并校验来源与实际启用的联动能力。
+// 参数：无，读取当前进程环境。
+// 返回值：有效配置或失败关闭错误，不输出凭据。
 func Load() (Config, error) {
 	c := Config{
 		HTTPAddress: env("HTTP_ADDRESS", ":8081"), PlatformBaseURL: env("PLATFORM_BASE_URL", "http://localhost:8080"),
@@ -412,6 +419,34 @@ func Load() (Config, error) {
 	if c.CRMReferenceEnabled, err = strconv.ParseBool(env("CRM_REFERENCE_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("CRM_REFERENCE_ENABLED: %w", err)
 	}
+	c.CRMLinkEnabled, err = strconv.ParseBool(env("CRM_LINK_ENABLED", strconv.FormatBool(strings.TrimSpace(c.CRMLinkBaseURL) != "")))
+	if err != nil {
+		return c, fmt.Errorf("invalid CRM_LINK_ENABLED")
+	}
+	if !c.CRMLinkEnabled {
+		c.CRMLinkBaseURL = ""
+	}
+	c.ProjectCategoryDirectoryEnabled, err = strconv.ParseBool(env("PROJECT_CATEGORY_DIRECTORY_ENABLED", strconv.FormatBool(c.ProjectIntegrationEnabled)))
+	if err != nil {
+		return c, fmt.Errorf("invalid PROJECT_CATEGORY_DIRECTORY_ENABLED")
+	}
+	c.CounterpartySource = env("CONTRACT_COUNTERPARTY_SOURCE", "crm")
+	c.CategorySource = env("CONTRACT_CATEGORY_SOURCE", "project")
+	if c.CounterpartySource != "crm" && c.CounterpartySource != "local" {
+		return c, fmt.Errorf("invalid CONTRACT_COUNTERPARTY_SOURCE")
+	}
+	if c.CategorySource != "project" && c.CategorySource != "local" {
+		return c, fmt.Errorf("invalid CONTRACT_CATEGORY_SOURCE")
+	}
+	if (c.CounterpartySource == "local" || c.CategorySource == "local") && (c.ProjectIntegrationEnabled || c.SettlementIntegrationEnabled || c.CRMLinkEnabled) {
+		return c, fmt.Errorf("LOCAL contract source conflicts with enabled project, settlement or CRM link integration")
+	}
+	if c.CounterpartySource == "local" && c.CategorySource == "project" && !c.ProjectCategoryDirectoryEnabled {
+		return c, fmt.Errorf("PROJECT_CATEGORY_DIRECTORY_ENABLED is required for local counterparties with project categories")
+	}
+	if c.CategorySource == "local" && c.CounterpartySource == "crm" && !c.CRMReferenceEnabled {
+		return c, fmt.Errorf("CRM_REFERENCE_ENABLED is required for CRM counterparties with local categories")
+	}
 	if err := loadImportHistoryConfig(&c); err != nil {
 		return c, err
 	}
@@ -452,7 +487,7 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.HTTPAddress) == "" {
 		return fmt.Errorf("HTTP_ADDRESS must not be empty")
 	}
-	if c.ProjectIntegrationEnabled {
+	if c.ProjectIntegrationEnabled || c.ProjectCategoryDirectoryEnabled {
 		if !validHTTPOrigin(c.ProjectAPIBaseURL) {
 			return fmt.Errorf("PROJECT_API_BASE_URL must be an HTTP(S) origin")
 		}
@@ -462,7 +497,7 @@ func (c Config) validate() error {
 			"PROJECT_INTEGRATION_CLIENT_SECRET": c.ProjectIntegrationClientSecret,
 		} {
 			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("%s is required when PROJECT_INTEGRATION_ENABLED=true", name)
+				return fmt.Errorf("%s is required when project integration or category directory is enabled", name)
 			}
 		}
 		tokenURL, tokenErr := url.ParseRequestURI(c.ProjectIntegrationTokenURL)
@@ -521,7 +556,7 @@ func (c Config) validate() error {
 	// 一旦配置，CRM 要求平台 client_credentials 令牌并校验 scope/时间戳/nonce，
 	// 因此令牌端点与客户端凭据缺一即失败关闭，避免静态令牌或无令牌请求
 	// 被 401 反复拒绝直至死信。
-	if strings.TrimSpace(c.CRMLinkBaseURL) != "" {
+	if c.CRMLinkEnabled {
 		if !validCRMReferenceBaseURL(c.CRMLinkBaseURL) {
 			return fmt.Errorf("CRM_LINK_BASE_URL must be an HTTP(S) origin with optional /customer-opportunity prefix, without credentials, query or fragment")
 		}

@@ -39,6 +39,12 @@ func (r *contractLicenseHistoryRepo) GetContract(context.Context, string, string
 	return contract.Contract{ID: "existing", TenantID: "tenant", CreatedBy: "actor", OwnerIdentityID: "actor", Document: []byte("existing immutable document")}, nil
 }
 
+// RecordDocumentAccess 为历史导出的"先审计再输出"契约提供不落库的审计边界。
+// 参数与生产记录器一致，返回nil表示审计依据已建立。
+func (r *contractLicenseHistoryRepo) RecordDocumentAccess(context.Context, string, string, string, string) error {
+	return nil
+}
+
 // 使用真实注册路由器、应用服务和活动，配合
 // 独立签名的持久状态。认证及历史存储为
 // 显式夹具；不声称完成 OIDC、MySQL 或 Temporal 服务验收。

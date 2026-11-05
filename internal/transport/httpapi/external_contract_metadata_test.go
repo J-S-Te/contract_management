@@ -100,7 +100,9 @@ func jsonFieldNames(structType reflect.Type) map[string]bool {
 	return names
 }
 
-// payloadBuilderKeys 取 buildNewContractPayload() 返回对象的一级字段名。
+// payloadBuilderKeys 读取正式载荷对象的一级字段，兼容直接返回或const payload再合并来源。
+// 参数：t为测试上下文，source为当前前端源码。
+// 返回值：实际载荷字段名；未能定位时让契约检查失败。
 // 用花括号深度计数区分一级字段与 service_items 内的嵌套字段；函数体首行即为左花括号，
 // 因此深度为 1 的行才是载荷属性行。
 func payloadBuilderKeys(t *testing.T, source string) []string {
@@ -110,11 +112,13 @@ func payloadBuilderKeys(t *testing.T, source string) []string {
 		t.Fatal("未在前端源码中定位到 buildNewContractPayload(")
 	}
 	body := source[anchor:]
-	// 锚定 return { 而不是函数体左花括号：函数体是外层，载荷对象是内层，
-	// 否则属性行会落在深度 2 上而被漏掉。
-	returnAt := strings.Index(body, "return {")
+	// 先读取正式payload构造；仅有来源spread的return本身不包含基础字段。
+	returnAt := strings.Index(body, "const payload = {")
 	if returnAt < 0 {
-		t.Fatal("buildNewContractPayload() 未找到 return 对象字面量")
+		returnAt = strings.Index(body, "return {")
+	}
+	if returnAt < 0 {
+		t.Fatal("buildNewContractPayload() 未找到正式载荷对象字面量")
 	}
 	open := returnAt + strings.Index(body[returnAt:], "{")
 	if open < returnAt {

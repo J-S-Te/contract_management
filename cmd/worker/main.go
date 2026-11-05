@@ -28,6 +28,9 @@ import (
 	"go.temporal.io/sdk/worker"
 )
 
+// main 装配合同工作流及明确启用的出站消费者。
+// 参数：无，读取当前进程配置。
+// 返回值：无；配置或初始化失败以非零状态退出。
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if _, err := bootstrap.RuntimeProcessMode("contract-worker"); err != nil {
@@ -87,9 +90,11 @@ func main() {
 		go (&application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}).Run(ctx)
 	}
 	// 合同→CRM 关联回写与 API 进程使用同一平台 client_credentials 专用用途令牌；
-	// 未配置 CRM_LINK_BASE_URL 时 Run 记录“disabled”后直接返回。
-	go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
-		TokenSource: crm.NewClientCredentialsTokenSource(ctx, cfg.CRMLinkTokenURL, cfg.CRMLinkClientID, cfg.CRMLinkClientSecret, cfg.CRMLinkScope)}).Run(ctx)
+	// 有效开关关闭时不构造令牌来源或回写投递器。
+	if cfg.CRMLinkEnabled {
+		go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
+			TokenSource: crm.NewClientCredentialsTokenSource(ctx, cfg.CRMLinkTokenURL, cfg.CRMLinkClientID, cfg.CRMLinkClientSecret, cfg.CRMLinkScope)}).Run(ctx)
+	}
 	workflows.Register(w, &workflows.Activities{Store: repository, LicenseGate: licenseGate,
 		NumberAuditor: repository, NumberAuditMetrics: metrics, Logger: logger})
 	if cfg.ProjectIntegrationEnabled {

@@ -88,6 +88,22 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 		}
 		seen[item.SourceID] = item.SourceID != ""
 	}
+	if current.CounterpartySource == contract.CounterpartyLocal {
+		if input.CounterpartySource == "" {
+			input.CounterpartySource = current.CounterpartySource
+		}
+		if input.CounterpartySource != contract.CounterpartyLocal {
+			return current, ErrContractSourceConflict
+		}
+	} else if input.CounterpartySource == contract.CounterpartyLocal {
+		return current, ErrContractSourceConflict
+	}
+	if current.CategorySource == contract.CategoryLocal && input.CategorySource == "" {
+		input.CategorySource = current.CategorySource
+	}
+	if current.CategorySource != input.CategorySource && (current.CategorySource == contract.CategoryLocal || input.CategorySource == contract.CategoryLocal) {
+		return current, ErrContractSourceConflict
+	}
 	input.OwnerIdentityID, input.OwnerOrgID, input.ProjectID = current.OwnerIdentityID, current.OwnerOrgID, current.ProjectID
 	// 旧客户端会省略新字段。保留已存储计划，并根据编辑后的
 	// 金额重新校验；显式空数组只能清空草稿中的计划。

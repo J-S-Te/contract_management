@@ -11,8 +11,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/contractdocument"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
+	"github.com/j-s-te/contract-management/internal/testfixture"
 )
 
 type downloadAuditReporter func(context.Context, platform.AuditEvent) error
@@ -24,11 +26,18 @@ func (f downloadAuditReporter) Report(ctx context.Context, event platform.AuditE
 type auditDownloadRepository struct {
 	application.Repository
 	documentAccess []string
+	// documentAccessErr 注入持久文档访问审计失败，用于验证失败关闭。
+	documentAccessErr error
+	// stored 覆盖默认DOCX夹具，用于覆盖PDF导出分支。
+	stored *contract.Contract
 }
 
-func (auditDownloadRepository) GetContract(_ context.Context, tenantID, id string) (contract.Contract, error) {
+func (r *auditDownloadRepository) GetContract(_ context.Context, tenantID, id string) (contract.Contract, error) {
 	if tenantID != "audit-test-tenant" || id != "existing" {
 		return contract.Contract{}, application.ErrForbidden
+	}
+	if r.stored != nil {
+		return *r.stored, nil
 	}
 	return contract.Contract{ID: id, TenantID: tenantID, Status: contract.StatusActive, Number: "CON-EXISTING", Document: []byte("existing-private-document")}, nil
 }
@@ -36,6 +45,9 @@ func (auditDownloadRepository) GetContract(_ context.Context, tenantID, id strin
 // RecordDocumentAccess 让测试替身满足服务层"下载必须先建立审计依据"的要求；
 // 记录次数在用例里断言，避免下载在无审计记录时也能成功。
 func (r *auditDownloadRepository) RecordDocumentAccess(_ context.Context, tenantID, contractID, documentKind, actorID string) error {
+	if r.documentAccessErr != nil {
+		return r.documentAccessErr
+	}
 	r.documentAccess = append(r.documentAccess, documentKind)
 	return nil
 }
@@ -50,7 +62,15 @@ func (auditDownloadRepository) GetStampedDocument(_ context.Context, tenantID, i
 func TestRegisteredContractDownloadsEnforceAuditAndPermission(t *testing.T) {
 	t.Setenv("PLATFORM_AUDIT_REQUIRED", "true")
 	gin.SetMode(gin.TestMode)
-	for _, path := range []string{"/api/v1/approved-contracts/existing/docx", "/api/v1/approved-contracts/existing/stamped-pdf", "/api/v1/contracts/existing/export"} {
+	for _, download := range []struct {
+		path string
+		kind string
+	}{
+		{"/api/v1/approved-contracts/existing/docx", "DOCX"},
+		{"/api/v1/approved-contracts/existing/stamped-pdf", "STAMPED_PDF"},
+		{"/api/v1/contracts/existing/export", "EXPORT_DOCX"},
+	} {
+		path := download.path
 		for _, tc := range []struct {
 			name     string
 			auditErr error
@@ -73,6 +93,15 @@ func TestRegisteredContractDownloadsEnforceAuditAndPermission(t *testing.T) {
 				if response.Code != tc.want {
 					t.Fatalf("status=%d want=%d body=%q", response.Code, tc.want, response.Body.String())
 				}
+				// 持久文档访问审计独立于HTTP审计中间件：越权读取在被拒绝前不得留下记录，
+				// 记录成功后的平台审计摄取失败只丢弃响应字节，不撤销已建立的访问依据。
+				want := []string{download.kind}
+				if tc.want == http.StatusForbidden {
+					want = nil
+				}
+				if strings.Join(repository.documentAccess, ",") != strings.Join(want, ",") {
+					t.Errorf("document access audit=%v want=%v", repository.documentAccess, want)
+				}
 				if tc.want == 200 {
 					if response.Body.String() != "existing-private-document" || response.Result().Header.Get("Content-Disposition") == "" {
 						t.Errorf("registered history export failed: headers=%v body=%q", response.Result().Header, response.Body.String())
@@ -82,6 +111,64 @@ func TestRegisteredContractDownloadsEnforceAuditAndPermission(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// exportContract 必须先建立持久文档访问审计再输出字节，并与 /source 的
+// SOURCE_<format> 保持一致地按格式记录 EXPORT_<format>。
+// 记录失败必须失败关闭：不输出文件字节、下载响应头或成功状态。
+func TestExportContractRecordsDocumentAccessBeforeBytes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	pdf := testfixture.PDF("exported contract")
+	docx := []byte("existing-private-document")
+	for _, tc := range []struct {
+		name      string
+		stored    *contract.Contract
+		accessErr error
+		wantKind  string
+		document  []byte
+	}{
+		{name: "docx_recorded", wantKind: "EXPORT_DOCX", document: docx},
+		{name: "pdf_recorded", stored: &contract.Contract{ID: "existing", TenantID: "audit-test-tenant", Status: contract.StatusActive, Number: "CON-EXISTING", DocumentFormat: contractdocument.FormatPDF, Document: pdf}, wantKind: "EXPORT_PDF", document: pdf},
+		{name: "docx_audit_failure_closed", accessErr: errors.New("audit outbox unavailable"), document: docx},
+		{name: "pdf_audit_failure_closed", accessErr: errors.New("audit outbox unavailable"), stored: &contract.Contract{ID: "existing", TenantID: "audit-test-tenant", Status: contract.StatusActive, Number: "CON-EXISTING", DocumentFormat: contractdocument.FormatPDF, Document: pdf}, document: pdf},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actor := application.Principal{TenantID: "audit-test-tenant", UserID: "actor", IdentityID: "actor",
+				Permissions:      map[string]bool{"contract.read": true},
+				PermissionScopes: map[string]contract.ScopeFilter{"contract.read": {AllowAll: true}}}
+			repository := &auditDownloadRepository{documentAccessErr: tc.accessErr, stored: tc.stored}
+			service := &application.Service{Repo: repository, LicenseGate: historyOnlyLicense{}}
+			router := NewRouter(service, identityFunc(func(context.Context, *http.Request) (application.Principal, error) { return actor, nil }), nil, &stubAuditReporter{})
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/contracts/existing/export", nil))
+			if tc.accessErr != nil {
+				// writeError 对普通仓储错误走默认分支：500 CON_INTERNAL_ERROR；
+				// 唯一的强制要求是失败关闭，不泄漏任何文档响应。
+				if response.Code != http.StatusInternalServerError {
+					t.Fatalf("status=%d want=%d body=%q", response.Code, http.StatusInternalServerError, response.Body.String())
+				}
+				if len(repository.documentAccess) != 0 {
+					t.Errorf("failed document audit still recorded access: %v", repository.documentAccess)
+				}
+				if response.Result().Header.Get("Content-Disposition") != "" || bytes.Contains(response.Body.Bytes(), tc.document) {
+					t.Errorf("failed document audit leaked export: headers=%v body=%q", response.Result().Header, response.Body.String())
+				}
+				if !strings.Contains(response.Result().Header.Get("Content-Type"), "application/json") {
+					t.Errorf("failed document audit retained document Content-Type: %v", response.Result().Header)
+				}
+				return
+			}
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d want=%d body=%q", response.Code, http.StatusOK, response.Body.String())
+			}
+			if len(repository.documentAccess) != 1 || repository.documentAccess[0] != tc.wantKind {
+				t.Fatalf("document access audit=%v want one %s", repository.documentAccess, tc.wantKind)
+			}
+			if !bytes.Equal(response.Body.Bytes(), tc.document) || response.Result().Header.Get("Content-Disposition") == "" {
+				t.Errorf("export after audit failed: headers=%v body=%q", response.Result().Header, response.Body.String())
+			}
+		})
 	}
 }
 

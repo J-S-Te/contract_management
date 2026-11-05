@@ -87,7 +87,7 @@ func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error
 	}
 
 	var candidates []projectDeliveryCandidate
-	err = ordinaryContractScope(r.db.WithContext(ctx).Table("con_contract AS c"), "c").
+	err = ordinaryContractScope(r.db.WithContext(ctx).Table("con_contract AS c"), "c").Where("(c.integration_policy IS NULL OR c.integration_policy <> ?)", contract.IntegrationNotApplicable).
 		Select("c.tenant_id, c.id AS contract_id").
 		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
 		Where("JSON_LENGTH(c.service_items_json) > 0").
@@ -132,6 +132,9 @@ func (r *Repository) ReconcileProjectDeliveries(ctx context.Context) (int, error
 func enqueueProjectActivation(tx *gorm.DB, tenantID, contractID string) error {
 	var row contractRecord
 	if err := tx.Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&row).Error; err != nil {
+		return err
+	}
+	if skip, err := localOutboundNotApplicable(row); err != nil || skip {
 		return err
 	}
 	if !ordinaryContractRecord(row) {

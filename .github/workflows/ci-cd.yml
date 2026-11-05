@@ -39,6 +39,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - run: sh scripts/license-core-sync.sh --check
       - run: go test ./...
       - run: go vet ./...
       - name: Scan reachable Go vulnerabilities

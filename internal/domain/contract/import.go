@@ -19,6 +19,10 @@ type ImportMetadata struct {
 	ServiceType         string        `json:"service_type"`
 	OpportunityID       string        `json:"opportunity_id"`
 	OpportunityName     string        `json:"opportunity_name"`
+	CounterpartySource  string        `json:"counterparty_source,omitempty"`
+	LocalCounterpartyID string        `json:"local_counterparty_id,omitempty"`
+	CounterpartyVersion uint64        `json:"counterparty_version,omitempty"`
+	CategorySource      string        `json:"category_source,omitempty"`
 	CRMCustomerID       uint64        `json:"crm_customer_id"`
 	CustomerName        string        `json:"customer_name"`
 	CustomerAddress     string        `json:"customer_address"`
@@ -42,6 +46,7 @@ type ImportMetadata struct {
 func (m ImportMetadata) Contract() Contract {
 	return Contract{Title: m.Title, Type: m.ContractType, ServiceType: m.ServiceType,
 		OpportunityID: m.OpportunityID, OpportunityName: m.OpportunityName,
+		CounterpartySource: m.CounterpartySource, LocalCounterpartyID: m.LocalCounterpartyID, CounterpartyVersion: m.CounterpartyVersion, CategorySource: m.CategorySource,
 		CRMCustomerID: m.CRMCustomerID, CustomerName: m.CustomerName,
 		CustomerAddress: m.CustomerAddress, CustomerContact: m.CustomerContact, CustomerPhone: m.CustomerPhone,
 		Systems: m.Systems, ServiceItems: m.ServiceItems, CustomerCreditLevel: m.CustomerCreditLevel,

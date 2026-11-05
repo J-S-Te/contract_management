@@ -59,6 +59,11 @@ type contractRecord struct {
 	ServiceType                     string
 	OpportunityID                   *string
 	OpportunityName                 *string
+	CounterpartySource              string `gorm:"default:null"`
+	LocalCounterpartyID             *string
+	CounterpartyVersion             *uint64
+	CategorySource                  string `gorm:"default:null"`
+	IntegrationPolicy               string `gorm:"default:null"`
 	CRMCustomerID                   *uint64
 	CustomerName                    *string
 	CustomerAddress                 *string
