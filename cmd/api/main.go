@@ -71,11 +71,11 @@ func main() {
 	defer temporalClient.Close()
 	repository := store.NewRepository(db)
 	// 合同→CRM 关联回写使用平台 client_credentials 专用用途令牌（scope 固定
-	// opportunity.signed.write），CRM 侧同时校验时间戳与 nonce。未配置 BaseURL
-	// 时该边不运行，但必须在启动日志中明确说明，避免静默不回写。
+	// opportunity.signed.write），CRM 侧同时校验时间戳与 nonce。由同一有效开关
+	// 控制构造与投递；显式关闭或兼容缺省停用时记录原因。
 	var crmLinkTokenSource func(context.Context) (string, error)
-	if strings.TrimSpace(cfg.CRMLinkBaseURL) == "" {
-		logger.Info("CRM link integration disabled: CRM_LINK_BASE_URL is empty; signed-contract link callbacks will not be delivered")
+	if !cfg.CRMLinkEnabled {
+		logger.Info("CRM link integration disabled by effective CRM_LINK_ENABLED configuration; signed-contract link callbacks will not be delivered")
 	} else {
 		crmLinkTokenSource = crm.NewClientCredentialsTokenSource(ctx, cfg.CRMLinkTokenURL, cfg.CRMLinkClientID, cfg.CRMLinkClientSecret, cfg.CRMLinkScope)
 		if crmLinkTokenSource == nil {
@@ -84,7 +84,7 @@ func main() {
 		}
 		logger.Info("CRM link integration enabled", "base_url", cfg.CRMLinkBaseURL, "scope", cfg.CRMLinkScope)
 	}
-	if !splitProcess {
+	if !splitProcess && cfg.CRMLinkEnabled {
 		go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, TokenSource: crmLinkTokenSource, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger}).Run(ctx)
 	}
 	personnelDirectory := platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout)
@@ -133,6 +133,9 @@ func main() {
 		if !splitProcess {
 			go dispatcher.Run(ctx)
 		}
+	}
+	if cfg.ProjectCategoryDirectoryEnabled {
+		tokenSource := projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)
 		projectDetectionCategories = &projectintegration.DetectionCategoryDirectory{BaseURL: cfg.ProjectAPIBaseURL, TokenSource: tokenSource}
 	}
 	if cfg.SettlementIntegrationEnabled {
@@ -147,6 +150,7 @@ func main() {
 		crmContractReferences = &crm.ContractReferenceDirectory{BaseURL: cfg.CRMReferenceBaseURL, TokenSource: crmTokenSource}
 	}
 	service := &application.Service{
+		ContractSources:                 &application.ContractSourceOptions{CounterpartySource: cfg.CounterpartySource, CategorySource: cfg.CategorySource, Catalog: repository, Targets: platform.NewLocalCatalogTargetDirectory(personnelDirectory, cfg.OIDCTenantID), ProjectIntegrationEnabled: cfg.ProjectIntegrationEnabled, SettlementIntegrationEnabled: cfg.SettlementIntegrationEnabled, CRMLinkEnabled: cfg.CRMLinkEnabled},
 		ExternalPDFEnabled:              cfg.ExternalPDFEnabled,
 		ContractImportEnabled:           cfg.ContractImportEnabled,
 		ContractImportHistoryEnabled:    cfg.ContractImportHistoryEnabled,
@@ -161,9 +165,11 @@ func main() {
 		NodeTimeout:                     cfg.NodeTimeout,
 		ReminderInterval:                cfg.ReminderInterval,
 		Personnel:                       personnelDirectory,
-		OpportunityLinkNotifier:         &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, TokenSource: crmLinkTokenSource, Client: &http.Client{Timeout: 5 * time.Second}},
 		DetectionCategories:             projectDetectionCategories,
 		CRMContractReferences:           crmContractReferences,
+	}
+	if cfg.CRMLinkEnabled {
+		service.OpportunityLinkNotifier = &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, TokenSource: crmLinkTokenSource, Client: &http.Client{Timeout: 5 * time.Second}}
 	}
 	if cfg.StampedFileMode != "legacy" {
 		gatewayToken := filegatewayclient.NewClientCredentialsTokenSource(ctx, strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token", cfg.StampedFileClientID, cfg.StampedFileClientSecret, cfg.StampedFileScope)
@@ -341,13 +347,21 @@ func main() {
 	}
 	// 统一审计来源：显式可信代理列表，未列入的直接对端不能改写来源地址。
 	httpapi.ConfigureTrustedProxies(cfg.TrustedProxies)
+	// C14：能力维度快照注入 /readyz；可选未启用（disabled）与核心降级分开表达。
+	engine := httpapi.NewRouterWithAuditOutbox(service, identity,
+		&httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer},
+		&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer},
+		&httpapi.ProjectIntegrationOptions{Enabled: cfg.ProjectApprovalMachineEnabled, RequireBearer: cfg.ProjectApprovalMachineRequireBearer, BearerVerifier: projectApprovalBearer},
+		&httpapi.CRMSignedCountIntegrationOptions{Enabled: cfg.CRMSignedCountMachineEnabled, RequireBearer: cfg.CRMSignedCountMachineRequireBearer, BearerVerifier: crmSignedCountBearer, OpportunityIntakeEnabled: cfg.CRMOpportunityIntakeMachineEnabled, OpportunityIntakeRequireBearer: cfg.CRMOpportunityIntakeMachineRequireBearer, OpportunityIntakeBearerVerifier: crmOpportunityIntakeBearer, ContractSummary: &httpapi.ContractSummaryIntegrationOptions{Enabled: cfg.ContractSummaryMachineEnabled, RequireBearer: cfg.ContractSummaryMachineRequireBearer, BearerVerifier: contractSummaryBearer}}, handoverService, &httpapi.HandoverIntegrationOptions{Enabled: cfg.HandoverMachineEnabled, RequireBearer: cfg.HandoverMachineRequireBearer, BearerVerifier: handoverBearer}, auditStore, auditReporter)
+	httpapi.AttachReadinessCapabilities(engine, map[string]any{
+		"crm_reference":       map[string]any{"enabled": cfg.CRMReferenceEnabled, "state": httpapi.CapabilityState(cfg.CRMReferenceEnabled), "source": cfg.CounterpartySource},
+		"project_integration": map[string]any{"enabled": cfg.ProjectIntegrationEnabled, "state": httpapi.CapabilityState(cfg.ProjectIntegrationEnabled), "source": cfg.CategorySource},
+		"settlement_outbound": map[string]any{"enabled": cfg.SettlementIntegrationEnabled, "state": httpapi.CapabilityState(cfg.SettlementIntegrationEnabled)},
+		"import_history":      map[string]any{"enabled": cfg.ContractImportHistoryEnabled, "state": httpapi.CapabilityState(cfg.ContractImportHistoryEnabled)},
+	})
 	server := &http.Server{
-		Addr: cfg.HTTPAddress,
-		Handler: httpapi.NewRouterWithAuditOutbox(service, identity,
-			&httpapi.DashboardIntegrationOptions{Enabled: cfg.DashboardMachineEnabled, RequireBearer: cfg.DashboardMachineRequireBearer, BearerVerifier: dashboardBearer},
-			&httpapi.SettlementIntegrationOptions{Enabled: cfg.SettlementMachineEnabled, RequireBearer: cfg.SettlementMachineRequireBearer, BearerVerifier: settlementBearer},
-			&httpapi.ProjectIntegrationOptions{Enabled: cfg.ProjectApprovalMachineEnabled, RequireBearer: cfg.ProjectApprovalMachineRequireBearer, BearerVerifier: projectApprovalBearer},
-			&httpapi.CRMSignedCountIntegrationOptions{Enabled: cfg.CRMSignedCountMachineEnabled, RequireBearer: cfg.CRMSignedCountMachineRequireBearer, BearerVerifier: crmSignedCountBearer, OpportunityIntakeEnabled: cfg.CRMOpportunityIntakeMachineEnabled, OpportunityIntakeRequireBearer: cfg.CRMOpportunityIntakeMachineRequireBearer, OpportunityIntakeBearerVerifier: crmOpportunityIntakeBearer, ContractSummary: &httpapi.ContractSummaryIntegrationOptions{Enabled: cfg.ContractSummaryMachineEnabled, RequireBearer: cfg.ContractSummaryMachineRequireBearer, BearerVerifier: contractSummaryBearer}}, handoverService, &httpapi.HandoverIntegrationOptions{Enabled: cfg.HandoverMachineEnabled, RequireBearer: cfg.HandoverMachineRequireBearer, BearerVerifier: handoverBearer}, auditStore, auditReporter),
+		Addr:              cfg.HTTPAddress,
+		Handler:           engine,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 

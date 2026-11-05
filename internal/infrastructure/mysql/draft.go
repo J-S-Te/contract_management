@@ -62,6 +62,7 @@ func (r *Repository) UpdateContractDraft(ctx context.Context, c contract.Contrac
 		// 合同编号或原始创建审计。
 		result := tx.Model(&contractRecord{}).Where("tenant_id = ? AND id = ? AND version = ? AND status = ?", c.TenantID, c.ID, expectedVersion, contract.StatusDraft).Updates(map[string]any{
 			"title": c.Title, "contract_type": c.Type, "service_type": c.ServiceType, "customer_credit_level": stringPtr(c.CustomerCreditLevel),
+			"counterparty_source": stringPtr(c.CounterpartySource), "local_counterparty_id": stringPtr(c.LocalCounterpartyID), "counterparty_version": uintPtr(c.CounterpartyVersion), "category_source": stringPtr(c.CategorySource), "integration_policy": stringPtr(c.IntegrationPolicy),
 			"opportunity_id": stringPtr(c.OpportunityID), "opportunity_name": stringPtr(c.OpportunityName), "crm_customer_id": uintPtr(c.CRMCustomerID),
 			"customer_name": stringPtr(c.CustomerName), "customer_address": stringPtr(c.CustomerAddress), "customer_contact": stringPtr(c.CustomerContact), "customer_phone": stringPtr(c.CustomerPhone),
 			"systems_json": systems, "service_items_json": items, "amount_minor": c.AmountMinor, "currency": c.Currency,

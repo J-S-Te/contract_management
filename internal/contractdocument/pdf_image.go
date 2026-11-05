@@ -1,8 +1,6 @@
 package contractdocument
 
 import (
-	"fmt"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -13,7 +11,7 @@ import (
 func validatePDFImageBudget(table *model.XRefTable, stream types.StreamDict) error {
 	subtype, _, err := table.DereferenceNameEntry(stream.Dict, "Subtype")
 	if err != nil {
-		return fmt.Errorf("PDF图片类型无效")
+		return Reject(CodePDFImageBudget, "PDF图片类型无效")
 	}
 	_, widthPresent := stream.Dict["Width"]
 	_, heightPresent := stream.Dict["Height"]
@@ -22,17 +20,19 @@ func validatePDFImageBudget(table *model.XRefTable, stream types.StreamDict) err
 	}
 	width, err := table.DereferenceInteger(stream.Dict["Width"])
 	if err != nil || width == nil || *width <= 0 {
-		return fmt.Errorf("PDF图片宽度无效")
+		return Reject(CodePDFImageBudget, "PDF图片宽度无效")
 	}
 	height, err := table.DereferenceInteger(stream.Dict["Height"])
 	if err != nil || height == nil || *height <= 0 {
-		return fmt.Errorf("PDF图片高度无效")
+		return Reject(CodePDFImageBudget, "PDF图片高度无效")
 	}
 	limits := table.Conf.Limits
 	w, h := int64(*width), int64(*height)
 	// 先除后乘，避免攻击者声明的巨型尺寸造成整数溢出。
+	// 两条判断分别对应独立像素上限 MaxImagePixels 与 4 字节/像素渲染预算 MaxImageBytes/4；
+	// 当前预算下 MaxImageBytes/4（192MiB/4≈50.3MP）先触发，A4@600dpi（34.8MP）通过、A3@600dpi（69.6MP）拒绝。
 	if w > limits.MaxImagePixels/h || w > (limits.MaxImageBytes/4)/h {
-		return fmt.Errorf("PDF图片像素或渲染内存超出接入上限")
+		return Reject(CodePDFImageBudget, "PDF图片像素或渲染内存超出接入上限")
 	}
 	return validatePDFImageSampleBudget(table, &stream, w, h)
 }
@@ -45,15 +45,15 @@ func validatePDFImageSampleBudget(table *model.XRefTable, stream *types.StreamDi
 	components, err := pdfImageColorComponents(table, stream.Dict["ColorSpace"],
 		make(map[types.IndirectRef]bool), 0, true)
 	if err != nil {
-		return fmt.Errorf("PDF图片色彩空间无效")
+		return Reject(CodePDFImageBudget, "PDF图片色彩空间无效")
 	}
 	bits, err := table.DereferenceInteger(stream.Dict["BitsPerComponent"])
 	if err != nil {
-		return fmt.Errorf("PDF图片采样精度无效")
+		return Reject(CodePDFImageBudget, "PDF图片采样精度无效")
 	}
 	mask, err := table.Dereference(stream.Dict["ImageMask"])
 	if err != nil {
-		return fmt.Errorf("PDF图片遮罩声明无效")
+		return Reject(CodePDFImageBudget, "PDF图片遮罩声明无效")
 	}
 	precision := int64(16)
 	if bits != nil {
@@ -69,7 +69,7 @@ func validatePDFImageSampleBudget(table *model.XRefTable, stream *types.StreamDi
 	limit := table.Conf.Limits.MaxImageBytes
 	if components < 1 || precision < 1 || precision > 16 ||
 		int64(components) > (limit/height*8)/width/precision {
-		return fmt.Errorf("PDF图片解码内存超出接入上限")
+		return Reject(CodePDFImageBudget, "PDF图片解码内存超出接入上限")
 	}
 	return nil
 }

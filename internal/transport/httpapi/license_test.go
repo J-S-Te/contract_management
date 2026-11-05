@@ -26,6 +26,9 @@ func TestLicensePolicyExactRoutesAndNonGETHistory(t *testing.T) {
 	}{
 		{"POST", "/api/v1/contract-templates/:templateID/preview", core.READ_HISTORY},
 		{"GET", "/api/v1/contracts/:contractID/export", core.EXPORT_HISTORY},
+		// 历史原件下载与 /export 同一许可口径：只读历史，不要求变更权限。
+		{"GET", "/api/v1/contracts/:contractID/source", core.EXPORT_HISTORY},
+		{"GET", "/api/v1/approvals/:approvalID/contract-source", core.EXPORT_HISTORY},
 		{"GET", "/api/v1/contracts", core.READ_HISTORY},
 		{"GET", "/api/v1/contract-number-rule", core.READ_HISTORY},
 		{"PUT", "/api/v1/contract-number-rule", core.MUTATE_BUSINESS},

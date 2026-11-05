@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"io"
+	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"time"
@@ -101,43 +104,118 @@ func (h *Handler) getImportBatch(c *gin.Context) {
 
 // uploadImportSource 接收单文件，拒绝额外字段及多文件。
 // 参数：c为已鉴权multipart请求。
-// 返回值：无。
+// 返回值：无；每个失败分支都输出具体原因码并记录不含原件内容的诊断日志。
 func (h *Handler) uploadImportSource(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (20<<20)+(1<<20))
 	if e := c.Request.ParseMultipartForm(1 << 20); e != nil {
-		writeError(c, application.ErrValidation)
+		importUploadReject(c, "IMPORT_MULTIPART_INVALID", "上传请求无法解析：表单损坏或超过 21MiB", "file", "", "", 0)
 		return
 	}
 	form := c.Request.MultipartForm
 	defer form.RemoveAll()
 	if len(form.File) != 1 || len(form.File["file"]) != 1 || len(form.Value) != 2 || len(form.Value["item_key"]) != 1 || len(form.Value["expected_version"]) != 1 {
-		writeError(c, application.ErrValidation)
+		importUploadReject(c, "IMPORT_FORM_INVALID",
+			"上传表单必须恰好包含 1 个原件字段 file 与 item_key、expected_version 两个文本字段",
+			"file", importFormValue(form, "item_key"), importFormFilename(form), importFormSize(form))
 		return
 	}
+	itemKey, fileName := form.Value["item_key"][0], form.File["file"][0].Filename
+	size := form.File["file"][0].Size
 	version, e := strconv.ParseUint(form.Value["expected_version"][0], 10, 64)
 	if e != nil {
-		writeError(c, application.ErrValidation)
+		importUploadReject(c, "IMPORT_VERSION_INVALID", "expected_version 必须是非负整数", "expected_version", itemKey, fileName, size)
 		return
 	}
 	file := form.File["file"][0]
 	opened, e := file.Open()
 	if e != nil {
-		writeError(c, application.ErrValidation)
+		importUploadReject(c, "IMPORT_READ_FAILED", "读取上传原件失败，请重试", "file", itemKey, fileName, size)
 		return
 	}
 	defer opened.Close()
 	body, e := io.ReadAll(io.LimitReader(opened, (20<<20)+1))
 	if e != nil {
-		writeError(c, application.ErrValidation)
+		importUploadReject(c, "IMPORT_READ_FAILED", "读取上传原件失败，请重试", "file", itemKey, fileName, size)
 		return
 	}
-	source, e := h.service.UploadImportSource(c.Request.Context(), principal(c), c.Param("id"), version, form.Value["item_key"][0], file.Filename, file.Header.Get("Content-Type"), body)
+	source, e := h.service.UploadImportSource(c.Request.Context(), principal(c), c.Param("id"), version, itemKey, fileName, file.Header.Get("Content-Type"), body)
 	if e != nil {
+		importUploadLogRejection(c, e, itemKey, fileName, int64(len(body)))
 		writeError(c, e)
 		return
 	}
 	source.GatewayID = ""
 	writeData(c, 201, source)
+}
+
+// importUploadReject 输出表单级422并记录可定位的拒绝原因。
+// 参数：c为请求，reasonCode为稳定原因码，message为具体文案，field为出错字段，
+// itemKey/fileName/sizeBytes为已解析出的非敏感元数据。
+// 返回值：无；保持CON_VALIDATION_ERROR错误码契约不变。
+func importUploadReject(c *gin.Context, reasonCode, message, field, itemKey, fileName string, sizeBytes int64) {
+	importUploadLog(c, reasonCode, http.StatusUnprocessableEntity, itemKey, fileName, sizeBytes)
+	writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", message,
+		gin.H{"reason_code": reasonCode, "field": field})
+}
+
+// importUploadLogRejection 记录服务层原件准入拒绝的原因码与目标状态。
+// 参数：c为请求，err为服务层错误，itemKey/fileName/sizeBytes为上传元数据。
+// 返回值：无；仅当错误可定位到具体拒绝原因时记录，不记录原件字节或路径。
+func importUploadLogRejection(c *gin.Context, err error, itemKey, fileName string, sizeBytes int64) {
+	var rejected *application.ImportSourceRejectedError
+	if !errors.As(err, &rejected) {
+		return
+	}
+	status := http.StatusUnprocessableEntity
+	if rejected.Retryable {
+		status = http.StatusServiceUnavailable
+	}
+	importUploadLog(c, rejected.ReasonCode, status, itemKey, fileName, sizeBytes)
+}
+
+// importUploadLog 输出不含原件内容、路径与凭据的单条诊断日志。
+// 参数：c为请求，reasonCode为原因码，status为响应状态，其余为上传元数据。
+// 返回值：无。
+func importUploadLog(c *gin.Context, reasonCode string, status int, itemKey, fileName string, sizeBytes int64) {
+	slog.WarnContext(c.Request.Context(), "contract import source rejected",
+		"request_id", requestIDFrom(c.Request.Context()),
+		"batch", c.Param("id"),
+		"item_key", itemKey,
+		"file_name", fileName,
+		"size_bytes", sizeBytes,
+		"reason_code", reasonCode,
+		"status", status,
+	)
+}
+
+// importFormValue 在形状未通过时安全读取单个文本字段。
+// 参数：form为已解析表单，key为字段名。
+// 返回值：唯一值或空串。
+func importFormValue(form *multipart.Form, key string) string {
+	if form == nil || len(form.Value[key]) != 1 {
+		return ""
+	}
+	return form.Value[key][0]
+}
+
+// importFormFilename 在形状未通过时安全读取原件名。
+// 参数：form为已解析表单。
+// 返回值：唯一原件名或空串。
+func importFormFilename(form *multipart.Form) string {
+	if form == nil || len(form.File["file"]) != 1 {
+		return ""
+	}
+	return form.File["file"][0].Filename
+}
+
+// importFormSize 在形状未通过时安全读取声明体积。
+// 参数：form为已解析表单。
+// 返回值：唯一原件的字节数或0。
+func importFormSize(form *multipart.Form) int64 {
+	if form == nil || len(form.File["file"]) != 1 {
+		return 0
+	}
+	return form.File["file"][0].Size
 }
 
 // setImportManifest 严格保存清单及其读取版本。

@@ -1,8 +1,6 @@
 package contractdocument
 
 import (
-	"fmt"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -13,17 +11,17 @@ import (
 func pdfImageColorComponents(table *model.XRefTable, object types.Object,
 	path map[types.IndirectRef]bool, depth int, indexed bool) (int, error) {
 	if depth > 64 {
-		return 0, fmt.Errorf("PDF图片色彩空间超出深度上限")
+		return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间超出深度上限")
 	}
 	if reference, ok := object.(types.IndirectRef); ok {
 		if path[reference] {
-			return 0, fmt.Errorf("PDF图片色彩空间存在循环引用")
+			return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间存在循环引用")
 		}
 		path[reference] = true
 		defer delete(path, reference)
 		resolved, err := table.Dereference(reference)
 		if err != nil || resolved == nil {
-			return 0, fmt.Errorf("PDF图片色彩空间引用无效")
+			return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间引用无效")
 		}
 		return pdfImageColorComponents(table, resolved, path, depth+1, indexed)
 	}
@@ -35,11 +33,11 @@ func pdfImageColorComponents(table *model.XRefTable, object types.Object,
 	}
 	array, ok := object.(types.Array)
 	if !ok || len(array) < 2 {
-		return 0, fmt.Errorf("PDF图片色彩空间声明无效")
+		return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间声明无效")
 	}
 	name, err := table.Dereference(array[0])
 	if err != nil {
-		return 0, fmt.Errorf("PDF图片色彩空间类型无效")
+		return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间类型无效")
 	}
 	return pdfArrayColorComponents(table, array, name, path, depth, indexed)
 }
@@ -56,7 +54,7 @@ func pdfNamedColorComponents(name types.Name) (int, error) {
 	case "DeviceCMYK":
 		return 4, nil
 	}
-	return 0, fmt.Errorf("PDF图片色彩空间名称无效")
+	return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间名称无效")
 }
 
 // pdfArrayColorComponents 读取颜色数组的采样信息并限制可递归的Indexed基色。
@@ -67,7 +65,7 @@ func pdfArrayColorComponents(table *model.XRefTable, array types.Array, name typ
 	switch name {
 	case types.Name("Indexed"):
 		if !indexed || len(array) != 4 {
-			return 0, fmt.Errorf("PDF图片Indexed基色不能使用Indexed")
+			return 0, Reject(CodePDFImageBudget, "PDF图片Indexed基色不能使用Indexed")
 		}
 		if _, err := pdfImageColorComponents(table, array[1], path, depth+1, false); err != nil {
 			return 0, err
@@ -78,14 +76,14 @@ func pdfArrayColorComponents(table *model.XRefTable, array types.Array, name typ
 	case types.Name("DeviceN"):
 		names, err := table.DereferenceArray(array[1])
 		if err != nil || len(names) == 0 {
-			return 0, fmt.Errorf("PDF图片DeviceN通道声明无效")
+			return 0, Reject(CodePDFImageBudget, "PDF图片DeviceN通道声明无效")
 		}
 		return len(names), nil
 	}
 	if colorName, ok := name.(types.Name); ok {
 		return pdfNamedColorComponents(colorName)
 	}
-	return 0, fmt.Errorf("PDF图片色彩空间数组无效")
+	return 0, Reject(CodePDFImageBudget, "PDF图片色彩空间数组无效")
 }
 
 // pdfICCColorComponents 读取ICC配置的受限通道数而不解码配置流。
@@ -93,15 +91,15 @@ func pdfArrayColorComponents(table *model.XRefTable, array types.Array, name typ
 // 返回值：合法的1、3或4通道；缺失配置、非法引用或通道数返回错误。
 func pdfICCColorComponents(table *model.XRefTable, array types.Array) (int, error) {
 	if len(array) != 2 {
-		return 0, fmt.Errorf("PDF图片ICC配置声明无效")
+		return 0, Reject(CodePDFImageBudget, "PDF图片ICC配置声明无效")
 	}
 	profile, _, err := table.DereferenceStreamDict(array[1])
 	if err != nil || profile == nil {
-		return 0, fmt.Errorf("PDF图片ICC配置引用无效")
+		return 0, Reject(CodePDFImageBudget, "PDF图片ICC配置引用无效")
 	}
 	channels, err := table.DereferenceInteger(profile.Dict["N"])
 	if err != nil || channels == nil || *channels != 1 && *channels != 3 && *channels != 4 {
-		return 0, fmt.Errorf("PDF图片ICC通道声明无效")
+		return 0, Reject(CodePDFImageBudget, "PDF图片ICC通道声明无效")
 	}
 	return int(*channels), nil
 }

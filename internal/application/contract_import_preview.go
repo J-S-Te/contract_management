@@ -145,11 +145,12 @@ func (s *Service) UploadImportSource(ctx context.Context, actor Principal, batch
 		return source, ErrImportUnsupported
 	}
 	if !validImportKey(key) {
-		return source, ErrValidation
+		return source, &ImportSourceRejectedError{ReasonCode: CodeImportItemKeyInvalid,
+			Reason: "单项键不合法：只允许字母、数字与 _.:-，长度 1—128", Filename: importSourceFilename(name)}
 	}
 	validated, e := contractdocument.ValidateExternalSource(name, media, body)
 	if e != nil {
-		return source, ErrValidation
+		return source, importSourceRejected(e, name)
 	}
 	if validated.Format == "PDF" && !s.ExternalPDFEnabled {
 		return source, ErrImportUnsupported
@@ -180,7 +181,8 @@ func (s *Service) UploadImportSource(ctx context.Context, actor Principal, batch
 			}
 		}
 		if len(b.Sources) >= 300 {
-			return ErrValidation
+			return &ImportSourceRejectedError{ReasonCode: CodeImportSourceLimit, Reason: "每批暂存原件已达上限 300 份",
+				Filename: importSourceFilename(name)}
 		}
 		source = contract.ImportSource{ID: ulid.Make().String(), ItemKey: key, Filename: validated.Filename,
 			MediaType: validated.MediaType, SHA256: validated.SHA256, State: "UPLOADING"}
@@ -342,7 +344,13 @@ func markImportCorrection(b *contract.ImportBatch, itemID string) {
 // prepareImportItem 读取暂存原件并复用普通合同的实时目录和字段校验。
 // 参数：ctx为上下文，actor为当前身份，b为冻结批次，item为待校验项。
 // 返回值：规范合同、规范摘要或错误；不创建合同。
+// prepareImportItem 复核原件及来源引用，LOCAL仅允许NORMAL普通合同。
+// 参数：ctx为请求，actor为可信主体，b为批次，item为冻结前条目。
+// 返回值：规范合同及摘要，或校验、来源和依赖错误。
 func (s *Service) prepareImportItem(ctx context.Context, actor Principal, b contract.ImportBatch, item contract.ImportItemState) (c contract.Contract, digest string, err error) {
+	if item.Item.Mode != contract.ImportNormal && (item.Item.Metadata.CounterpartySource == contract.CounterpartyLocal || item.Item.Metadata.CategorySource == contract.CategoryLocal) {
+		return c, "", ErrImportUnsupported
+	}
 	if item.Item.Mode != contract.ImportNormal {
 		if (!s.ContractImportHistoryEnabled && b.Confirmation == nil) || contract.ValidateHistoryEvidence(item.Item) != nil {
 			return c, "", ErrImportUnsupported

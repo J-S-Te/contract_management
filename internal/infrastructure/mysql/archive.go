@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"gorm.io/gorm"
@@ -61,10 +62,10 @@ func (r *Repository) archiveOne(ctx context.Context, candidate contractRecord, a
 		if from != contract.Status(candidate.Status) || current.EndDate == nil || !current.EndDate.Before(date) || !contract.CanTransition(from, contract.StatusArchived) {
 			return nil
 		}
-		var activeStatusChanges int64
-		if err := tx.Model(&approvalInstanceRecord{}).
-			Where("tenant_id = ? AND contract_id = ? AND kind = ? AND status = ?", current.TenantID, current.ID, "status_change", "running").
-			Count(&activeStatusChanges).Error; err != nil {
+		// 归档判据保持只看状态变更审批：合同审批在途时合同处于 pending，
+		// 本就不是归档候选，两类审批不能混成一个判据。
+		activeStatusChanges, err := countRunningApprovals(tx, current.TenantID, current.ID, approval.KindStatusChange)
+		if err != nil {
 			return err
 		}
 		if activeStatusChanges > 0 {

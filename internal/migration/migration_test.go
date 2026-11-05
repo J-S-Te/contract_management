@@ -18,7 +18,7 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
-	if len(items) != 40 ||
+	if len(items) != 42 ||
 		items[0].version != 1 || items[0].name != "contract_workflow" ||
 		items[1].version != 2 || items[1].name != "single_active_status_change" ||
 		items[2].version != 3 || items[2].name != "username_snapshots" ||
@@ -58,7 +58,9 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 		items[36].version != 37 || items[36].name != "contract_number_rule" ||
 		items[37].version != 38 || items[37].name != "contract_number_registry" ||
 		items[38].version != 39 || items[38].name != "oidc_session_idle" ||
-		items[39].version != 40 || items[39].name != "con_audit_outbox_resource_index" {
+		items[39].version != 40 || items[39].name != "con_audit_outbox_resource_index" ||
+		items[40].version != 41 || items[40].name != "contract_local_catalog" ||
+		items[41].version != 42 || items[41].name != "contract_local_catalog_grants" {
 		t.Fatalf("items = %#v", items)
 	}
 }

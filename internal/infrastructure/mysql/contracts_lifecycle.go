@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/auditctx"
+	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"gorm.io/gorm"
@@ -36,14 +38,15 @@ func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID 
 		if !ordinaryContractRecord(row) {
 			return apperrors.ErrStateConflict
 		}
-		var activeStatusChanges int64
-		if err := tx.Model(&approvalInstanceRecord{}).
-			Where("tenant_id = ? AND contract_id = ? AND kind = ? AND status = ?", tenantID, contractID, "status_change", "running").
-			Count(&activeStatusChanges).Error; err != nil {
+		// 在途审批既包括状态变更审批，也包括合同审批：合同审批的合法撤回链路在
+		// CompleteApproval（pending→draft），因此这里拦住直迁并提示先撤回，
+		// 避免在途合同审批被“改回 draft”绕过，而状态机仍保留 pending→draft。
+		activeApprovals, err := countRunningApprovals(tx, tenantID, contractID, approval.KindContract, approval.KindStatusChange)
+		if err != nil {
 			return err
 		}
-		if activeStatusChanges > 0 {
-			return apperrors.ErrStateConflict
+		if activeApprovals > 0 {
+			return fmt.Errorf("%w: 合同存在在途审批（合同审批或状态变更审批），请先在审批中心撤回后再直接变更状态", apperrors.ErrStateConflict)
 		}
 		if target.RequiresApproval() || target == contract.StatusPending || target == contract.StatusApproved || target == contract.StatusActive {
 			return apperrors.ErrStateConflict

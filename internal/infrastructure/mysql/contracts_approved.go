@@ -8,12 +8,18 @@ import (
 	"gorm.io/gorm"
 )
 
-// approvedContractKeywordPattern 把用户关键字转成只匹配字面量的 LIKE 模式。
+// literalLikePattern 把用户关键字转成只匹配字面量的 LIKE 模式。
 // 参数：keyword 为已去空白的搜索关键字。
 // 返回值：首尾带通配符、内部 % _ \ 均已转义的模式串。
-// LIKE 默认以反斜杠为转义符，因此这里先转义反斜杠再转义通配符，
+// 转义符固定为反斜杠（MySQL LIKE 的默认转义符），因此 SQL 里不写
+// ESCAPE 子句，全部依赖默认口径；先转义反斜杠再转义通配符，
 // 避免关键字里的 % 或 _ 变成通配符把整表扫成"匹配"。
-func approvedContractKeywordPattern(keyword string) string {
+// 所有接收用户关键字的 LIKE 入口都必须走本函数，不再各写一套拼接：
+// 已批准合同引用（applyApprovedContractKeyword）、合同台账（contractLedgerFilters）、
+// 签署台账（applySigningRecordFilters）、结算消费合同列表
+// （ListIntegrationCompletedContractsScoped）、本地目录与授权可见目录
+// （local_catalog*.go）。新增 LIKE 关键字入口时同样复用这里。
+func literalLikePattern(keyword string) string {
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(keyword)
 	return "%" + escaped + "%"
 }
@@ -26,7 +32,7 @@ func applyApprovedContractKeyword(query *gorm.DB, keyword string) *gorm.DB {
 	if keyword == "" {
 		return query
 	}
-	pattern := approvedContractKeywordPattern(keyword)
+	pattern := literalLikePattern(keyword)
 	return query.Where("(contract_number LIKE ? OR title LIKE ? OR customer_name LIKE ?)", pattern, pattern, pattern)
 }
 
@@ -63,7 +69,7 @@ func (r *Repository) ListApprovedContractReferences(ctx context.Context, tenantI
 		query = query.Where("id > ?", afterID)
 	}
 	var records []contractRecord
-	if err := query.Select("id", "contract_number", "title", "customer_name", "status", "version").
+	if err := query.Select("id", "contract_number", "title", "customer_name", "status", "version", "counterparty_source", "category_source", "integration_policy").
 		Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
@@ -108,7 +114,7 @@ func (r *Repository) ListApprovedContractReferencesScoped(ctx context.Context, f
 		query = query.Where("id > ?", afterID)
 	}
 	var records []contractRecord
-	if err := query.Select("id", "contract_number", "title", "customer_name", "status", "version").
+	if err := query.Select("id", "contract_number", "title", "customer_name", "status", "version", "counterparty_source", "category_source", "integration_policy").
 		Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
@@ -124,6 +130,7 @@ func (r *Repository) ListApprovedContractReferencesScoped(ctx context.Context, f
 // 返回值：不含正文、价格与附件的合同摘要。
 func approvedContractReferenceFromRecord(record contractRecord) contract.Contract {
 	return contract.Contract{
+		CounterpartySource: record.CounterpartySource, CategorySource: record.CategorySource, IntegrationPolicy: record.IntegrationPolicy,
 		ID: record.ID, Number: valueOrEmpty(record.ContractNumber), Title: record.Title,
 		CustomerName: valueOrEmpty(record.CustomerName), Status: contract.Status(record.Status), Version: record.Version,
 	}

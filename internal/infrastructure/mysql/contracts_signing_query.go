@@ -25,7 +25,9 @@ func signingLedgerQuery(db *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
 
 func applySigningRecordFilters(query *gorm.DB, filter contract.SigningRecordQuery, today time.Time) *gorm.DB {
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
-		pattern := "%" + keyword + "%"
+		// 关键字模式与合同台账/已批准引用同一口径：% _ \ 按字面量转义，
+		// 否则 "100%" 会退化成通配符，把签署台账的 total 和分页一起放大。
+		pattern := literalLikePattern(keyword)
 		query = query.Where("(c.contract_number LIKE ? OR c.title LIKE ? OR c.customer_name LIKE ? OR s.courier_number LIKE ?)", pattern, pattern, pattern, pattern)
 	}
 	switch strings.TrimSpace(filter.Status) {

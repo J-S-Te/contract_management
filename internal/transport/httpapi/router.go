@@ -207,6 +207,13 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 			"status": state, "audit": auditAvailability(audit), "signing_phone_key": phoneKeyState,
 			"integration_outbox": outboxState,
 		}
+		// C14：能力维度快照由装配层经 AttachReadinessCapabilities 注入；
+		// 可选未启用只反映在 state=disabled，不影响整体就绪判定。
+		if capabilitiesValue, ok := c.Get(readinessCapabilitiesContextKey); ok {
+			if capabilities, ok := capabilitiesValue.(map[string]any); ok && len(capabilities) > 0 {
+				data["capabilities"] = capabilities
+			}
+		}
 		if outboxState == "ready" {
 			data["integration_outbox_dead"] = outboxDead
 			data["integration_outbox_dead_total"] = outboxDeadTotal
@@ -306,6 +313,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.PUT("/contracts/:contractID/draft", h.updateContractDraft)
 	api.POST("/contracts/external", h.createExternalContract)
 	api.GET("/detection-categories", h.listDetectionCategories)
+	h.mountLocalCatalog(api)
 	api.GET("/contracts", h.listContracts)
 	api.GET("/approved-contracts", h.listApprovedContracts)
 	api.GET("/approved-contracts/:contractID/docx", h.downloadApprovedDOCX)
@@ -403,11 +411,18 @@ func auditAvailability(audit platform.AuditReporter) string {
 	return "enabled"
 }
 
+// auditRequired 判定是否处于强制审计模式：PLATFORM_AUDIT_REQUIRED 显式设置优先，
+// 否则环境码为 prod 时默认强制。非法显式值（无法解析的布尔串）按失败关闭返回 true，
+// 不允许一个拼写错误静默关闭强制审计；与 project_management 的
+// config.AuditRequiredFromEnvironment 同一语义，请勿改回 fail-open。
 func auditRequired() bool {
 	raw := strings.TrimSpace(os.Getenv("PLATFORM_AUDIT_REQUIRED"))
 	if raw != "" {
 		required, err := strconv.ParseBool(raw)
-		return err == nil && required
+		if err != nil {
+			return true
+		}
+		return required
 	}
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("PLATFORM_ENVIRONMENT_CODE")), "prod")
 }
@@ -966,6 +981,10 @@ type createContractRequest struct {
 	ServiceType         string                 `json:"service_type"`
 	OpportunityID       string                 `json:"opportunity_id"`
 	OpportunityName     string                 `json:"opportunity_name"`
+	CounterpartySource  string                 `json:"counterparty_source,omitempty"`
+	LocalCounterpartyID string                 `json:"local_counterparty_id,omitempty"`
+	CounterpartyVersion uint64                 `json:"counterparty_version,omitempty"`
+	CategorySource      string                 `json:"category_source,omitempty"`
 	CRMCustomerID       uint64                 `json:"crm_customer_id"`
 	CustomerName        string                 `json:"customer_name"`
 	CustomerAddress     string                 `json:"customer_address"`
@@ -990,6 +1009,10 @@ type externalContractMetadata struct {
 	ServiceType         string                 `json:"service_type"`
 	OpportunityID       string                 `json:"opportunity_id"`
 	OpportunityName     string                 `json:"opportunity_name"`
+	CounterpartySource  string                 `json:"counterparty_source,omitempty"`
+	LocalCounterpartyID string                 `json:"local_counterparty_id,omitempty"`
+	CounterpartyVersion uint64                 `json:"counterparty_version,omitempty"`
+	CategorySource      string                 `json:"category_source,omitempty"`
 	CRMCustomerID       uint64                 `json:"crm_customer_id"`
 	CustomerName        string                 `json:"customer_name"`
 	CustomerAddress     string                 `json:"customer_address"`
@@ -1011,12 +1034,15 @@ type externalContractMetadata struct {
 	EndDate   *time.Time `json:"end_date"`
 }
 
+// createContract 创建经过来源白名单校验的模板合同。
+// 参数：c为已认证的JSON请求。
+// 返回值：无；错误通过统一响应返回。
 func (h *Handler) createContract(c *gin.Context) {
 	var body createContractRequest
 	if !decode(c, &body) {
 		return
 	}
-	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CounterpartySource: body.CounterpartySource, LocalCounterpartyID: body.LocalCounterpartyID, CounterpartyVersion: body.CounterpartyVersion, CategorySource: body.CategorySource, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -1036,6 +1062,9 @@ func (h *Handler) listDetectionCategories(c *gin.Context) {
 // createExternalContract 接收单个源文件及严格结构化元数据创建草稿。
 // 参数：c为multipart请求，大小受格式及入口开关共同限制。
 // 返回值：无；通过统一响应输出草稿或字段/文件校验错误。
+// createExternalContract 从正式原件和结构化来源元数据创建合同。
+// 参数：c为已认证的multipart请求。
+// 返回值：无；文件、权限或来源失败时拒绝。
 func (h *Handler) createExternalContract(c *gin.Context) {
 	const metadataLimit = 1 << 20
 	if _, ok := principal(c).Scope("contract.create"); !ok {
@@ -1100,7 +1129,7 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 	created, err := h.service.CreateExternalContract(c.Request.Context(), principal(c), contract.Contract{
 		Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType,
 		OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName,
-		CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName,
+		CounterpartySource: body.CounterpartySource, LocalCounterpartyID: body.LocalCounterpartyID, CounterpartyVersion: body.CounterpartyVersion, CategorySource: body.CategorySource, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName,
 		CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
 		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
 		AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Document: document,
@@ -1243,7 +1272,7 @@ func (h *Handler) previewTemplate(c *gin.Context) {
 
 // exportContract 导出权威原件并保持实际文件类型。
 // 参数：c为已认证请求，合同读取范围由服务复核。
-// 返回值：无；PDF原样输出，旧DOCX维持既有导出行为。
+// 返回值：无；先在持久文档访问审计后按格式输出PDF原字节或DOCX，审计失败不输出文件。
 func (h *Handler) exportContract(c *gin.Context) {
 	found, err := h.service.GetContract(c.Request.Context(), principal(c), c.Param("contractID"))
 	if err != nil {
@@ -1256,6 +1285,13 @@ func (h *Handler) exportContract(c *gin.Context) {
 	}
 	format, err := storedDocumentFormat(found)
 	if err != nil {
+		writeError(c, err)
+		return
+	}
+	// 与 /source、/docx、/pdf、/stamped-pdf 保持一致：先建立持久文档访问审计依据，
+	// 再按格式输出字节。HTTP 审计中间件只覆盖请求本身，不能替代本次文档访问记录；
+	// 审计失败必须失败关闭，不得输出文件字节或下载响应头。
+	if err := h.service.RecordDocumentAccess(c.Request.Context(), principal(c), found.ID, "EXPORT_"+format); err != nil {
 		writeError(c, err)
 		return
 	}
@@ -1532,16 +1568,74 @@ func (h *Handler) previewContract(c *gin.Context) {
 	writeData(c, http.StatusOK, map[string]string{"html": preview})
 }
 
+// 合同台账分页参数口径：page 从 1 开始（超过上限按 100000 计），page_size 默认 20、
+// 允许 1..200（与旧 limit 上限一致）。
+// 越界一律不报错——滚动发布期间新旧前端可能发出 0/超大参数，处理规则是：
+//   - page < 1 按 1；page > 100000 按 100000（防止 OFFSET 过大）；
+//   - page_size 非法或超过 200 时“回落到默认 20”（而不是钳到 200），保证一次误传
+//     超大 page_size 不会把台账变成大响应。
+//
+// 直接 422 会让整块台账变成错误横幅，因此统一降级而非拒绝。
+const (
+	contractLedgerDefaultPageSize = 20
+	contractLedgerMaxPageSize     = 200
+	contractLedgerMaxPage         = 100000
+)
+
+// contractLedgerPaginationRequested 判断调用方是否显式要求分页信封。
+// 只有显式带 page 或 page_size 才算：旧调用方（内置 web 页 api/v1/contracts?limit=100、
+// 脚本、跨系统同步）继续收到裸数组。
+func contractLedgerPaginationRequested(c *gin.Context) bool {
+	return c.Query("page") != "" || c.Query("page_size") != ""
+}
+
+// contractLedgerPageParams 解析并钳制 page/page_size。
+// 参数：c 为请求；返回值：page 在 1..contractLedgerMaxPage，page_size 在 1..contractLedgerMaxPageSize。
+func contractLedgerPageParams(c *gin.Context) (int, int) {
+	page, err := strconv.Atoi(c.Query("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	if page > contractLedgerMaxPage {
+		page = contractLedgerMaxPage
+	}
+	pageSize, err := strconv.Atoi(c.Query("page_size"))
+	if err != nil || pageSize < 1 || pageSize > contractLedgerMaxPageSize {
+		pageSize = contractLedgerDefaultPageSize
+	}
+	return page, pageSize
+}
+
+// listContracts 返回合同台账列表。
+// 参数：c 支持 keyword/status/type/expired/limit；显式带 page 或 page_size 时按 1 基页码分页。
+// expired 只接受 true/false（大小写不敏感），供页面「已过期」派生徽标在服务端过滤；
+// 其它取值按“不过滤”处理，不返回 422（与本端点既有的宽松口径一致）。
+// 返回值：无分页参数时保持旧协议（裸数组，limit 语义不变）；分页时返回
+// {"items":[...],"total":N,"page":P,"page_size":S}。
 func (h *Handler) listContracts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	keyword := strings.TrimSpace(c.Query("keyword"))
-	status := c.Query("status")
-	contracts, err := h.service.ListContracts(c.Request.Context(), principal(c), keyword, status, limit)
+	query := contract.ContractListQuery{
+		Keyword: c.Query("keyword"), Status: c.Query("status"), Type: c.Query("type"),
+		Expired: c.Query("expired"),
+	}
+	if !contractLedgerPaginationRequested(c) {
+		query.Limit = limit
+		page, err := h.service.ListContractsPage(c.Request.Context(), principal(c), query)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		writeData(c, http.StatusOK, page.Items)
+		return
+	}
+	pageNumber, pageSize := contractLedgerPageParams(c)
+	query.Offset, query.Limit = (pageNumber-1)*pageSize, pageSize
+	page, err := h.service.ListContractsPage(c.Request.Context(), principal(c), query)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusOK, contracts)
+	writeData(c, http.StatusOK, page)
 }
 
 // settlementCompletedContract 是合同管理向结算系统提供的稳定读取契约。
@@ -1561,17 +1655,21 @@ type settlementCompletedContract struct {
 }
 
 // listSettlementCompletedContracts 返回当前租户状态为 completed 的合同摘要。
-// limit 由服务层限制在 1~200，默认 50；keyword 支持编号、标题和客户名称检索。
+// 参数：c包含受认证主体、检索关键字及限制在1~200的列表大小。
+// 返回值：无；LOCAL不适用来源不投送财务，错误沿用统一响应。
 func (h *Handler) listSettlementCompletedContracts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	keyword := strings.TrimSpace(c.Query("keyword"))
-	items, err := h.service.ListContracts(c.Request.Context(), principal(c), keyword, string(contract.StatusCompleted), limit)
+	items, err := h.service.ListSettlementConsumableContracts(c.Request.Context(), principal(c), keyword, limit)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	result := make([]settlementCompletedContract, 0, len(items))
 	for _, item := range items {
+		if item.CounterpartySource == contract.CounterpartyLocal || item.CategorySource == contract.CategoryLocal {
+			continue
+		}
 		terms := item.PaymentTerms
 		if terms == nil {
 			terms = []contract.PaymentTerm{}
@@ -1604,20 +1702,29 @@ func projectApprovedContractView(item contract.Contract) projectApprovedContract
 	}
 }
 
+// listProjectApprovedContracts 返回项目v1可消费的已审批合同。
+// 参数：c为受机器或用户授权的请求。
+// 返回值：无；LOCAL不适用来源不转换为CRM客户。
 func (h *Handler) listProjectApprovedContracts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	items, err := h.service.ListApprovedContracts(c.Request.Context(), principal(c), limit)
+	items, err := h.service.ListProjectConsumableContracts(c.Request.Context(), principal(c), limit)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	result := make([]projectApprovedContract, 0, len(items))
 	for _, item := range items {
+		if item.CounterpartySource == contract.CounterpartyLocal || item.CategorySource == contract.CategoryLocal {
+			continue
+		}
 		result = append(result, projectApprovedContractView(item))
 	}
 	writeData(c, http.StatusOK, result)
 }
 
+// listProjectApprovedContractReferences 返回项目目录可消费的合同引用分页。
+// 参数：c包含可信主体、关键字、游标和列表上限。
+// 返回值：无；LOCAL来源被排除，原游标仍按权威查询结果推进。
 func (h *Handler) listProjectApprovedContractReferences(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	if limit <= 0 || limit > 500 {
@@ -1641,6 +1748,9 @@ func (h *Handler) listProjectApprovedContractReferences(c *gin.Context) {
 	}
 	references := make([]gin.H, 0, len(contracts))
 	for _, item := range contracts {
+		if item.CounterpartySource == contract.CounterpartyLocal || item.CategorySource == contract.CategoryLocal {
+			continue
+		}
 		references = append(references, gin.H{
 			"id": item.ID, "contract_number": item.Number, "title": item.Title,
 			"customer_name": item.CustomerName, "version": item.Version,
@@ -1650,22 +1760,33 @@ func (h *Handler) listProjectApprovedContractReferences(c *gin.Context) {
 	writeData(c, http.StatusOK, gin.H{"contracts": references, "next_after_id": nextAfterID})
 }
 
+// getProjectApprovedContract 返回项目v1可消费的权威合同。
+// 参数：c包含合同ID和可信认证主体。
+// 返回值：无；LOCAL来源明确返回冲突。
 func (h *Handler) getProjectApprovedContract(c *gin.Context) {
 	item, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.approved.read")
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	if item.CounterpartySource == contract.CounterpartyLocal || item.CategorySource == contract.CategoryLocal {
+		writeError(c, application.ErrContractSourceConflict)
+		return
+	}
 	writeData(c, http.StatusOK, projectApprovedContractView(item))
 }
 
-// getProjectApprovedContractServiceItems 仅暴露建项所需的结构化
-// 服务范围。合同正文、价格、联系人及文件
-// 均不属于项目管理集成边界。
+// getProjectApprovedContractServiceItems 仅暴露建项所需的结构化服务范围。
+// 参数：c包含合同ID及可信主体，不读取合同正文、价格或联系人。
+// 返回值：无；LOCAL明确返回冲突，其他来源保留现有授权边界。
 func (h *Handler) getProjectApprovedContractServiceItems(c *gin.Context) {
 	item, err := h.service.GetApprovedContract(c.Request.Context(), principal(c), c.Param("contractID"), "contract.approved.read")
 	if err != nil {
 		writeError(c, err)
+		return
+	}
+	if item.CounterpartySource == contract.CounterpartyLocal || item.CategorySource == contract.CategoryLocal {
+		writeError(c, application.ErrContractSourceConflict)
 		return
 	}
 	writeData(c, http.StatusOK, gin.H{
@@ -1974,8 +2095,12 @@ func writeData(c *gin.Context, status int, data any) {
 // writeError 将真实业务错误转换为统一HTTP信封及可定位错误码。
 // 参数：c为HTTP上下文，err为业务或依赖错误。
 // 返回值：无；不泄漏内部凭据，保留权限、版本、来源及恢复冲突语义。
+// writeError 将来源、授权和存储错误映射为稳定安全响应。
+// 参数：c为请求上下文，err为业务或依赖错误。
+// 返回值：无；不输出内部配置或敏感数据。
 func writeError(c *gin.Context, err error) {
 	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
+	var sourceRejected *application.ImportSourceRejectedError
 	switch {
 	case errors.Is(err, application.ErrImportMixedLifecycle):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_MIXED_LIFECYCLE", "NORMAL与历史合同须分别建立批次", map[string]any{"field_path": "items[].mode"})
@@ -2001,6 +2126,12 @@ func writeError(c *gin.Context, err error) {
 		// 审批人解析发生在合同状态和审批实例写入之前，必须明确告知“本次未提交”。
 		// 若按 5xx 返回，客户端只会提示写入结果未知，诱发重复提交。
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_APPROVAL_ASSIGNEE_UNAVAILABLE", approvalAssigneeMessage(assigneeUnavailable.RoleCodes), gin.H{"role_codes": assigneeUnavailable.RoleCodes})
+	case errors.Is(err, application.ErrContractSourceConflict):
+		writeEnvelopeError(c, http.StatusConflict, "CON_SOURCE_INTEGRATION_CONFLICT", "本地合同来源与已启用的联动不兼容，请核对来源及订阅配置", nil)
+	case errors.Is(err, application.ErrLocalReferenceInvalid):
+		writeEnvelopeError(c, http.StatusConflict, "CON_LOCAL_REFERENCE_INVALID", "本地交易对方或类别不存在、已停用或版本已变化，请重新选择", nil)
+	case errors.Is(err, application.ErrLocalCatalogUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_LOCAL_CATALOG_UNAVAILABLE", "合同本地目录暂不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrDetectionCategoryDirectoryUnavailable):
 		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_DETECTION_CATEGORY_DIRECTORY_UNAVAILABLE", "检测类别目录暂时不可用，请稍后重试", nil)
 	case errors.Is(err, application.ErrCRMReferenceDirectoryUnavailable):
@@ -2039,6 +2170,16 @@ func writeError(c *gin.Context, err error) {
 		// 库内规则行内容非法属于确定性配置问题，重试不会成功。
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_CONTRACT_NUMBER_RULE_INVALID",
 			"合同编号规则配置非法，请管理员在合同编号规则中修正后重新提交审批", nil)
+	case errors.As(err, &sourceRejected):
+		// 原件准入拒绝必须带出具体原因码，避免用户与运维只能看到通用“请求参数不合法”。
+		status, code := http.StatusUnprocessableEntity, "IMPORT_SOURCE_REJECTED"
+		if sourceRejected.Retryable {
+			// 校验并发繁忙可重试：与确定性内容拒绝区分，避免用户反复替换合法原件。
+			status, code = http.StatusServiceUnavailable, "IMPORT_SOURCE_BUSY"
+			c.Header("Retry-After", "5")
+		}
+		writeEnvelopeError(c, status, code, sourceRejected.Reason,
+			gin.H{"reason_code": sourceRejected.ReasonCode, "file_name": sourceRejected.Filename})
 	case errors.Is(err, application.ErrValidation), errors.Is(err, contract.ErrInvalidStatus):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", nil)
 	default:

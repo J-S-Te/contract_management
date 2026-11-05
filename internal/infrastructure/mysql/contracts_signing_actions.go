@@ -13,6 +13,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// SaveSigningShipment 在合同行锁内登记寄出信息，寄出状态判定与写入同处一个临界区。
+// 参数：ctx为上下文，tenantID/contractID为身份，actor为操作者，shipment为寄出信息。
+// 返回值：缺失合同 ErrNotFound；已上传盖章件或已完成签署时 ErrStateConflict，
+// 通知与寄出信息同事务提交，冲突时整体回滚。
 func (r *Repository) SaveSigningShipment(ctx context.Context, tenantID, contractID, actor string, shipment contract.SigningShipment) error {
 	now := time.Now().UTC()
 	// 列加密（SEC-D7）：签署人手机号属于 PII，AES-GCM 落库；密钥缺失或非法时
@@ -21,10 +25,62 @@ func (r *Repository) SaveSigningShipment(ctx context.Context, tenantID, contract
 	if err != nil {
 		return fmt.Errorf("encrypt signing recipient phone: %w", err)
 	}
-	record := signingRecord{ContractID: contractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningInReturn), CourierNumber: stringPtr(shipment.CourierNumber), RecipientName: stringPtr(shipment.RecipientName), RecipientPhone: stringPtr(encryptedPhone), RecipientAddress: stringPtr(shipment.RecipientAddress), MailedAt: &shipment.MailedAt, Version: 1, UpdatedAt: now, UpdatedBy: actor}
+	// 只有仍可寄出的台账状态才接受登记：pending_review 代表已上传盖章件，
+	// completed 代表签署已完成且 confirmed_* 已冻结，二者都不允许被回退成 in_return。
+	shippable := []string{string(contract.SigningPendingShipment), string(contract.SigningInReturn)}
+	shipmentUpdates := map[string]any{
+		"status":         contract.SigningInReturn,
+		"courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName,
+		"recipient_phone": encryptedPhone, "recipient_address": shipment.RecipientAddress,
+		"mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"),
+		"updated_at": now, "updated_by": actor,
+	}
+	firstShipment := signingRecord{ContractID: contractID, TenantID: tenantID, Method: "paper", Status: string(contract.SigningInReturn), CourierNumber: stringPtr(shipment.CourierNumber), RecipientName: stringPtr(shipment.RecipientName), RecipientPhone: stringPtr(encryptedPhone), RecipientAddress: stringPtr(shipment.RecipientAddress), MailedAt: &shipment.MailedAt, Version: 1, UpdatedAt: now, UpdatedBy: actor}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoUpdates: clause.Assignments(map[string]any{"status": contract.SigningInReturn, "courier_number": shipment.CourierNumber, "recipient_name": shipment.RecipientName, "recipient_phone": encryptedPhone, "recipient_address": shipment.RecipientAddress, "mailed_at": shipment.MailedAt, "version": gorm.Expr("version + 1"), "updated_at": now, "updated_by": actor})}).Create(&record).Error; err != nil {
+		// 与上传/确认路径同序加锁（合同行 → 签署行）：check-then-act 被收敛为
+		// 行锁内的条件更新，并发上传无法在“判定可寄出”之后插入 pending_review。
+		var contractRow contractRecord
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+			Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&contractRow).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperrors.ErrNotFound
+		}
+		if err != nil {
 			return err
+		}
+		updated := tx.Model(&signingRecord{}).
+			Where("tenant_id = ? AND contract_id = ? AND status IN ?", tenantID, contractID, shippable).
+			Updates(shipmentUpdates)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			var existing signingRecord
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("contract_id").
+				Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).Take(&existing).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if err == nil {
+				return fmt.Errorf("%w: 已上传盖章件或已完成签署，不能登记寄出", apperrors.ErrStateConflict)
+			}
+			// 首寄：台账尚无行，按与条件更新一致的语义建立 in_return。
+			// 并发首插由主键唯一性收敛，冲突后重试一次条件更新，仍 0 行即状态已变。
+			inserted := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "contract_id"}}, DoNothing: true}).Create(&firstShipment)
+			if inserted.Error != nil {
+				return inserted.Error
+			}
+			if inserted.RowsAffected == 0 {
+				retried := tx.Model(&signingRecord{}).
+					Where("tenant_id = ? AND contract_id = ? AND status IN ?", tenantID, contractID, shippable).
+					Updates(shipmentUpdates)
+				if retried.Error != nil {
+					return retried.Error
+				}
+				if retried.RowsAffected != 1 {
+					return fmt.Errorf("%w: 已上传盖章件或已完成签署，不能登记寄出", apperrors.ErrStateConflict)
+				}
+			}
 		}
 		return insertSigningNotification(tx, tenantID, contractID, "signing_shipped", "合同已寄出", "合同签署文件已寄出，请关注回传进度", signingNotificationKey(contractID, "shipped"))
 	})
