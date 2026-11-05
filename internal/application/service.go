@@ -157,7 +157,14 @@ type Service struct {
 	StampedFileApplicationID string
 	DetectionCategories      DetectionCategoryDirectory
 	CRMContractReferences    CRMContractReferenceDirectory
-	ContractSources          *ContractSourceOptions
+	// CRMProvision* 是历史导入自动开立 CRM 的注入点（设计定稿 3.2/3.3）：
+	// 客户链路与商机链路各用平台专用凭据（一用途一 client 一 scope），
+	// 销售姓名经平台负责人目录解析。开关关闭时三者均为 nil；
+	// 开启时由 main 调用 ConfigureCRMProvision 保证全部非 nil。
+	CRMProvisionCustomerClient    CRMProvisionCustomerClient
+	CRMProvisionOpportunityClient CRMProvisionOpportunityClient
+	CRMProvisionOwnerDirectory    CRMProvisionOwnerDirectory
+	ContractSources               *ContractSourceOptions
 	// ContractFinancialChangeEnabled 是受控“合同财务变更”入口开关
 	// （CONTRACT_FINANCIAL_CHANGE_ENABLED，默认 false）。关闭时写用例直接拒绝，
 	// 开启后仍需 contract.edit 权限、已审批且无在途审批的合同、审计留痕。
@@ -605,21 +612,9 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 // 参数：ctx为请求，actor为可信主体，c为草稿，external区分外部文件，permission限定业务动作。
 // 返回值：规范化且通过校验的合同；任何来源、权限或财务规则不符均返回错误。
 func (s *Service) prepareContract(ctx context.Context, actor Principal, c contract.Contract, external bool, permission string) (contract.Contract, error) {
-	filter, ok := actor.Scope(permission)
-	if !ok {
-		return c, ErrForbidden
-	}
-	if filter.AllowSelf {
-		c.OwnerIdentityID = actor.IdentityID
-	}
-	if !filter.AllowAll && !filter.AllowSelf && !containsString(filter.OrganizationIDs, c.OwnerOrgID) && !containsString(filter.ProjectIDs, c.ProjectID) {
-		return c, ErrForbidden
-	}
-	if c.OwnerOrgID != "" && !filter.AllowAll && !containsString(filter.OrganizationIDs, c.OwnerOrgID) {
-		return c, ErrForbidden
-	}
-	if c.ProjectID != "" && !filter.AllowAll && !containsString(filter.ProjectIDs, c.ProjectID) {
-		return c, ErrForbidden
+	c, err := s.authorizeContractWrite(actor, c, permission)
+	if err != nil {
+		return c, err
 	}
 	if !external && c.TemplateID != "" {
 		rendered, normalizedValues, err := s.renderTemplateForPermission(ctx, actor, permission, c.TemplateID, c.TemplateValues, c.AmountMinor)
@@ -638,6 +633,45 @@ func (s *Service) prepareContract(ctx context.Context, actor Principal, c contra
 		}
 		c.NumberFormat = item.NumberFormat
 	}
+	c, err = normalizeContractShape(c, external)
+	if err != nil {
+		return c, err
+	}
+	// 来源必须由明确目录解析；旧CRM/项目分支仍执行原可见性及归属校验。
+	resolved, err := s.prepareContractReferences(ctx, actor, c, external, permission)
+	if err != nil {
+		return c, err
+	}
+	return finalizeContractCommercials(resolved)
+}
+
+// authorizeContractWrite 校验草稿写入的数据范围，并把自助范围固定为当前身份。
+// 参数：actor 为可信主体，c 为待写合同，permission 为业务动作权限。
+// 返回值：可能补写 OwnerIdentityID 的合同副本；越权返回 ErrForbidden。
+func (s *Service) authorizeContractWrite(actor Principal, c contract.Contract, permission string) (contract.Contract, error) {
+	filter, ok := actor.Scope(permission)
+	if !ok {
+		return c, ErrForbidden
+	}
+	if filter.AllowSelf {
+		c.OwnerIdentityID = actor.IdentityID
+	}
+	if !filter.AllowAll && !filter.AllowSelf && !containsString(filter.OrganizationIDs, c.OwnerOrgID) && !containsString(filter.ProjectIDs, c.ProjectID) {
+		return c, ErrForbidden
+	}
+	if c.OwnerOrgID != "" && !filter.AllowAll && !containsString(filter.OrganizationIDs, c.OwnerOrgID) {
+		return c, ErrForbidden
+	}
+	if c.ProjectID != "" && !filter.AllowAll && !containsString(filter.ProjectIDs, c.ProjectID) {
+		return c, ErrForbidden
+	}
+	return c, nil
+}
+
+// normalizeContractShape 规范化合同文本字段并校验形状（不含来源引用解析）。
+// 参数：c 为待校验合同，external 区分外部原件入口。
+// 返回值：规范化后的合同；字段缺失、枚举不符或超长返回 ErrValidation。
+func normalizeContractShape(c contract.Contract, external bool) (contract.Contract, error) {
 	c.Title = strings.TrimSpace(c.Title)
 	c.Type = strings.TrimSpace(c.Type)
 	c.OpportunityID = strings.TrimSpace(c.OpportunityID)
@@ -658,16 +692,22 @@ func (s *Service) prepareContract(ctx context.Context, actor Principal, c contra
 			c.AmountMinor <= 0 || !validExternalServiceItems(c.ServiceItems) {
 			return c, ErrValidation
 		}
-	} else if commonInvalid || c.TemplateID == "" || !validServiceItems(c.ServiceItems) ||
+		return c, nil
+	}
+	if commonInvalid || c.TemplateID == "" || !validServiceItems(c.ServiceItems) ||
 		c.OpportunityID != "" && c.CRMCustomerID == 0 {
 		return c, ErrValidation
 	}
-	// 来源必须由明确目录解析；旧CRM/项目分支仍执行原可见性及归属校验。
-	resolved, err := s.prepareContractReferences(ctx, actor, c, external, permission)
-	if err != nil {
-		return c, err
+	return c, nil
+}
+
+// finalizeContractCommercials 由服务项派生合同字段并规范化日期、币种与付款计划。
+// 参数：c 为已通过来源解析的合同。
+// 返回值：完整可持久化的合同；服务项为空、日期倒挂或付款计划不合法返回 ErrValidation。
+func finalizeContractCommercials(c contract.Contract) (contract.Contract, error) {
+	if len(c.ServiceItems) == 0 {
+		return c, ErrValidation
 	}
-	c = resolved
 	c.ServiceType = c.ServiceItems[0].ServiceType
 	c.Systems = flattenedSystems(c.ServiceItems)
 	if c.StartDate != nil && c.EndDate != nil && c.StartDate.After(*c.EndDate) {

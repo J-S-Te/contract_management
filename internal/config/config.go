@@ -190,6 +190,19 @@ type Config struct {
 	CRMReferenceClientID           string
 	CRMReferenceClientSecret       string
 	CRMReferenceScope              string
+	// ContractImportCRMProvision* 是历史导入自动开立 CRM 客户/商机的机器接入
+	//（设计定稿 3.2，默认关闭）。平台侧一用途一 client 一 scope，因此客户链路
+	// 与商机链路各用一对专用凭据，BASE_URL 缺省回退 CRM_REFERENCE_BASE_URL。
+	// 开启时要求历史导入已开启且两对凭据完整，否则启动失败关闭。
+	ContractImportCRMProvisionEnabled   bool
+	CRMProvisionBaseURL                 string
+	CRMProvisionTokenURL                string
+	CRMProvisionClientID                string
+	CRMProvisionClientSecret            string
+	CRMProvisionScope                   string
+	CRMProvisionOpportunityClientID     string
+	CRMProvisionOpportunityClientSecret string
+	CRMProvisionOpportunityScope        string
 	// CRMLink*：合同→CRM 签约关联回写（crm.Dispatcher / crm.LinkNotifier）。
 	// 启用条件：CRM_LINK_ENABLED显式选择；缺省按原URL非空兼容。启用时必须通过平台 client_credentials
 	// 取得专用机器令牌（scope 固定 opportunity.signed.write），
@@ -313,11 +326,22 @@ func Load() (Config, error) {
 		CRMReferenceBaseURL:  env("CRM_REFERENCE_BASE_URL", env("CRM_API_BASE_URL", "http://localhost:8090/customer-opportunity")),
 		CRMReferenceTokenURL: os.Getenv("CRM_REFERENCE_TOKEN_URL"), CRMReferenceClientID: os.Getenv("CRM_REFERENCE_CLIENT_ID"),
 		CRMReferenceClientSecret: os.Getenv("CRM_REFERENCE_CLIENT_SECRET"), CRMReferenceScope: env("CRM_REFERENCE_SCOPE", "customer.contract_reference.read"),
-		CRMLinkBaseURL: os.Getenv("CRM_LINK_BASE_URL"), CRMLinkTokenURL: os.Getenv("CRM_LINK_TOKEN_URL"),
+		CRMProvisionBaseURL: os.Getenv("CRM_PROVISION_BASE_URL"), CRMProvisionTokenURL: os.Getenv("CRM_PROVISION_TOKEN_URL"),
+		CRMProvisionClientID: os.Getenv("CRM_PROVISION_CLIENT_ID"), CRMProvisionClientSecret: os.Getenv("CRM_PROVISION_CLIENT_SECRET"),
+		CRMProvisionScope:                   env("CRM_PROVISION_SCOPE", "customer.import_provision"),
+		CRMProvisionOpportunityClientID:     os.Getenv("CRM_PROVISION_OPPORTUNITY_CLIENT_ID"),
+		CRMProvisionOpportunityClientSecret: os.Getenv("CRM_PROVISION_OPPORTUNITY_CLIENT_SECRET"),
+		CRMProvisionOpportunityScope:        env("CRM_PROVISION_OPPORTUNITY_SCOPE", "opportunity.import_provision"),
+		CRMLinkBaseURL:                      os.Getenv("CRM_LINK_BASE_URL"), CRMLinkTokenURL: os.Getenv("CRM_LINK_TOKEN_URL"),
 		CRMLinkClientID: os.Getenv("CRM_LINK_CLIENT_ID"), CRMLinkClientSecret: os.Getenv("CRM_LINK_CLIENT_SECRET"),
 		CRMLinkScope:    env("CRM_LINK_SCOPE", "opportunity.signed.write"),
 		StampedFileMode: env("STAMPED_FILE_GATEWAY_MODE", "legacy"), StampedFileGatewayURL: env("FILE_GATEWAY_BASE_URL", ""),
 		StampedFileApplicationID: os.Getenv("FILE_GATEWAY_APPLICATION_ID"), StampedFileClientID: os.Getenv("FILE_GATEWAY_CLIENT_ID"), StampedFileClientSecret: os.Getenv("FILE_GATEWAY_CLIENT_SECRET"), StampedFileScope: env("FILE_GATEWAY_SCOPE", "platform:file:upload platform:file:bind"),
+	}
+	// CRM_PROVISION_BASE_URL 缺省复用 CRM 引用边地址：两者指向同一 CRM 服务，
+	// 回退只覆盖地址，令牌端点与专用 scope 仍必须显式配置（失败关闭）。
+	if strings.TrimSpace(c.CRMProvisionBaseURL) == "" {
+		c.CRMProvisionBaseURL = c.CRMReferenceBaseURL
 	}
 	var err error
 	if err = loadImportConfig(&c); err != nil {
@@ -418,6 +442,10 @@ func Load() (Config, error) {
 	}
 	if c.CRMReferenceEnabled, err = strconv.ParseBool(env("CRM_REFERENCE_ENABLED", "false")); err != nil {
 		return c, fmt.Errorf("CRM_REFERENCE_ENABLED: %w", err)
+	}
+	// 历史导入 CRM 开立默认关闭：显式开启后由 validate 校验历史模式与专用凭据。
+	if c.ContractImportCRMProvisionEnabled, err = strconv.ParseBool(env("CONTRACT_IMPORT_CRM_PROVISION_ENABLED", "false")); err != nil {
+		return c, fmt.Errorf("CONTRACT_IMPORT_CRM_PROVISION_ENABLED must be a boolean")
 	}
 	c.CRMLinkEnabled, err = strconv.ParseBool(env("CRM_LINK_ENABLED", strconv.FormatBool(strings.TrimSpace(c.CRMLinkBaseURL) != "")))
 	if err != nil {
@@ -550,6 +578,40 @@ func (c Config) validate() error {
 		}
 		if c.CRMReferenceScope != "customer.contract_reference.read" {
 			return fmt.Errorf("CRM_REFERENCE_SCOPE must be customer.contract_reference.read")
+		}
+	}
+	// 历史导入开立 CRM 会写业务数据（客户/商机），失败关闭口径比只读引用更严：
+	// 必须历史模式已开启、地址与令牌端点合法、两对机器凭据非占位值，
+	// 且客户链路与商机链路的 scope 各自精确等于专用用途（平台侧一用途一 client
+	// 一 scope，多 scope 会因 PrimaryScope 为空在令牌端点 invalid_scope）。
+	if c.ContractImportCRMProvisionEnabled {
+		if !c.ContractImportHistoryEnabled {
+			return fmt.Errorf("CONTRACT_IMPORT_CRM_PROVISION_ENABLED requires CONTRACT_IMPORT_HISTORY_ENABLED=true")
+		}
+		if !validCRMReferenceBaseURL(c.CRMProvisionBaseURL) {
+			return fmt.Errorf("CRM_PROVISION_BASE_URL must be an HTTP(S) origin with optional /customer-opportunity prefix, without credentials, query or fragment")
+		}
+		for _, item := range []struct{ name, value string }{
+			{"CRM_PROVISION_TOKEN_URL", c.CRMProvisionTokenURL},
+			{"CRM_PROVISION_CLIENT_ID", c.CRMProvisionClientID},
+			{"CRM_PROVISION_CLIENT_SECRET", c.CRMProvisionClientSecret},
+			{"CRM_PROVISION_OPPORTUNITY_CLIENT_ID", c.CRMProvisionOpportunityClientID},
+			{"CRM_PROVISION_OPPORTUNITY_CLIENT_SECRET", c.CRMProvisionOpportunityClientSecret},
+		} {
+			if strings.TrimSpace(item.value) == "" || placeholder(item.value) {
+				return fmt.Errorf("%s is required when CONTRACT_IMPORT_CRM_PROVISION_ENABLED=true", item.name)
+			}
+		}
+		tokenURL, tokenErr := url.ParseRequestURI(c.CRMProvisionTokenURL)
+		if tokenErr != nil || (tokenURL.Scheme != "http" && tokenURL.Scheme != "https") || tokenURL.Host == "" || tokenURL.User != nil || tokenURL.RawQuery != "" || tokenURL.Fragment != "" {
+			return fmt.Errorf("CRM_PROVISION_TOKEN_URL must be a valid HTTP(S) URL without credentials, query or fragment")
+		}
+		// scope 必须单值精确匹配：带空格拼多值会被平台拒绝（invalid_scope）。
+		if c.CRMProvisionScope != "customer.import_provision" {
+			return fmt.Errorf("CRM_PROVISION_SCOPE must be customer.import_provision")
+		}
+		if c.CRMProvisionOpportunityScope != "opportunity.import_provision" {
+			return fmt.Errorf("CRM_PROVISION_OPPORTUNITY_SCOPE must be opportunity.import_provision")
 		}
 	}
 	// 合同→CRM 关联回写的凭据必须经启动校验：BaseURL 为空表示该边关闭；

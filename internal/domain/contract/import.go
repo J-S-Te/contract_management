@@ -6,8 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 )
+
+// ImportProvisionCustomerProfileMaxLength 是历史开立通道三个客户档案列
+// （客户类型/行业/地区）的字符上限，与 CRM 侧通道 DTO 的 64 字符约束保持一致
+// （customer_and_opportunity importprovision CustomerCreateRequest binding:"max=64"），
+// 合同侧因此可以在预览期就给出可定位的 TOO_LONG，而不是等到 CRM 422。
+const ImportProvisionCustomerProfileMaxLength = 64
 
 var ErrImportMixedLifecycle = errors.New("IMPORT_MIXED_LIFECYCLE")
 var ErrImportManifest = errors.New("invalid import manifest")
@@ -38,11 +45,29 @@ type ImportMetadata struct {
 	StartDate           *time.Time    `json:"start_date"`
 	EndDate             *time.Time    `json:"end_date"`
 	ExternalPaperNumber string        `json:"external_paper_number"`
+	// SalesName 是历史导入的「销售姓名」列，只用于经平台负责人目录解析
+	// identity_id（设计定稿 1 节），不写入合同任何字段，也不参与摘要之外的持久化。
+	SalesName string `json:"sales_name"`
+	// CustomerType/Industry/Region 是历史导入的「客户类型/行业/地区」三列，
+	// 只在历史开立通道原样透传给 CRM 建客户（空串照传，默认值「企业/其他/未填写」
+	// 由 CRM 侧按 IMPORT_PROVISION 口径补齐），不写入合同任何字段（Contract() 不含它们）。
+	CustomerType string `json:"customer_type"`
+	Industry     string `json:"industry"`
+	Region       string `json:"region"`
+}
+
+// ProvisionCustomerProfile 返回历史开立通道要透传给 CRM 建客户的三列。
+// 参数：无；使用当前清单元数据。
+// 返回值：客户类型、行业、地区（去掉 Excel 常见的首尾空白）；未填写的列返回空串，
+// 合同侧不补默认值，交由 CRM 侧按通道口径补齐。
+func (m ImportMetadata) ProvisionCustomerProfile() (customerType, industry, region string) {
+	return strings.TrimSpace(m.CustomerType), strings.TrimSpace(m.Industry), strings.TrimSpace(m.Region)
 }
 
 // Contract 转换显式白名单字段，不接受客户端归属或业务状态。
 // 参数：无；使用当前清单元数据。
-// 返回值：尚未校验和分配身份的合同。
+// 返回值：尚未校验和分配身份的合同。SalesName 与客户类型/行业/地区不在白名单内：
+// 它们只用于开立编排（解析销售身份、透传 CRM 建客户），不落库到合同。
 func (m ImportMetadata) Contract() Contract {
 	return Contract{Title: m.Title, Type: m.ContractType, ServiceType: m.ServiceType,
 		OpportunityID: m.OpportunityID, OpportunityName: m.OpportunityName,
@@ -72,6 +97,9 @@ type ImportIssue struct {
 	Field     string `json:"field_path"`
 	Code      string `json:"code"`
 	Retryable bool   `json:"retryable"`
+	// Message 是给操作者的静态可操作提示（不回显外部系统原文）；
+	// 为空表示该错误码自解释，前端按码表展示即可。
+	Message string `json:"message,omitempty"`
 }
 type ImportItemState struct {
 	Item               ImportItem      `json:"item"`
@@ -109,14 +137,17 @@ type ImportBatch struct {
 	SourceSystem        string               `json:"source_system"`
 	Items               []ImportItemState    `json:"items"`
 	Sources             []ImportSource       `json:"sources"`
-	PreviewToken        string               `json:"preview_token,omitempty"`
-	PreviewExpiresAt    time.Time            `json:"preview_expires_at"`
-	ExpiresAt           time.Time            `json:"expires_at"`
-	OperationID         string               `json:"operation_id,omitempty"`
-	CommitKeyHash       string               `json:"-"`
-	SessionHash         []byte               `json:"-"`
-	Epoch               uint64               `json:"execution_epoch"`
-	LeaseUntil          time.Time            `json:"-"`
+	// ProvisionPlan 是历史开立通道的预览计划（设计定稿 3.3）：
+	// 前端按 batch.provision_plan 读取，字段名与前端契约逐字一致。
+	ProvisionPlan    []ImportProvisionPlanItem `json:"provision_plan,omitempty"`
+	PreviewToken     string                    `json:"preview_token,omitempty"`
+	PreviewExpiresAt time.Time                 `json:"preview_expires_at"`
+	ExpiresAt        time.Time                 `json:"expires_at"`
+	OperationID      string                    `json:"operation_id,omitempty"`
+	CommitKeyHash    string                    `json:"-"`
+	SessionHash      []byte                    `json:"-"`
+	Epoch            uint64                    `json:"execution_epoch"`
+	LeaseUntil       time.Time                 `json:"-"`
 }
 
 // Validate 校验清单形状和来源键，字段业务约束交由现有合同服务。

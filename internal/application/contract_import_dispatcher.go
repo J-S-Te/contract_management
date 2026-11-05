@@ -100,7 +100,7 @@ func (s *Service) DispatchImportOnce(ctx context.Context) error {
 				if errors.Is(err, ErrImportNeedsReview) {
 					current.Items[index].State = "NEEDS_REVIEW"
 				}
-				current.Items[index].Issues = []contract.ImportIssue{{Field: "commit", Code: importErrorCode(err), Retryable: !errors.Is(err, ErrImportIdentityConflict) && !errors.Is(err, ErrImportConflict) && !errors.Is(err, ErrImportNeedsReview)}}
+				current.Items[index].Issues = []contract.ImportIssue{importItemIssue(err)}
 			}
 			return nil
 		}
@@ -147,6 +147,23 @@ func importErrorCode(err error) string {
 	}
 }
 
+// importItemIssue 把一次后台执行失败映射为逐项 Issue。
+// 参数：err 为执行错误。
+// 返回值：历史开立失败按设计定稿 3.3 的五个错误码落 Issue（字段路径与可重试标记
+// 由分类结果给出）；其余错误保持原有类别与可重试判定。
+func importItemIssue(err error) contract.ImportIssue {
+	var provision *importProvisionFailure
+	if errors.As(err, &provision) {
+		return provision.issue()
+	}
+	return contract.ImportIssue{Field: "commit", Code: importErrorCode(err),
+		Retryable: !errors.Is(err, ErrImportIdentityConflict) && !errors.Is(err, ErrImportConflict) && !errors.Is(err, ErrImportNeedsReview)}
+}
+
+// importItemPreparer 是执行期真正准备合同的函数（普通导入复用普通准备，
+// 历史开立复用开立准备），签名与 Service.prepareImportItem 一致。
+type importItemPreparer func(context.Context, Principal, contract.ImportBatch, contract.ImportItemState) (contract.Contract, string, error)
+
 // executeImportItem 重校验冻结基线并持久建单，文件副本失败只恢复原合同。
 // 参数：ctx及actor为重新验证的身份，b/item限定执行围栏。
 // 返回值：完成或明确错误，不吞绑定及落库结果。
@@ -154,43 +171,78 @@ func (s *Service) executeImportItem(ctx context.Context, actor Principal, b cont
 	if item.State == "CORRECTION_REQUIRED" || item.State == "NEEDS_REVIEW" {
 		return ErrImportNeedsReview
 	}
-	r, _ := s.importStore()
+	// 历史开立通道（仅 ARCHIVE_ONLY / HISTORICAL_CLOSED 且开关开启）走独立的
+	// 五步编排：解析销售 → 查重/建客户 → 建合同 → 建商机并签约 → 回写。
+	// NORMAL 与关闭态完全不进入该分支，行为与既有链路一致。
+	// 已按开立通道预检过的行（NEEDS_PROVISION）即使开关随后关闭也必须走这里，
+	// 才能给出 IMPORT_CRM_PROVISION_DISABLED 而不是含混的校验失败。
+	if s.importProvisionItemApplies(item.Item) ||
+		(importProvisionModeApplies(item.Item.Mode) && item.State == contract.ImportItemStateNeedsProvision) {
+		return s.executeProvisionImportItem(ctx, actor, b, item)
+	}
 	id := item.ContractID
 	if id == "" {
-		c, digest, e := s.prepareImportItem(ctx, actor, b, item)
+		created, e := s.commitImportContract(ctx, actor, b, item, s.prepareImportItem, nil)
 		if e != nil {
 			return e
 		}
-		if digest != item.Digest {
-			return ErrImportIdentityConflict
+		id = created
+	}
+	return s.finishImportItem(ctx, actor, b, item, id, nil)
+}
+
+// commitImportContract 在冻结基线内创建一条导入合同（含来源身份与单项结果）。
+// 参数：actor 为重新验证的身份，b/item 限定执行围栏，prepare 为准备函数，
+// adjust 在摘要校验通过后补齐仅由开立通道提供的权威字段（crm_customer_id / 客户名）。
+// 返回值：稳定合同 ID；摘要不符、围栏失效或创建失败均返回错误。
+func (s *Service) commitImportContract(ctx context.Context, actor Principal, b contract.ImportBatch, item contract.ImportItemState, prepare importItemPreparer, adjust func(*contract.Contract) error) (string, error) {
+	r, err := s.importStore()
+	if err != nil {
+		return "", err
+	}
+	c, digest, err := prepare(ctx, actor, b, item)
+	if err != nil {
+		return "", err
+	}
+	if digest != item.Digest {
+		return "", ErrImportIdentityConflict
+	}
+	if err = s.EnsureOwnerNotFrozen(ctx, b.TenantID, actor.UserID); err != nil {
+		return "", err
+	}
+	c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName = ulid.Make().String(), b.TenantID, actor.UserID, actor.DisplayName
+	c.OwnerIdentityID, c.CreatedBy, c.Status = actor.IdentityID, actor.UserID, contract.StatusDraft
+	c.OriginKind, c.ImportMode, c.OriginImportItemID = "NORMAL", contract.ImportNormal, item.ID
+	if item.Item.Mode != contract.ImportNormal {
+		owner, ownerErr := s.importHistoryOwner(ctx, actor, item.Item)
+		if ownerErr != nil {
+			return "", ownerErr
 		}
-		if e = s.EnsureOwnerNotFrozen(ctx, b.TenantID, actor.UserID); e != nil {
-			return e
-		}
-		c.ID, c.TenantID, c.OwnerUserID, c.OwnerDisplayName = ulid.Make().String(), b.TenantID, actor.UserID, actor.DisplayName
-		c.OwnerIdentityID, c.CreatedBy, c.Status = actor.IdentityID, actor.UserID, contract.StatusDraft
-		c.OriginKind, c.ImportMode, c.OriginImportItemID = "NORMAL", contract.ImportNormal, item.ID
-		if item.Item.Mode != contract.ImportNormal {
-			owner, ownerErr := s.importHistoryOwner(ctx, actor, item.Item)
-			if ownerErr != nil {
-				return ownerErr
-			}
-			c.OwnerUserID, c.OwnerDisplayName, c.OwnerIdentityID = owner.UserID, owner.DisplayName, owner.UserID
-			c.OriginKind, c.ImportMode, c.ImportPolicy = "IMPORTED", item.Item.Mode, item.Item.Policy
-			evidence := item.Item.HistoryEvidence
-			c.HistoricalStatus, c.HistoricalCustomerName, c.HistoricalOwnerLabel = evidence.HistoricalStatus, evidence.HistoricalCustomerName, evidence.HistoricalOwnerLabel
-		}
-		c.ContentHash, c.SourceFileStatus = c.SourceSHA256, "PENDING"
-		for _, src := range b.Sources {
-			if src.ID == item.Item.SourceFileRef {
-				c.SourceFileID = src.GatewayID
-			}
-		}
-		id, e = r.CommitImportDraft(ctx, b.TenantID, b.ID, b.Revision, b.Epoch, item.ID, c, actor.UserID)
-		if e != nil {
-			return e
+		c.OwnerUserID, c.OwnerDisplayName, c.OwnerIdentityID = owner.UserID, owner.DisplayName, owner.UserID
+		c.OriginKind, c.ImportMode, c.ImportPolicy = "IMPORTED", item.Item.Mode, item.Item.Policy
+		evidence := item.Item.HistoryEvidence
+		c.HistoricalStatus, c.HistoricalCustomerName, c.HistoricalOwnerLabel = evidence.HistoricalStatus, evidence.HistoricalCustomerName, evidence.HistoricalOwnerLabel
+	}
+	c.ContentHash, c.SourceFileStatus = c.SourceSHA256, "PENDING"
+	for _, src := range b.Sources {
+		if src.ID == item.Item.SourceFileRef {
+			c.SourceFileID = src.GatewayID
 		}
 	}
+	if adjust != nil {
+		if err = adjust(&c); err != nil {
+			return "", err
+		}
+	}
+	return r.CommitImportDraft(ctx, b.TenantID, b.ID, b.Revision, b.Epoch, item.ID, c, actor.UserID)
+}
+
+// finishImportItem 把已创建的合同接入源文件网关，再回写单项结果。
+// 参数：actor 为执行身份，b/item 为围栏，id 为合同 ID，
+// beforeComplete 在标记 COMPLETE 之前执行（历史开立的商机编排挂在这里，
+// 从而保证商机失败时该行保持 BLOCKED 且可重试）。
+// 返回值：完成或明确错误。
+func (s *Service) finishImportItem(ctx context.Context, actor Principal, b contract.ImportBatch, item contract.ImportItemState, id string, beforeComplete func(contract.Contract) error) error {
 	c, e := s.Repo.GetContract(ctx, b.TenantID, id)
 	if e != nil {
 		return e
@@ -210,6 +262,22 @@ func (s *Service) executeImportItem(ctx context.Context, actor Principal, b cont
 		return ErrImportUnsupported
 	}
 	if e = state.MarkContractSourceGatewayResult(ctx, b.TenantID, id, c.SourceFileID, "READY", ""); e != nil {
+		return e
+	}
+	if beforeComplete != nil {
+		if e = beforeComplete(c); e != nil {
+			return e
+		}
+	}
+	return s.markImportItemComplete(ctx, b, item)
+}
+
+// markImportItemComplete 在批次围栏内把单项结果标记为 COMPLETE。
+// 参数：ctx 为请求，b 为执行围栏，item 为目标单项。
+// 返回值：围栏失效返回 ErrImportConflict，其余为存储错误。
+func (s *Service) markImportItemComplete(ctx context.Context, b contract.ImportBatch, item contract.ImportItemState) error {
+	r, e := s.importStore()
+	if e != nil {
 		return e
 	}
 	return r.UpdateImportBatch(ctx, b.TenantID, b.ID, func(current *contract.ImportBatch) error {

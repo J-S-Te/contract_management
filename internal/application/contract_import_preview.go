@@ -313,6 +313,8 @@ func (s *Service) SetImportManifest(ctx context.Context, actor Principal, id str
 		b.Epoch++
 		b.Revision++
 		b.PreviewToken = ""
+		// 清单变更后上一轮开立计划失效，必须由下一次预检重新生成。
+		b.ProvisionPlan = nil
 		b.State = "DRAFT"
 		return nil
 	})
@@ -341,13 +343,19 @@ func markImportCorrection(b *contract.ImportBatch, itemID string) {
 	}
 }
 
-// prepareImportItem 读取暂存原件并复用普通合同的实时目录和字段校验。
-// 参数：ctx为上下文，actor为当前身份，b为冻结批次，item为待校验项。
-// 返回值：规范合同、规范摘要或错误；不创建合同。
-// prepareImportItem 复核原件及来源引用，LOCAL仅允许NORMAL普通合同。
+// prepareImportItem 复核暂存原件及来源引用并复用普通合同的实时目录/字段校验；
+// LOCAL 仅允许 NORMAL 普通合同，不创建任何合同。
 // 参数：ctx为请求，actor为可信主体，b为批次，item为冻结前条目。
 // 返回值：规范合同及摘要，或校验、来源和依赖错误。
-func (s *Service) prepareImportItem(ctx context.Context, actor Principal, b contract.ImportBatch, item contract.ImportItemState) (c contract.Contract, digest string, err error) {
+func (s *Service) prepareImportItem(ctx context.Context, actor Principal, b contract.ImportBatch, item contract.ImportItemState) (contract.Contract, string, error) {
+	return s.prepareImportItemWith(ctx, actor, b, item, false)
+}
+
+// prepareImportItemWith 是预检与执行期共用的原件/字段复核实现。
+// 参数：provision 为 true 时使用开立通道准备函数（不做 CRM 客户引用回读，
+// 客户由编排在建单前查重/创建），其余行为与普通导入完全一致。
+// 返回值：规范合同、规范摘要或错误；不创建合同。
+func (s *Service) prepareImportItemWith(ctx context.Context, actor Principal, b contract.ImportBatch, item contract.ImportItemState, provision bool) (c contract.Contract, digest string, err error) {
 	if item.Item.Mode != contract.ImportNormal && (item.Item.Metadata.CounterpartySource == contract.CounterpartyLocal || item.Item.Metadata.CategorySource == contract.CategoryLocal) {
 		return c, "", ErrImportUnsupported
 	}
@@ -390,7 +398,11 @@ func (s *Service) prepareImportItem(ctx context.Context, actor Principal, b cont
 	if utf8.RuneCountInString(c.ExternalPaperNumber) > 128 {
 		return c, "", ErrValidation
 	}
-	c, e = s.prepareContract(ctx, actor, c, true, "contract.create")
+	if provision {
+		c, e = validator.prepareProvisionContract(ctx, actor, c, true, "contract.create")
+	} else {
+		c, e = validator.prepareContract(ctx, actor, c, true, "contract.create")
+	}
 	if e != nil {
 		return c, "", e
 	}
@@ -454,6 +466,8 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 		}
 	}
 	ready := !mixed
+	// provisionPlan 每轮重算：开关关闭或模式不适用时为空，避免上一轮计划残留。
+	provisionPlan := []contract.ImportProvisionPlanItem{}
 	for index := range b.Items {
 		item := &b.Items[index]
 		if item.ContractID != "" {
@@ -464,9 +478,41 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 			item.Issues = []contract.ImportIssue{{Field: "mode", Code: "IMPORT_MIXED_LIFECYCLE"}}
 			continue
 		}
-		if issues := importFieldIssues(item.Item); len(issues) > 0 {
+		// 历史开立通道：该行凭清单名称自动开立客户/商机，因此不再要求清单声明
+		// crm_customer_id（其余字段规则完全不变），预检状态改为 NEEDS_PROVISION。
+		provision := s.importProvisionItemApplies(item.Item)
+		issues := importFieldIssues(item.Item)
+		if provision {
+			issues = withoutProvisionCustomerRequirement(issues)
+			// 客户类型/行业/地区只在开立通道透传给 CRM，超长必须在预览期按字段定位，
+			// 否则用户填了也会被静默忽略或到执行期才失败。
+			if profileIssue := importProvisionCustomerProfileIssue(item.Item.Metadata); profileIssue != nil {
+				issues = append(issues, *profileIssue)
+			}
+		}
+		if len(issues) > 0 {
 			ready = false
 			item.State, item.Issues = "BLOCKED", issues
+			continue
+		}
+		if provision {
+			plan, issue := s.planImportProvision(ctx, actor, b, item.Item)
+			provisionPlan = append(provisionPlan, plan)
+			if issue != nil {
+				ready = false
+				item.State, item.Issues = "BLOCKED", []contract.ImportIssue{*issue}
+				continue
+			}
+			normalized, digest, err := s.prepareProvisionImportItem(ctx, actor, b, *item)
+			item.Issues = nil
+			if err != nil {
+				ready = false
+				item.State = "BLOCKED"
+				item.Issues = []contract.ImportIssue{previewImportItemIssue(err)}
+			} else {
+				item.State, item.Digest = contract.ImportItemStateNeedsProvision, digest
+				item.NormalizedMetadata = normalizedImportMetadata(normalized)
+			}
 			continue
 		}
 		normalized, digest, err := s.prepareImportItem(ctx, actor, b, *item)
@@ -474,25 +520,13 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 		if err != nil {
 			ready = false
 			item.State = "BLOCKED"
-			code := "IMPORT_VALIDATION_FAILED"
-			retry := false
-			field := "metadata"
-			if errors.Is(err, ErrCRMActorContextRequired) {
-				code, retry, field = "IMPORT_CRM_SESSION_REQUIRED", true, "metadata.crm_customer_id"
-			} else if errors.Is(err, ErrImportUnsupported) {
-				code = "IMPORT_POLICY_UNSUPPORTED"
-			} else if errors.Is(err, ErrForbidden) {
-				code = "IMPORT_AUTHORIZATION_REQUIRED"
-			} else if !errors.Is(err, ErrValidation) {
-				code = "IMPORT_DEPENDENCY_UNAVAILABLE"
-				retry = true
-			}
-			item.Issues = []contract.ImportIssue{{Field: field, Code: code, Retryable: retry}}
+			item.Issues = []contract.ImportIssue{previewImportItemIssue(err)}
 		} else {
 			item.State, item.Digest = "READY", digest
 			item.NormalizedMetadata = normalizedImportMetadata(normalized)
 		}
 	}
+	b.ProvisionPlan = provisionPlan
 	b.State = "BLOCKED"
 	if ready {
 		b.State = "PREVIEWED"
@@ -509,10 +543,44 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 		}
 		current.Items, current.State = b.Items, b.State
 		current.PreviewToken, current.PreviewExpiresAt = b.PreviewToken, b.PreviewExpiresAt
+		current.ProvisionPlan = b.ProvisionPlan
 		return nil
 	})
 	if e != nil {
 		return b, e
 	}
 	return s.GetImportBatch(ctx, actor, id)
+}
+
+// withoutProvisionCustomerRequirement 去掉「清单必须声明 crm_customer_id」这一条，
+// 仅用于历史开立通道：客户由编排先查重/创建，清单不声明客户 ID 才是正常输入。
+// 参数：issues 为字段形状校验结果。
+// 返回值：过滤后的逐项问题（保持原顺序，不含该条 REQUIRED）。
+func withoutProvisionCustomerRequirement(issues []contract.ImportIssue) []contract.ImportIssue {
+	filtered := make([]contract.ImportIssue, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Field == "metadata.crm_customer_id" && issue.Code == "REQUIRED" {
+			continue
+		}
+		filtered = append(filtered, issue)
+	}
+	return filtered
+}
+
+// previewImportItemIssue 把预检失败映射为可定位的逐项 Issue。
+// 参数：err 为预检错误。
+// 返回值：字段路径、稳定错误码与可重试标记（不泄露业务正文）。
+func previewImportItemIssue(err error) contract.ImportIssue {
+	switch {
+	case errors.Is(err, ErrCRMActorContextRequired):
+		return contract.ImportIssue{Field: "metadata.crm_customer_id", Code: "IMPORT_CRM_SESSION_REQUIRED", Retryable: true}
+	case errors.Is(err, ErrImportUnsupported):
+		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_POLICY_UNSUPPORTED"}
+	case errors.Is(err, ErrForbidden):
+		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_AUTHORIZATION_REQUIRED"}
+	case !errors.Is(err, ErrValidation):
+		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_DEPENDENCY_UNAVAILABLE", Retryable: true}
+	default:
+		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_VALIDATION_FAILED"}
+	}
 }

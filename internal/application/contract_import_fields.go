@@ -51,6 +51,10 @@ func importFieldIssues(item contract.ImportItem) []contract.ImportIssue {
 	if utf8.RuneCountInString(m.ExternalPaperNumber) > 128 {
 		add("metadata.external_paper_number", "TOO_LONG")
 	}
+	// 销售姓名只用于历史开立通道解析 identity_id，不落库，但长度仍受目录关键字上限约束。
+	if utf8.RuneCountInString(m.SalesName) > 128 {
+		add("metadata.sales_name", "TOO_LONG")
+	}
 	for index, service := range m.ServiceItems {
 		prefix := fmt.Sprintf("metadata.service_items[%d]", index)
 		for _, field := range []struct{ name, value string }{{"service_type", service.ServiceType}, {"site", service.Site}, {"batch", service.Batch}, {"category", service.Category}, {"test_mode", service.TestMode}} {
