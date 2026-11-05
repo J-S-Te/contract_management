@@ -2,6 +2,9 @@ package contract
 
 import "testing"
 
+// TestLifecycleTransitions 验证合同生命周期的允许与禁止迁移。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestLifecycleTransitions(t *testing.T) {
 	t.Parallel()
 	valid := [][2]Status{

@@ -16,7 +16,6 @@ import (
 )
 
 // contractApprovalStart 构造 draft→pending 的合同审批启动输入。
-//
 // 参数：item 为待提交合同，approvalID/workflowID 为审批与工作流标识。
 // 返回值：可直接交给 StartApproval 的输入。
 func contractApprovalStart(item contract.Contract, approvalID, workflowID string) workflows.StartApprovalActivityInput {
@@ -29,8 +28,7 @@ func contractApprovalStart(item contract.Contract, approvalID, workflowID string
 }
 
 // runningContractApprovals 统计某合同的在途合同审批数，用于并发回归断言。
-//
-// 参数：repository 为仓储，tenant/contractID 为身份。
+// 参数：t 为测试上下文，repository 为仓储，tenant/contractID 为身份。
 // 返回值：在途实例数；查询失败直接失败用例。
 func runningContractApprovals(t *testing.T, repository *Repository, tenant, contractID string) int64 {
 	t.Helper()
@@ -43,9 +41,11 @@ func runningContractApprovals(t *testing.T, repository *Repository, tenant, cont
 	return running
 }
 
-// TestTransitionDirectRejectsPendingContractWithRunningApprovalE2E 覆盖 M-6：
-// 合同审批在途时 pending→draft 的直迁必须 409 且不改状态/版本，
-// 而合法的审批撤回链路（CompleteApproval withdrawn → draft）不得被堵死。
+// TestTransitionDirectRejectsPendingContractWithRunningApprovalE2E 覆盖 M-6：合同审批在途时
+// pending→draft 的直迁必须 409 且不改状态/版本，而合法的审批撤回链路（CompleteApproval withdrawn
+// → draft）不得被堵死。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestTransitionDirectRejectsPendingContractWithRunningApprovalE2E(t *testing.T) {
 	repository, tenant := draftE2ERepository(t)
 	ctx := context.Background()
@@ -90,8 +90,10 @@ func TestTransitionDirectRejectsPendingContractWithRunningApprovalE2E(t *testing
 	}
 }
 
-// TestConcurrentContractApprovalStartAllowsExactlyOneE2E 覆盖 M-6 并发回归：
-// 同一 draft 合同并发 10 次 StartApproval，只能有一次成功，最终只有一份在途合同审批。
+// TestConcurrentContractApprovalStartAllowsExactlyOneE2E 覆盖 M-6 并发回归：同一 draft 合同并发
+// 10 次 StartApproval，只能有一次成功，最终只有一份在途合同审批。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestConcurrentContractApprovalStartAllowsExactlyOneE2E(t *testing.T) {
 	repository, tenant := draftE2ERepository(t)
 	for round := 0; round < 10; round++ {

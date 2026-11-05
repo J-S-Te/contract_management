@@ -1037,8 +1037,8 @@ func updateStatus(tx *gorm.DB, tenantID, contractID string, from, to contract.St
 
 // countRunningApprovals 统计同租户同合同下指定审批类型的在途实例数。
 // 参数：tx 为业务事务，tenantID/contractID 限定合同，kinds 为审批类型。
-// 返回值：在途实例数或查询错误。调用方必须已持有合同行锁，计数与后续写入才同处
-// 一个临界区。直迁、发起审批、自动归档共用本函数，避免三处谓词各自漂移。
+// 返回值：在途实例数或查询错误。调用方必须已持有合同行锁，计数与后续写入才同处一个临界区。直迁、
+// 发起审批、自动归档共用本函数，避免三处谓词各自漂移。
 func countRunningApprovals(tx *gorm.DB, tenantID, contractID string, kinds ...approval.Kind) (int64, error) {
 	values := make([]string, 0, len(kinds))
 	for _, kind := range kinds {

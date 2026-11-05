@@ -17,7 +17,8 @@ import (
 )
 
 // TransitionDirect 在版本和来源门禁下执行普通合同直接状态迁移。
-// 参数：ctx为上下文，tenantID/contractID为身份，expectedVersion为版本，target为状态，actorUserID/reason/idempotencyKey为操作者、理由和稳定键。
+// 参数：ctx为上下文，tenantID/contractID为身份，expectedVersion为版本，target为状态，
+// actorUserID/reason/idempotencyKey为操作者、理由和稳定键。
 // 返回值：迁移或幂等结果；来源、版本和状态冲突返回错误。
 func (r *Repository) TransitionDirect(ctx context.Context, tenantID, contractID string, expectedVersion uint64, target contract.Status, actorUserID, reason, idempotencyKey string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

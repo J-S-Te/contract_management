@@ -13,20 +13,27 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
+// signingShipment 构造用于并发寄送验证的合法寄送信息。
+// 参数：action 为区分测试寄送请求的标记。
+// 返回值：包含快递单号、收件人、地址及寄出日期的输入。
 func signingShipment(action string) contract.SigningShipment {
 	return contract.SigningShipment{CourierNumber: "SF" + action, RecipientName: "张三", RecipientPhone: "13800138000", RecipientAddress: "北京市朝阳区", MailedAt: time.Now().UTC()}
 }
 
-// signingShipmentTestKey 设置寄送登记所需的手机号列加密密钥（测试专用固定密钥）。
-// 该密钥缺失时 SaveSigningShipment 按生产语义失败关闭，故 E2E 必须先注入。
+// signingShipmentTestKey 设置寄送登记所需的手机号列加密密钥（测试专用固定密钥）。该密钥缺失时
+// SaveSigningShipment 按生产语义失败关闭，故 E2E 必须先注入。
+// 参数：t 为测试上下文，用于设置仅本用例生效的固定列加密密钥。
+// 返回值：无。
 func signingShipmentTestKey(t *testing.T) {
 	t.Helper()
 	t.Setenv(contract.SigningPhoneKeyEnv, base64.StdEncoding.EncodeToString(make([]byte, 32)))
 }
 
-// TestSaveSigningShipmentRejectedAfterStampedUploadE2E 覆盖 M-7 顺序回归：
-// 已上传盖章件（pending_review）后登记寄出必须 409，台账状态保持 pending_review，
-// confirmed_* 不被改写，随后 ConfirmSigning 仍能成功（不会被残留 in_return 永久 409）。
+// TestSaveSigningShipmentRejectedAfterStampedUploadE2E 覆盖 M-7 顺序回归：已上传盖章件（
+// pending_review）后登记寄出必须 409，台账状态保持 pending_review，confirmed_* 不被改写，随后
+// ConfirmSigning 仍能成功（不会被残留 in_return 永久 409）。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestSaveSigningShipmentRejectedAfterStampedUploadE2E(t *testing.T) {
 	signingShipmentTestKey(t)
 	repository, tenant := draftE2ERepository(t)
@@ -79,8 +86,10 @@ func TestSaveSigningShipmentRejectedAfterStampedUploadE2E(t *testing.T) {
 	}
 }
 
-// TestConcurrentSigningShipmentVersusUploadE2E 覆盖 M-7 并发回归：
-// 寄送登记与盖章上传并发 10 轮，终态必须是 pending_review，寄送侧只允许成功或 409。
+// TestConcurrentSigningShipmentVersusUploadE2E 覆盖 M-7 并发回归：寄送登记与盖章上传并发 10 轮，
+// 终态必须是 pending_review，寄送侧只允许成功或 409。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestConcurrentSigningShipmentVersusUploadE2E(t *testing.T) {
 	signingShipmentTestKey(t)
 	repository, tenant := draftE2ERepository(t)
@@ -137,9 +146,10 @@ func TestConcurrentSigningShipmentVersusUploadE2E(t *testing.T) {
 	}
 }
 
-// TestConcurrentSigningShipmentVersusConfirmationE2E 覆盖 M-7 并发回归：
-// 寄送登记与签署确认并发 10 轮，终态必须 completed 且 confirmed_* 指向已核验版本，
-// 寄送侧不得把 completed 回退成 in_return。
+// TestConcurrentSigningShipmentVersusConfirmationE2E 覆盖 M-7 并发回归：寄送登记与签署确认并发 10
+// 轮，终态必须 completed 且 confirmed_* 指向已核验版本，寄送侧不得把 completed 回退成 in_return。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestConcurrentSigningShipmentVersusConfirmationE2E(t *testing.T) {
 	signingShipmentTestKey(t)
 	repository, tenant := draftE2ERepository(t)
@@ -195,8 +205,10 @@ func TestConcurrentSigningShipmentVersusConfirmationE2E(t *testing.T) {
 	}
 }
 
-// TestSaveSigningShipmentFirstShipmentAndMissingContractE2E 覆盖 M-7 首寄与缺行语义：
-// 台账无行时首寄建立 in_return/version=1，合同缺失返回 NotFound。
+// TestSaveSigningShipmentFirstShipmentAndMissingContractE2E 覆盖 M-7 首寄与缺行语义：台账无行时首
+// 寄建立 in_return/version=1，合同缺失返回 NotFound。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestSaveSigningShipmentFirstShipmentAndMissingContractE2E(t *testing.T) {
 	signingShipmentTestKey(t)
 	repository, tenant := draftE2ERepository(t)

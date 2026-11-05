@@ -17,14 +17,19 @@ type pendingGuardRepository struct {
 	transitionErr error
 }
 
+// TransitionDirect 记录直迁调用并返回预置的在途审批冲突。
+// 参数：上下文、租户、合同、版本、目标状态、操作者、理由及幂等键为服务传入的迁移输入。
+// 返回值：预置迁移错误，验证服务原样透传状态冲突。
 func (r *pendingGuardRepository) TransitionDirect(context.Context, string, string, uint64, contract.Status, string, string, string) error {
 	r.transitions++
 	return r.transitionErr
 }
 
-// TestChangeStatusPendingToDraftSurfacesInFlightApprovalConflict 覆盖 M-6 应用层语义：
-// 合同审批在途时把 pending 直迁回 draft 必须原样返回 ErrStateConflict（HTTP 409），
-// 且不进入任何 Temporal 审批启动路径。
+// TestChangeStatusPendingToDraftSurfacesInFlightApprovalConflict 覆盖 M-6 应用层语义：合同审批在
+// 途时把 pending 直迁回 draft 必须原样返回 ErrStateConflict（HTTP 409），且不进入任何 Temporal审
+// 批启动路径。
+// 参数：t 为测试上下文。
+// 返回值：无；实际行为偏离断言时用例失败。
 func TestChangeStatusPendingToDraftSurfacesInFlightApprovalConflict(t *testing.T) {
 	repo := &pendingGuardRepository{
 		recordingRepository: &recordingRepository{contract: statusAuthorizationContract("tenant-1", "sales-1", contract.StatusPending)},

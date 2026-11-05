@@ -15,8 +15,8 @@ import (
 
 // SaveSigningShipment 在合同行锁内登记寄出信息，寄出状态判定与写入同处一个临界区。
 // 参数：ctx为上下文，tenantID/contractID为身份，actor为操作者，shipment为寄出信息。
-// 返回值：缺失合同 ErrNotFound；已上传盖章件或已完成签署时 ErrStateConflict，
-// 通知与寄出信息同事务提交，冲突时整体回滚。
+// 返回值：缺失合同 ErrNotFound；已上传盖章件或已完成签署时 ErrStateConflict，通知与寄出信息同事务
+// 提交，冲突时整体回滚。
 func (r *Repository) SaveSigningShipment(ctx context.Context, tenantID, contractID, actor string, shipment contract.SigningShipment) error {
 	now := time.Now().UTC()
 	// 列加密（SEC-D7）：签署人手机号属于 PII，AES-GCM 落库；密钥缺失或非法时

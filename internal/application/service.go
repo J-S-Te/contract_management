@@ -458,6 +458,9 @@ func (s *Service) GetSigningRecord(ctx context.Context, actor Principal, id stri
 	return item, err
 }
 
+// SaveSigningShipment 校验寄送信息与当前签署状态后登记合同寄出。
+// 参数：ctx 为请求上下文，actor 为可信操作者，id 为合同标识，shipment 为寄出信息。
+// 返回值：校验、权限、状态或持久化失败时返回错误。
 func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id string, shipment contract.SigningShipment) error {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
