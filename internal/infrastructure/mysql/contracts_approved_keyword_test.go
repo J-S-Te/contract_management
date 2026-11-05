@@ -18,6 +18,10 @@ import (
 type approvedContractSQLRecorder struct {
 	sql    string
 	params []any
+	// sqls/paramSets 保留本次查询生成的全部语句（分页台账是“先 COUNT 再取页”两条），
+	// 只留最后一条会让 COUNT 语句的数据范围失去断言（跨租户总数泄漏无法被发现）。
+	sqls     []string
+	paramSets [][]any
 }
 
 func (r *approvedContractSQLRecorder) LogMode(logger.LogLevel) logger.Interface      { return r }
@@ -30,6 +34,8 @@ func (r *approvedContractSQLRecorder) Trace(_ context.Context, _ time.Time, fc f
 func (r *approvedContractSQLRecorder) ParamsFilter(_ context.Context, sql string, params ...interface{}) (string, []interface{}) {
 	r.sql = sql
 	r.params = append([]any(nil), params...)
+	r.sqls = append(r.sqls, sql)
+	r.paramSets = append(r.paramSets, append([]any(nil), params...))
 	return sql, params
 }
 

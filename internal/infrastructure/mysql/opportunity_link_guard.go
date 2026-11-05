@@ -135,6 +135,9 @@ func validateOpportunityLinkTarget(target contractRecord, intake opportunityInta
 	case contract.StatusArchived, contract.StatusTerminated:
 		return fmt.Errorf("%w: 已归档或已终止合同不能建立商机关联", application.ErrOpportunityLinkRejected)
 	}
+	if target.CounterpartySource == contract.CounterpartyLocal || target.CategorySource == contract.CategoryLocal {
+		return fmt.Errorf("%w: 本地来源合同不能自动改绑CRM商机", application.ErrOpportunityLinkRejected)
+	}
 	existingCustomer := uint64Value(target.CRMCustomerID)
 	if existingCustomer != 0 {
 		if existingCustomer != intake.CustomerID {

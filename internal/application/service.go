@@ -120,6 +120,14 @@ type ScopedRepository interface {
 	ContractDashboardScoped(context.Context, contract.ScopeFilter, time.Time, int) (contract.Dashboard, error)
 }
 
+// ContractPageRepository 由能在服务端完成“数据范围 + 关键字 + 状态 + 类型”筛选、
+// 统计总数并分页的仓储实现（MySQL 仓储实现了它）。
+// 用可选能力接口而不是扩展 Repository/ScopedRepository，是为了不破坏既有实现和
+// 测试替身的方法签名；未实现时 ListContractsPage 回退到旧方法并在内存里补齐语义。
+type ContractPageRepository interface {
+	ListContractsPageScoped(context.Context, contract.ScopeFilter, contract.ContractListQuery) (contract.ContractPage, error)
+}
+
 type Service struct {
 	ExternalPDFEnabled              bool
 	ContractImportHistoryEnabled    bool
@@ -149,6 +157,7 @@ type Service struct {
 	StampedFileApplicationID string
 	DetectionCategories      DetectionCategoryDirectory
 	CRMContractReferences    CRMContractReferenceDirectory
+	ContractSources          *ContractSourceOptions
 	// ContractFinancialChangeEnabled 是受控“合同财务变更”入口开关
 	// （CONTRACT_FINANCIAL_CHANGE_ENABLED，默认 false）。关闭时写用例直接拒绝，
 	// 开启后仍需 contract.edit 权限、已审批且无在途审批的合同、审计留痕。
@@ -378,6 +387,10 @@ func (s *Service) ListSigningRecords(ctx context.Context, actor Principal, query
 	}, nil
 }
 
+// signingRecordMatches 是签署台账在“仓储不支持 SQL 筛选”时的内存兜底。
+// 约定：关键字按**字面量子串**匹配（strings.Contains），与 literalLikePattern 转义后的
+// SQL LIKE 语义严格同口径——修复 LIKE 通配符之前，SQL 是通配符语义而这里是字面量语义，
+// 两条路径会给出不同结果。改动任一侧时必须同时改另一侧。
 func signingRecordMatches(item contract.SigningRecord, query contract.SigningRecordQuery) bool {
 	keyword := strings.ToLower(strings.TrimSpace(query.Keyword))
 	if keyword != "" {
@@ -588,6 +601,9 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 	return s.persistNewContract(ctx, actor, c, external, filter)
 }
 
+// prepareContract 校验草稿权限、正文、权威来源、服务范围和精确付款计划。
+// 参数：ctx为请求，actor为可信主体，c为草稿，external区分外部文件，permission限定业务动作。
+// 返回值：规范化且通过校验的合同；任何来源、权限或财务规则不符均返回错误。
 func (s *Service) prepareContract(ctx context.Context, actor Principal, c contract.Contract, external bool, permission string) (contract.Contract, error) {
 	filter, ok := actor.Scope(permission)
 	if !ok {
@@ -638,45 +654,20 @@ func (s *Service) prepareContract(ctx context.Context, actor Principal, c contra
 	}
 	commonInvalid := c.Title == "" || c.Type == "" || c.AmountMinor < 0 || c.Content == "" && len(c.Document) == 0
 	if external {
-		if commonInvalid || c.TemplateID != "" || c.Type != "直签" && c.Type != "三方" || c.CRMCustomerID == 0 || c.CustomerName == "" || c.AmountMinor <= 0 || !validExternalServiceItems(c.ServiceItems) || c.OpportunityID != "" && c.OpportunityName == "" || c.OpportunityID == "" && c.OpportunityName != "" || !validOptionalCRMID(c.OpportunityID) {
+		if commonInvalid || c.TemplateID != "" || c.Type != "直签" && c.Type != "三方" ||
+			c.AmountMinor <= 0 || !validExternalServiceItems(c.ServiceItems) {
 			return c, ErrValidation
 		}
-		reference, err := s.validateExternalCRMReference(ctx, c.CRMCustomerID, c.OpportunityID, actor.IdentityID)
-		if err != nil {
-			return c, err
-		}
-		c.CustomerName = strings.TrimSpace(reference.Customer.Name)
-		if reference.Opportunity != nil {
-			c.OpportunityName = strings.TrimSpace(reference.Opportunity.Name)
-		}
-		categories := make([]string, 0, len(c.ServiceItems))
-		for _, item := range c.ServiceItems {
-			categories = append(categories, item.Category)
-		}
-		if err := s.validateExternalDetectionCategories(ctx, categories); err != nil {
-			return c, err
-		}
-	} else if commonInvalid || c.TemplateID == "" || !validServiceItems(c.ServiceItems) || c.OpportunityID != "" && c.CRMCustomerID == 0 {
+	} else if commonInvalid || c.TemplateID == "" || !validServiceItems(c.ServiceItems) ||
+		c.OpportunityID != "" && c.CRMCustomerID == 0 {
 		return c, ErrValidation
 	}
-	// 模板合同的 CRM 引用与付款计划是否存在解耦：只要出现非空客户/商机引用，
-	// 就必须经过权威目录校验，避免“模板+客户+商机+无付款计划”绕过客户有效性、
-	// 商机归属和用户数据范围检查。付款计划本身也要求有效客户。
-	if !external && (c.CRMCustomerID > 0 || c.OpportunityID != "" || len(c.PaymentTerms) > 0) {
-		if c.CRMCustomerID == 0 || !validOptionalCRMID(c.OpportunityID) {
-			return c, fmt.Errorf("%w: 付款计划或商机引用须关联有效的CRM客户", ErrValidation)
-		}
-		reference, err := s.validateExternalCRMReference(ctx, c.CRMCustomerID, c.OpportunityID, actor.IdentityID)
-		if err != nil {
-			return c, err
-		}
-		c.CustomerName = strings.TrimSpace(reference.Customer.Name)
-		if reference.Opportunity != nil {
-			c.OpportunityName = strings.TrimSpace(reference.Opportunity.Name)
-		} else {
-			c.OpportunityName = ""
-		}
+	// 来源必须由明确目录解析；旧CRM/项目分支仍执行原可见性及归属校验。
+	resolved, err := s.prepareContractReferences(ctx, actor, c, external, permission)
+	if err != nil {
+		return c, err
 	}
+	c = resolved
 	c.ServiceType = c.ServiceItems[0].ServiceType
 	c.Systems = flattenedSystems(c.ServiceItems)
 	if c.StartDate != nil && c.EndDate != nil && c.StartDate.After(*c.EndDate) {
@@ -1360,33 +1351,146 @@ func (s *Service) ListContractLifecycle(ctx context.Context, actor Principal, id
 	return s.Repo.ListContractLifecycle(ctx, actor.TenantID, id)
 }
 
+// 合同台账的分页口径：页大小沿用旧 limit 的 1..200 上限，越界回退到 50（与旧
+// ListContracts 完全一致，避免旧调用方拿到的窗口突然变化）；页码上限只用于
+// 防止深页拖垮数据库和 offset 溢出。
+const (
+	contractLedgerDefaultLimit = 50
+	contractLedgerMaxPageSize  = 200
+	contractLedgerMaxPage      = 100000
+)
+
+// ListContracts 是合同台账的旧入口，保留原签名与语义：第一页、无类型筛选、不要分页信封。
+// 需要 type 筛选或 total 统计的调用方使用 ListContractsPage。
 func (s *Service) ListContracts(ctx context.Context, actor Principal, keyword string, status string, limit int) ([]contract.Contract, error) {
+	page, err := s.ListContractsPage(ctx, actor, contract.ContractListQuery{Keyword: keyword, Status: status, Limit: limit})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+// ListContractsPage 按关键字/状态/类型筛选合同台账并返回分页结果。
+// 参数：actor 为已认证主体，query.Offset 从 0 开始，query.Limit 越界时按 contractLedgerDefaultLimit 回退。
+// 返回值：页信封（items/total/page/page_size）或权限/仓储错误；items 永不为 nil。
+func (s *Service) ListContractsPage(ctx context.Context, actor Principal, query contract.ContractListQuery) (contract.ContractPage, error) {
 	filter, ok := s.contractScope(actor, "contract.read")
 	if !ok {
-		return nil, ErrForbidden
+		return contract.ContractPage{}, ErrForbidden
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	query.Keyword = strings.TrimSpace(query.Keyword)
+	query.Status = strings.TrimSpace(query.Status)
+	query.Type = strings.TrimSpace(query.Type)
+	query.Expired = strings.TrimSpace(query.Expired)
+	if query.Limit <= 0 || query.Limit > contractLedgerMaxPageSize {
+		query.Limit = contractLedgerDefaultLimit
 	}
-	if scoped, ok := s.Repo.(ScopedRepository); ok {
-		items, err := scoped.ListContractsScoped(ctx, filter, keyword, status, limit)
-		for i := range items {
-			items[i].CanEditDraft = s.CanEditDraft(actor, items[i])
+	if query.Offset < 0 || query.Offset/query.Limit >= contractLedgerMaxPage {
+		query.Offset = 0
+	}
+	// 生产 MySQL 仓储实现 ContractPageRepository：类型筛选、分页和计数都在 SQL 里完成，
+	// 数据范围（租户/责任范围）由 applyContractScope 在同一个 where 链上先行收窄。
+	if pageRepo, ok := s.Repo.(ContractPageRepository); ok {
+		page, err := pageRepo.ListContractsPageScoped(ctx, filter, query)
+		if err != nil {
+			return contract.ContractPage{}, err
 		}
-		return items, err
+		if page.Items == nil {
+			page.Items = []contract.Contract{}
+		}
+		// 生产仓储已在 COUNT 之后把 offset 收敛到真实 total；这里用同一口径重算信封，
+		// 保证不自行收敛的兼容/替身实现也不会把请求页码（如 page=90000）原样回声：
+		// 超出末尾时返回空页 + 真实 total + 收敛后的页码。
+		offset := contract.ClampContractListOffset(query.Offset, page.Total)
+		page.Page, page.PageSize = offset/query.Limit+1, query.Limit
+		for i := range page.Items {
+			page.Items[i].CanEditDraft = s.CanEditDraft(actor, page.Items[i])
+		}
+		return page, nil
 	}
-	if !filter.AllowAll && !filter.AllowSelf && len(filter.OrganizationIDs) == 0 && len(filter.ProjectIDs) == 0 {
-		return nil, ErrForbidden
+	// 回退路径：仓储只实现旧方法（替身、兼容实现）时先按旧语义取数，再在内存里补齐
+	// 类型筛选与分页。取数窗口覆盖到 offset+limit，且不超过仓储的 200 行上限。
+	fetchLimit := query.Offset + query.Limit
+	if fetchLimit > contractLedgerMaxPageSize {
+		fetchLimit = contractLedgerMaxPageSize
 	}
-	ownerUserID := ""
-	if filter.AllowSelf {
-		ownerUserID = actor.UserID
+	var (
+		items []contract.Contract
+		err   error
+	)
+	if scoped, ok := s.Repo.(ScopedRepository); ok {
+		items, err = scoped.ListContractsScoped(ctx, filter, query.Keyword, query.Status, fetchLimit)
+	} else {
+		if !filter.AllowAll && !filter.AllowSelf && len(filter.OrganizationIDs) == 0 && len(filter.ProjectIDs) == 0 {
+			return contract.ContractPage{}, ErrForbidden
+		}
+		ownerUserID := ""
+		if filter.AllowSelf {
+			ownerUserID = actor.UserID
+		}
+		items, err = s.Repo.ListContracts(ctx, actor.TenantID, query.Keyword, ownerUserID, query.Status, fetchLimit)
+		if err == nil {
+			items = filterContracts(items, filter)
+		}
 	}
-	items, err := s.Repo.ListContracts(ctx, actor.TenantID, keyword, ownerUserID, status, limit)
-	for i := range items {
-		items[i].CanEditDraft = s.CanEditDraft(actor, items[i])
+	if err != nil {
+		return contract.ContractPage{}, err
 	}
-	return filterContracts(items, filter), err
+	items = filterContractsByType(items, query.Type)
+	if expired, ok := query.ExpiredFilter(); ok {
+		items = filterContractsByExpiry(items, expired)
+	}
+	// 回退路径的 total 是「本窗口能看到的行数」（最多 200），所以 offset 只能收敛到它：
+	// 否则超范围 offset 会带着一个不存在的页码切空气页，信封与 total 自相矛盾。
+	offset := contract.ClampContractListOffset(query.Offset, int64(len(items)))
+	page := contractLedgerSlice(items, offset, query.Limit)
+	for i := range page {
+		page[i].CanEditDraft = s.CanEditDraft(actor, page[i])
+	}
+	return contract.ContractPage{Items: page, Total: int64(len(items)), Page: offset/query.Limit + 1, PageSize: query.Limit}, nil
+}
+
+// filterContractsByType 在内存里按合同类型精确匹配；仅用于没有服务端类型筛选的兼容仓储。
+func filterContractsByType(items []contract.Contract, contractType string) []contract.Contract {
+	if contractType == "" {
+		return items
+	}
+	result := make([]contract.Contract, 0, len(items))
+	for _, item := range items {
+		if item.Type == contractType {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// filterContractsByExpiry 在内存里按「已过期」派生口径筛选，仅用于没有服务端
+// 过期谓词的兼容仓储（替身、旧实现）。规则与 contractLedgerFilters 的 SQL 谓词同源：
+// 状态属于 contract.ExpiryStatuses 且到期日按北京日历日严格早于今天；
+// 到期日为空视为未过期（与前端 isContractExpired 一致）。
+// 参数：expired 为 true 取已过期行，false 取其否定。
+func filterContractsByExpiry(items []contract.Contract, expired bool) []contract.Contract {
+	result := make([]contract.Contract, 0, len(items))
+	for _, item := range items {
+		isExpired := item.Status.ExpiryTracked() && item.EndDate != nil &&
+			businessclock.CalendarDayBefore(*item.EndDate, businessclock.Now())
+		if isExpired == expired {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// contractLedgerSlice 取分页窗口；越界时返回空切片而不是 panic。
+func contractLedgerSlice(items []contract.Contract, offset, limit int) []contract.Contract {
+	if offset >= len(items) {
+		return []contract.Contract{}
+	}
+	end := offset + limit
+	if end > len(items) || end < offset {
+		end = len(items)
+	}
+	return items[offset:end]
 }
 
 func (s *Service) ContractDashboard(ctx context.Context, actor Principal) (contract.Dashboard, error) {

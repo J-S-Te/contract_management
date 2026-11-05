@@ -32,18 +32,18 @@ type ValidatedSource struct {
 // 返回值：格式、规范MIME、原件哈希及可提取正文；非法原件返回错误。
 func ValidateExternalSource(filename, mediaType string, body []byte) (ValidatedSource, error) {
 	if strings.ContainsAny(filename, "\x00\r\n") {
-		return ValidatedSource{}, fmt.Errorf("源文件名称无效")
+		return ValidatedSource{}, Reject(CodeSourceNameInvalid, "源文件名称无效")
 	}
 	name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/"))
 	if name == "." || len([]rune(name)) > 255 {
-		return ValidatedSource{}, fmt.Errorf("源文件名称无效")
+		return ValidatedSource{}, Reject(CodeSourceNameInvalid, "源文件名称无效")
 	}
 	declared := ""
 	if mediaType != "" {
 		var err error
 		declared, _, err = mime.ParseMediaType(mediaType)
 		if err != nil {
-			return ValidatedSource{}, fmt.Errorf("源文件MIME无效")
+			return ValidatedSource{}, Reject(CodeSourceMIMEInvalid, "源文件MIME无效")
 		}
 	}
 	source := ValidatedSource{Filename: name, SHA256: fmt.Sprintf("%x", sha256.Sum256(body))}
@@ -56,18 +56,18 @@ func ValidateExternalSource(filename, mediaType string, body []byte) (ValidatedS
 	case ".docx":
 		source.Format, source.MediaType = FormatDOCX, DOCXMediaType
 		if err := docx.ValidateExternalDocument(body); err != nil {
-			return ValidatedSource{}, err
+			return ValidatedSource{}, Reject(CodeDOCXInvalid, err.Error())
 		}
 		text, err := docx.PlainText(body)
 		if err != nil || strings.TrimSpace(text) == "" {
-			return ValidatedSource{}, fmt.Errorf("外部DOCX正文不能为空")
+			return ValidatedSource{}, Reject(CodeDOCXEmptyText, "外部DOCX正文不能为空")
 		}
 		source.Text = text
 	default:
-		return ValidatedSource{}, fmt.Errorf("源文件只支持DOCX或PDF")
+		return ValidatedSource{}, Reject(CodeSourceTypeUnsupported, "源文件只支持DOCX或PDF")
 	}
 	if declared != "" && declared != "application/octet-stream" && declared != source.MediaType {
-		return ValidatedSource{}, fmt.Errorf("源文件MIME与格式不一致")
+		return ValidatedSource{}, Reject(CodeSourceMIMEMismatch, "源文件MIME与格式不一致")
 	}
 	return source, nil
 }
@@ -81,7 +81,7 @@ func EffectiveDocumentFormat(format string, document []byte) (string, error) {
 	}
 	if format == "" || format == FormatDOCX {
 		if err := docx.ValidateExternalDocument(document); err != nil {
-			return "", err
+			return "", Reject(CodeDOCXInvalid, err.Error())
 		}
 		return FormatDOCX, nil
 	}
@@ -99,7 +99,7 @@ func EffectiveDocumentFormat(format string, document []byte) (string, error) {
 // 返回值：通过离线结构准入时为nil；不执行脚本、不验签或改写源字节。
 func validatePDF(body []byte) error {
 	if !contractpdf.Valid(body) {
-		return fmt.Errorf("PDF为空、损坏或超过20MiB")
+		return Reject(CodePDFInvalid, "PDF为空、损坏或超过20MiB")
 	}
 	// 名称策略交给解码后的对象检查，原始流、注释和字符串可能合法包含同名字节。
 	return validatePDFStructure(body)

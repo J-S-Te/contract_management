@@ -1,6 +1,9 @@
 package contract
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Contract struct {
 	ID                     string            `json:"id"`
@@ -13,6 +16,11 @@ type Contract struct {
 	OpportunityID          string            `json:"opportunity_id,omitempty"`
 	OpportunityName        string            `json:"opportunity_name,omitempty"`
 	CRMCustomerID          uint64            `json:"crm_customer_id,omitempty"`
+	CounterpartySource     string            `json:"counterparty_source,omitempty"`
+	LocalCounterpartyID    string            `json:"local_counterparty_id,omitempty"`
+	CounterpartyVersion    uint64            `json:"counterparty_version,omitempty"`
+	CategorySource         string            `json:"category_source,omitempty"`
+	IntegrationPolicy      string            `json:"-"`
 	CustomerName           string            `json:"customer_name,omitempty"`
 	CustomerAddress        string            `json:"customer_address,omitempty"`
 	CustomerContact        string            `json:"customer_contact,omitempty"`
@@ -68,21 +76,85 @@ type ScopeFilter struct {
 	AllowSelf       bool
 }
 
+// ContractListQuery 是合同台账的服务端筛选与分页条件。
+// Type 精确匹配 con_contract.contract_type：取值来自 CONTRACT_TYPE 字典（外部合同为
+// 直签/三方），这里按等值 SQL 过滤而不做枚举校验——未知值自然返回空集，与 Status 口径一致。
+// Offset 从 0 开始；Limit 越界由服务层钳制。
+type ContractListQuery struct {
+	Keyword string
+	Status  string
+	Type    string
+	// Expired 是台账「已过期」派生徽标的服务端筛选：只接受 "true"/"false"
+	// （忽略大小写与两端空白），其它取值（含空串、非法值）表示不筛选——与
+	// Status/Type 的宽松口径一致，非法值不返回 422，而是退化成不过滤。
+	Expired string
+	Offset  int
+	Limit   int
+}
+
+// ExpiredFilter 解析 Expired 筛选值，是「expired=true|false」参数契约的唯一解析点：
+// 仓储 SQL 与服务层内存兼容路径都必须经由它，避免两处口径分叉。
+// 返回值：filter 为是否只看已过期；ok 为是否启用该筛选（false 表示不追加任何谓词）。
+func (q ContractListQuery) ExpiredFilter() (filter bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(q.Expired)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// ContractPage 是合同台账的分页信封。只有显式带 page/page_size 的请求才返回该形状；
+// 旧调用方（内置 web 页、脚本、跨系统同步）继续收到裸数组，见
+// internal/transport/httpapi/router.go 的 listContracts。
+type ContractPage struct {
+	Items    []Contract `json:"items"`
+	Total    int64      `json:"total"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"page_size"`
+}
+
+// ClampContractListOffset 把请求 offset 收敛到 COUNT(*) 给出的真实数据边界：min(offset, total)。
+// 参数：offset 为从 0 开始的请求偏移（负值按 0 处理），total 为同一组筛选谓词命中的行数。
+// 返回值：可安全执行取页语句的 offset，永远不会超过 total。
+//
+// 动机：offset 直接进 SQL 的 OFFSET 时，深页请求（page=90000&page_size=200 →
+// OFFSET 17,999,800）会让 MySQL 先扫完并丢弃过滤集里的所有行才返回空页；按 total
+// 收敛后，最深的语句最多丢弃 total 行，不再随页码放大。
+//
+// 语义边界：total 为 0（过滤集为空）时原样返回 offset——没有可丢弃的行，OFFSET 不带来
+// 额外扫描成本，保持请求值也避免改写空台账的信封。请求页超出末尾时取页语句绑定
+// offset = total（空页），页码为 total/limit+1；total 恰为 limit 整数倍时该页码比
+// 最后一页大 1，反映的是「offset 已经到数据末尾」而不是最后一页。
+func ClampContractListOffset(offset int, total int64) int {
+	if offset < 0 {
+		return 0
+	}
+	if total <= 0 || int64(offset) <= total {
+		return offset
+	}
+	return int(total)
+}
+
 type SystemInfo struct {
 	Name  string `json:"name"`
 	Level string `json:"level"`
 }
 
 type ServiceItem struct {
-	SourceID    string       `json:"source_id,omitempty"`
-	Name        string       `json:"name,omitempty"`
-	ServiceType string       `json:"service_type"`
-	Site        string       `json:"site,omitempty"`
-	Batch       string       `json:"batch,omitempty"`
-	Category    string       `json:"category,omitempty"`
-	Requirement string       `json:"requirement,omitempty"`
-	TestMode    string       `json:"test_mode,omitempty"`
-	Systems     []SystemInfo `json:"systems,omitempty"`
+	CategoryID      string       `json:"category_id,omitempty"`
+	CategoryVersion uint64       `json:"category_version,omitempty"`
+	SourceID        string       `json:"source_id,omitempty"`
+	Name            string       `json:"name,omitempty"`
+	ServiceType     string       `json:"service_type"`
+	Site            string       `json:"site,omitempty"`
+	Batch           string       `json:"batch,omitempty"`
+	Category        string       `json:"category,omitempty"`
+	Requirement     string       `json:"requirement,omitempty"`
+	TestMode        string       `json:"test_mode,omitempty"`
+	Systems         []SystemInfo `json:"systems,omitempty"`
 }
 
 type StampedDocument struct {

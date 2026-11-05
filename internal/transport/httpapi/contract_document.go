@@ -22,7 +22,13 @@ func (h *Handler) contractSourceCapabilities(c *gin.Context) {
 		writeError(c, application.ErrForbidden)
 		return
 	}
-	writeData(c, http.StatusOK, map[string]any{"pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
+	counterpartySource, categorySource := "crm", "project"
+	if h.service != nil && h.service.ContractSources != nil {
+		counterpartySource = h.service.ContractSources.CounterpartySource
+		categorySource = h.service.ContractSources.CategorySource
+	}
+	_, canManageCatalog := actor.Scope("contract.catalog.manage")
+	writeData(c, http.StatusOK, map[string]any{"counterparty_source": counterpartySource, "category_source": categorySource, "local_catalog_manage": canManageCatalog, "pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
 		"batch_enabled": h.service != nil && h.service.ContractImportEnabled, "supported_modes": h.service.AvailableImportModes(),
 		"max_docx_bytes": 10 << 20, "max_pdf_bytes": contractdocument.MaxPDFSize})
 }

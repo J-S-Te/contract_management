@@ -26,7 +26,14 @@ func importFieldIssues(item contract.ImportItem) []contract.ImportIssue {
 	if m.ContractType != "直签" && m.ContractType != "三方" {
 		add("metadata.contract_type", "UNSUPPORTED_ENUM")
 	}
-	if m.CRMCustomerID == 0 {
+	if m.CounterpartySource == contract.CounterpartyLocal {
+		if item.Mode != contract.ImportNormal {
+			add("metadata.counterparty_source", "LOCAL_HISTORY_UNSUPPORTED")
+		}
+		if m.LocalCounterpartyID == "" || m.CounterpartyVersion == 0 || m.CRMCustomerID != 0 || m.OpportunityID != "" || m.OpportunityName != "" {
+			add("metadata.local_counterparty_id", "LOCAL_REFERENCE_INVALID")
+		}
+	} else if m.CRMCustomerID == 0 {
 		add("metadata.crm_customer_id", "REQUIRED")
 	}
 	if strings.TrimSpace(m.CustomerName) == "" {
@@ -77,10 +84,11 @@ func importFieldIssues(item contract.ImportItem) []contract.ImportIssue {
 // 返回值：无原件字节和内部文件身份的规范元数据。
 func normalizedImportMetadata(c contract.Contract) *contract.ImportMetadata {
 	return &contract.ImportMetadata{Title: c.Title,
-		ContractType:        c.Type,
-		ServiceType:         c.ServiceType,
-		OpportunityID:       c.OpportunityID,
-		OpportunityName:     c.OpportunityName,
+		ContractType:       c.Type,
+		ServiceType:        c.ServiceType,
+		OpportunityID:      c.OpportunityID,
+		OpportunityName:    c.OpportunityName,
+		CounterpartySource: c.CounterpartySource, LocalCounterpartyID: c.LocalCounterpartyID, CounterpartyVersion: c.CounterpartyVersion, CategorySource: c.CategorySource,
 		CRMCustomerID:       c.CRMCustomerID,
 		CustomerName:        c.CustomerName,
 		CustomerAddress:     c.CustomerAddress,

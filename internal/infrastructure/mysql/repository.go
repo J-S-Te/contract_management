@@ -205,20 +205,57 @@ func (r *Repository) GetContractScoped(ctx context.Context, filter contract.Scop
 	return items[0], nil
 }
 
-func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.ScopeFilter, keyword, status string, limit int) ([]contract.Contract, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	query := applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter)
-	if keyword != "" {
-		pattern := "%" + keyword + "%"
+// contractLedgerOrder 是合同台账的稳定排序：先按更新时间倒序，再用主键破平，
+// 否则同一 updated_at 的多行在翻页时顺序不稳定，相邻页会漏行或重复。
+const contractLedgerOrder = "updated_at DESC, id DESC"
+
+// contractLedgerFilters 追加台账的业务筛选谓词（关键字/状态/类型/已过期）。
+// 数据范围（租户/责任/组织/项目）必须由调用方在这之前应用到同一个 where 链上。
+// 关键字模式由 literalLikePattern 生成：% _ \ 按字面量转义（MySQL LIKE 默认转义符
+// 为反斜杠，故 SQL 不写 ESCAPE 子句），与已批准合同引用查询同一口径，
+// 否则 "100%" 这类关键字会退化成通配符，命中行数与 total 都被放大。
+// 绑定顺序固定为 keyword ×3 → status → type → expired（IN 的 3 个状态 → 今天），
+// 调用方与测试依赖该顺序。
+func contractLedgerFilters(query *gorm.DB, filter contract.ContractListQuery) *gorm.DB {
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		pattern := literalLikePattern(keyword)
 		query = query.Where("(contract_number LIKE ? OR title LIKE ? OR customer_name LIKE ?)", pattern, pattern, pattern)
 	}
-	if status != "" {
+	if status := strings.TrimSpace(filter.Status); status != "" {
 		query = query.Where("status = ?", status)
 	}
+	if contractType := strings.TrimSpace(filter.Type); contractType != "" {
+		query = query.Where("contract_type = ?", contractType)
+	}
+	if expired, ok := filter.ExpiredFilter(); ok {
+		// 「已过期」与前端 isContractExpired 同口径：状态属于 ExpiryStatuses
+		// （生效/执行中/待收款）且到期日严格早于北京今天；到期日当天仍有效。
+		// end_date 是 DATE 列、按 UTC 墙钟保存，所以「今天」必须用 CalendarDay 的
+		// 「同日 00:00 UTC 墙钟」形式绑定：传北京 00:00 会被驱动换算成前一天 16:00，
+		// 让到期日当天被误判成已过期。
+		// expired=false 是该规则的否定（不是 status != active）：到期日为空的行
+		// 视为未过期，与前端「缺 end_date 不判定为过期」一致。
+		today := businessclock.CalendarDay(businessclock.Now())
+		statuses := contract.ExpiryStatuses()
+		if expired {
+			query = query.Where("(status IN ? AND end_date IS NOT NULL AND end_date < ?)", statuses, today)
+		} else {
+			query = query.Where("(status NOT IN ? OR end_date IS NULL OR end_date >= ?)", statuses, today)
+		}
+	}
+	return query
+}
+
+// ListContractsScoped 返回当前数据范围内的合同，固定第一页、不统计总数（旧协议）。
+// 谓词与 ListContractsPageScoped 共用 contractLedgerFilters，类型筛选口径不会分叉。
+func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.ScopeFilter, keyword, status string, limit int) ([]contract.Contract, error) {
+	query := contract.ContractListQuery{Keyword: keyword, Status: status, Limit: limit}
+	if query.Limit <= 0 || query.Limit > 200 {
+		query.Limit = 50
+	}
+	built := contractLedgerFilters(applyContractScope(r.db.WithContext(ctx).Model(&contractRecord{}), filter), query)
 	var records []contractRecord
-	if err := query.Omit("rendered_document", "template_values_json").Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+	if err := built.Omit("rendered_document", "template_values_json").Order(contractLedgerOrder).Limit(query.Limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]contract.Contract, 0, len(records))
@@ -226,6 +263,65 @@ func (r *Repository) ListContractsScoped(ctx context.Context, filter contract.Sc
 		result = append(result, contractFromRecord(record))
 	}
 	return r.attachPaymentTerms(ctx, filter.TenantID, result)
+}
+
+// ListContractsPageScoped 在服务端完成数据范围 + 关键字 + 状态 + 类型筛选、总数统计和分页。
+// 参数：filter 为租户/责任范围，query.Offset 从 0 开始，query.Limit 越界回退到 50。
+// 返回值：合同分页信封；计数与取页使用同一组谓词，total 不会被 limit 截断。
+//
+// 资源成本：每次翻页都要跑一条 COUNT(*)，它必须扫完过滤集（tenant/责任范围 + 关键字/
+// 状态/类型/已过期），这部分成本无法靠分页消除；本方法能消除的是「深 OFFSET 再扫一遍」
+// 的放大——先拿到真实 total，再把取页语句的 OFFSET 收敛到 total 以内（见
+// listContractsPageAfterCount）。若台账继续增长、COUNT 成为瓶颈，下一步应改为游标
+// （id/updated_at keyset）分页，而不是继续加大页码上限。
+func (r *Repository) ListContractsPageScoped(ctx context.Context, filter contract.ScopeFilter, query contract.ContractListQuery) (contract.ContractPage, error) {
+	query = contractLedgerPagingDefaults(query)
+	db := r.db.WithContext(ctx)
+	var total int64
+	countQuery := contractLedgerFilters(applyContractScope(db.Model(&contractRecord{}), filter), query)
+	if err := countQuery.Count(&total).Error; err != nil {
+		return contract.ContractPage{}, err
+	}
+	return r.listContractsPageAfterCount(ctx, filter, query, total)
+}
+
+// listContractsPageAfterCount 在已知真实 total 之后执行取页语句。
+// 参数：total 为 COUNT(*) 的命中数（必须与取页谓词同源）；返回值：分页信封。
+//
+// 关键约束：OFFSET 必须先经 contract.ClampContractListOffset 收敛到 total 以内，
+// 否则 page=90000&page_size=200 会生成 OFFSET 17,999,800，MySQL 得扫完过滤集再丢弃
+// 这些行才返回空页——单请求就能吃掉数秒 CPU/IO。收敛后信封里的 page 也按收敛后的
+// offset 计算，调用方不会看到不存在的页码。
+func (r *Repository) listContractsPageAfterCount(ctx context.Context, filter contract.ScopeFilter, query contract.ContractListQuery, total int64) (contract.ContractPage, error) {
+	query = contractLedgerPagingDefaults(query)
+	offset := contract.ClampContractListOffset(query.Offset, total)
+	db := r.db.WithContext(ctx)
+	pageQuery := contractLedgerFilters(applyContractScope(db.Model(&contractRecord{}), filter), query)
+	var records []contractRecord
+	if err := pageQuery.Omit("rendered_document", "template_values_json").Order(contractLedgerOrder).Offset(offset).Limit(query.Limit).Find(&records).Error; err != nil {
+		return contract.ContractPage{}, err
+	}
+	result := make([]contract.Contract, 0, len(records))
+	for _, record := range records {
+		result = append(result, contractFromRecord(record))
+	}
+	items, err := r.attachPaymentTerms(ctx, filter.TenantID, result)
+	if err != nil {
+		return contract.ContractPage{}, err
+	}
+	return contract.ContractPage{Items: items, Total: total, Page: offset/query.Limit + 1, PageSize: query.Limit}, nil
+}
+
+// contractLedgerPagingDefaults 归一化分页窗口：limit 越界回退到 50（与旧 ListContracts 一致），
+// 负 offset 归零。COUNT 与取页都基于归一化后的 query，两条语句的分页口径不会分叉。
+func contractLedgerPagingDefaults(query contract.ContractListQuery) contract.ContractListQuery {
+	if query.Limit <= 0 || query.Limit > 200 {
+		query.Limit = 50
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+	return query
 }
 
 func applyContractScope(query *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
@@ -254,22 +350,16 @@ func applyContractScope(query *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
 }
 
 func (r *Repository) ListContracts(ctx context.Context, tenantID, keyword, ownerUserID, status string, limit int) ([]contract.Contract, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
+	query := contract.ContractListQuery{Keyword: keyword, Status: status, Limit: limit}
+	if query.Limit <= 0 || query.Limit > 200 {
+		query.Limit = 50
 	}
-	query := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID)
-	if keyword != "" {
-		pattern := "%" + keyword + "%"
-		query = query.Where("(contract_number LIKE ? OR title LIKE ? OR customer_name LIKE ?)", pattern, pattern, pattern)
-	}
+	built := contractLedgerFilters(r.db.WithContext(ctx).Where("tenant_id = ?", tenantID), query)
 	if ownerUserID != "" {
-		query = query.Where("owner_user_id = ?", ownerUserID)
-	}
-	if status != "" {
-		query = query.Where("status = ?", status)
+		built = built.Where("owner_user_id = ?", ownerUserID)
 	}
 	var records []contractRecord
-	if err := query.Omit("rendered_document", "template_values_json").Order("updated_at DESC").Limit(limit).Find(&records).Error; err != nil {
+	if err := built.Omit("rendered_document", "template_values_json").Order(contractLedgerOrder).Limit(query.Limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]contract.Contract, 0, len(records))

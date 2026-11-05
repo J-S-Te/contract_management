@@ -258,6 +258,9 @@ func financialEffectiveSkipReason(row *contractRecord, terms []paymentTermRecord
 	if row == nil {
 		return financialSkipNotOrdinary
 	}
+	if row.IntegrationPolicy == contract.IntegrationNotApplicable && (row.CounterpartySource == contract.CounterpartyLocal || row.CategorySource == contract.CategoryLocal) {
+		return "local_source_not_applicable"
+	}
 	if !ordinaryContractRecord(*row) {
 		return financialSkipNotOrdinary
 	}
@@ -287,6 +290,9 @@ func financialEffectiveEligible(tx *gorm.DB, tenantID, contractID string) (*cont
 	var row contractRecord
 	if err := tx.Where("tenant_id = ? AND id = ?", tenantID, contractID).Take(&row).Error; err != nil {
 		return nil, nil, false, err
+	}
+	if skip, err := localOutboundNotApplicable(row); err != nil || skip {
+		return &row, nil, false, err
 	}
 	var terms []paymentTermRecord
 	if err := tx.Where("tenant_id = ? AND contract_id = ?", tenantID, contractID).
@@ -387,7 +393,7 @@ const financialEventVersionClause = "o.tenant_id = c.tenant_id AND o.contract_id
 func (r *Repository) ReconcileFinancialEffectives(ctx context.Context) (int, error) {
 	var candidates []projectDeliveryCandidate
 	err := ordinaryContractScope(r.db.WithContext(ctx).Table("con_contract AS c"), "c").
-		Select("c.tenant_id, c.id AS contract_id").
+		Select("c.tenant_id, c.id AS contract_id").Where("(c.integration_policy IS NULL OR c.integration_policy <> ?)", contract.IntegrationNotApplicable).
 		Where("c.status IN ?", projectDeliveryEligibleStatuses()).
 		Where("EXISTS (SELECT 1 FROM con_contract_payment_term AS t WHERE t.tenant_id = c.tenant_id AND t.contract_id = c.id)").
 		Where("NOT EXISTS (SELECT 1 FROM con_financial_effective_outbox AS o WHERE " + financialEventVersionClause + ")").
@@ -463,6 +469,11 @@ func (r *Repository) ApplyContractFinancialChange(ctx context.Context, tenantID 
 				return apperrors.ErrNotFound
 			}
 			return err
+		}
+		if skip, err := localOutboundNotApplicable(row); err != nil {
+			return err
+		} else if skip {
+			return application.ErrContractSourceConflict
 		}
 		// 纵深防御：行上的租户必须与可信租户一致，跨租户请求一律按不存在处理。
 		if row.TenantID != tenantID {
