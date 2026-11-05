@@ -21,6 +21,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
 	"github.com/j-s-te/contract-management/internal/integration/crm"
 	notificationintegration "github.com/j-s-te/contract-management/internal/integration/notification"
+	platformintegration "github.com/j-s-te/contract-management/internal/integration/platform"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	settlementintegration "github.com/j-s-te/contract-management/internal/integration/settlement"
 	"github.com/j-s-te/contract-management/internal/transport/httpapi"
@@ -149,6 +150,21 @@ func main() {
 		crmTokenSource := crm.NewClientCredentialsTokenSource(ctx, cfg.CRMReferenceTokenURL, cfg.CRMReferenceClientID, cfg.CRMReferenceClientSecret, cfg.CRMReferenceScope)
 		crmContractReferences = &crm.ContractReferenceDirectory{BaseURL: cfg.CRMReferenceBaseURL, TokenSource: crmTokenSource}
 	}
+	// 历史导入自动开立 CRM：平台侧一用途一 client 一 scope，客户链路与商机链路
+	// 必须各用一对专用凭据（多 scope 会在令牌端点 invalid_scope）。开关关闭时
+	// 三个客户端都保持 nil，Service 不装配，启动不受残留配置影响。
+	var crmProvisionClients application.CRMProvisionClients
+	if cfg.ContractImportCRMProvisionEnabled {
+		crmProvisionClients.Customer = crm.NewImportProvisionClient(ctx, cfg.CRMProvisionBaseURL,
+			cfg.CRMProvisionTokenURL, cfg.CRMProvisionClientID, cfg.CRMProvisionClientSecret, cfg.CRMProvisionScope)
+		crmProvisionClients.Opportunity = crm.NewImportProvisionClient(ctx, cfg.CRMProvisionBaseURL,
+			cfg.CRMProvisionTokenURL, cfg.CRMProvisionOpportunityClientID, cfg.CRMProvisionOpportunityClientSecret, cfg.CRMProvisionOpportunityScope)
+		// 销售姓名解析复用既有平台负责人目录凭据（scope owner_directory.read）
+		// 与平台 origin：真实路由是 /api/v1/internal/owner-directory，前缀由客户端补全。
+		crmProvisionClients.Owners = platformintegration.NewOwnerDirectoryClient(cfg.PlatformBaseURL,
+			strings.TrimRight(cfg.PlatformBaseURL, "/")+"/oauth2/token",
+			cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret)
+	}
 	service := &application.Service{
 		ContractSources:                 &application.ContractSourceOptions{CounterpartySource: cfg.CounterpartySource, CategorySource: cfg.CategorySource, Catalog: repository, Targets: platform.NewLocalCatalogTargetDirectory(personnelDirectory, cfg.OIDCTenantID), ProjectIntegrationEnabled: cfg.ProjectIntegrationEnabled, SettlementIntegrationEnabled: cfg.SettlementIntegrationEnabled, CRMLinkEnabled: cfg.CRMLinkEnabled},
 		ExternalPDFEnabled:              cfg.ExternalPDFEnabled,
@@ -167,6 +183,12 @@ func main() {
 		Personnel:                       personnelDirectory,
 		DetectionCategories:             projectDetectionCategories,
 		CRMContractReferences:           crmContractReferences,
+	}
+	// 注入点只做装配：编排（预览 NEEDS_PROVISION / 确认期逐项开立）在下一路实现。
+	// 开启但任一依赖缺失即启动失败，避免开关打开后静默不生效。
+	if provisionErr := service.ConfigureCRMProvision(cfg.ContractImportCRMProvisionEnabled, crmProvisionClients); provisionErr != nil {
+		logger.Error("CRM import provision integration configuration failed", "error", provisionErr)
+		os.Exit(1)
 	}
 	if cfg.CRMLinkEnabled {
 		service.OpportunityLinkNotifier = &crm.LinkNotifier{LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, TokenSource: crmLinkTokenSource, Client: &http.Client{Timeout: 5 * time.Second}}
