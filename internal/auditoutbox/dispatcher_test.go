@@ -83,6 +83,89 @@ func TestDeliverMarksSuccess(t *testing.T) {
 	}
 }
 
+// ctxSensitiveStore 模拟真实仓储：ctx 已取消时认领与回写都会失败。
+// 用它才能验证“取消后仍用独立 ctx 完成落库”，而不是只看调用次数。
+type ctxSensitiveStore struct {
+	fakeStore
+	claims     int
+	persistErr []error
+}
+
+func (f *ctxSensitiveStore) Claim(ctx context.Context, workerID string, limit int, now time.Time) ([]Entry, error) {
+	f.claims++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return f.fakeStore.Claim(ctx, workerID, limit, now)
+}
+
+func (f *ctxSensitiveStore) MarkDelivered(ctx context.Context, id string, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		f.persistErr = append(f.persistErr, err)
+		return err
+	}
+	return f.fakeStore.MarkDelivered(ctx, id, now)
+}
+
+func (f *ctxSensitiveStore) MarkFailed(ctx context.Context, id, code string, retryAt, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		f.persistErr = append(f.persistErr, err)
+		return err
+	}
+	return f.fakeStore.MarkFailed(ctx, id, code, retryAt, now)
+}
+
+// cancellingReporter 在第一次上报中途取消进程 ctx，模拟 SIGTERM 落在批次中间。
+type cancellingReporter struct {
+	cancel context.CancelFunc
+	fired  bool
+	events []platform.AuditEvent
+}
+
+func (f *cancellingReporter) Report(_ context.Context, event platform.AuditEvent) error {
+	f.events = append(f.events, event)
+	if !f.fired {
+		f.fired = true
+		f.cancel()
+	}
+	return nil
+}
+
+// 收到 SIGTERM 时已认领的批次必须用独立 ctx 完成落库，且不得再领取新批次：
+// 否则 MarkDelivered/MarkFailed 二次失败，行停在 CLAIMED 等租约过期。
+func TestRunDrainsInFlightBatchAfterCancellation(t *testing.T) {
+	store := &ctxSensitiveStore{fakeStore: fakeStore{entries: []Entry{
+		{ID: "row-1", EventID: "event-1", Action: "A", Result: "SUCCESS"},
+		{ID: "row-2", EventID: "event-2", Action: "A", Result: "SUCCESS"},
+		{ID: "row-3", EventID: "event-3", Action: "A", Result: "SUCCESS"},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reporter := &cancellingReporter{cancel: cancel}
+	dispatcher := &Dispatcher{Store: store, Reporter: reporter, WorkerID: "w1", BatchSize: 10, Poll: 10 * time.Millisecond}
+
+	done := make(chan struct{})
+	go func() {
+		dispatcher.Run(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ctx 取消后 Run 必须退出，不能在已取消的 ctx 上继续轮询")
+	}
+
+	if len(store.persistErr) != 0 {
+		t.Fatalf("落库复用了已取消的 ctx: %v", store.persistErr)
+	}
+	if len(store.delivered) != 3 {
+		t.Fatalf("delivered = %v，在途批次必须完成落库", store.delivered)
+	}
+	if store.claims != 1 {
+		t.Fatalf("claims = %d，取消后不得领取下一批", store.claims)
+	}
+}
+
 // 指数退避必须单调递增且有上限，避免平台长时间不可用时热循环。
 func TestBackoffGrowsAndCaps(t *testing.T) {
 	dispatcher := &Dispatcher{MaxBackoff: 16 * time.Second}

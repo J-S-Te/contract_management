@@ -21,6 +21,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/integration/crm"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	settlementintegration "github.com/j-s-te/contract-management/internal/integration/settlement"
+	"github.com/j-s-te/contract-management/internal/lifecycle"
 	"github.com/j-s-te/contract-management/internal/temporalworker"
 	"github.com/j-s-te/contract-management/internal/workflows"
 	"go.temporal.io/api/serviceerror"
@@ -44,6 +45,10 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// 退出预算：默认 20s，可用 CONTRACT_SHUTDOWN_DRAIN_SECONDS（秒）覆盖；
+	// 非法值或 <=0 回落默认，避免配置手误把进程退出变成立即杀后台或无限等待。
+	shutdownBudget := lifecycle.DrainBudget(os.Getenv("CONTRACT_SHUTDOWN_DRAIN_SECONDS"), lifecycle.DefaultDrainBudget)
+	background := lifecycle.NewWaiter(shutdownBudget)
 	licenseGate, err := bootstrap.StartCommercialLicense(ctx, logger)
 	if err != nil {
 		logger.Error("commercial license configuration failed")
@@ -87,31 +92,33 @@ func main() {
 			logger.Error("file gateway initialization failed", "error", err)
 			os.Exit(1)
 		}
-		go (&application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}).Run(ctx)
+		templateFileDispatcher := &application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}
+		background.Go("template-file-outbox", func() { templateFileDispatcher.Run(ctx) })
 	}
 	// 合同→CRM 关联回写与 API 进程使用同一平台 client_credentials 专用用途令牌；
 	// 有效开关关闭时不构造令牌来源或回写投递器。
 	if cfg.CRMLinkEnabled {
-		go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
-			TokenSource: crm.NewClientCredentialsTokenSource(ctx, cfg.CRMLinkTokenURL, cfg.CRMLinkClientID, cfg.CRMLinkClientSecret, cfg.CRMLinkScope)}).Run(ctx)
+		crmLinkDispatcher := &crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger,
+			TokenSource: crm.NewClientCredentialsTokenSource(ctx, cfg.CRMLinkTokenURL, cfg.CRMLinkClientID, cfg.CRMLinkClientSecret, cfg.CRMLinkScope)}
+		background.Go("crm-link-outbox", func() { crmLinkDispatcher.Run(ctx) })
 	}
 	workflows.Register(w, &workflows.Activities{Store: repository, LicenseGate: licenseGate,
 		NumberAuditor: repository, NumberAuditMetrics: metrics, Logger: logger})
 	if cfg.ProjectIntegrationEnabled {
 		dispatcher := &projectintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
 			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.ProjectIntegrationTokenURL, cfg.ProjectIntegrationClientID, cfg.ProjectIntegrationClientSecret, cfg.ProjectIntegrationAudience)}
-		go dispatcher.Run(ctx)
+		background.Go("project-outbox", func() { dispatcher.Run(ctx) })
 	}
 	// 合同 → 结算 财务生效事件投递。与项目投递相互独立：项目投递可因来源校验未就绪而停用，
 	// 财务事件仍须按结算侧要求的机器令牌投递。
 	if cfg.SettlementIntegrationEnabled {
 		settlementDispatcher := &settlementintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.SettlementAPIBaseURL, MaxAttempts: cfg.SettlementIntegrationRetries, Poll: cfg.SettlementIntegrationPoll, Logger: logger,
 			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.SettlementIntegrationTokenURL, cfg.SettlementIntegrationClientID, cfg.SettlementIntegrationClientSecret, cfg.SettlementIntegrationAudience)}
-		go settlementDispatcher.Run(ctx)
+		background.Go("settlement-outbox", func() { settlementDispatcher.Run(ctx) })
 	}
 	// 保持轮询以支持恢复；过期会暂停新调度，且每个
 	// 活动均重检权益，包括过期前创建的工作流。
-	go func() {
+	background.Go("archive-cron", func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -128,14 +135,14 @@ func main() {
 			case <-ticker.C:
 			}
 		}
-	}()
+	})
 	// 合同编号登记表漂移的每日只读巡检：沿用归档 cron 的同一注册范式（30s ticker +
 	// 固定 workflow ID + CronSchedule），漂移只记日志/指标，不主动通知任何人。
 	// NUMBER_AUDIT_CRON_SCHEDULE 显式配成空串表示禁用：此时不注册该 cron。不能把空串
 	// 直接传给 CronSchedule——Temporal 会把空 cron 当成“只跑一次”而不是“不跑”。
 	// 巡检只读，因此刻意不套商业许可证写权限门禁（许可过期时仍需要看到数据漂移）。
 	if cfg.NumberAuditCron != "" {
-		go func() {
+		background.Go("number-audit-cron", func() {
 			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -150,7 +157,7 @@ func main() {
 				case <-ticker.C:
 				}
 			}
-		}()
+		})
 	} else {
 		logger.Info("contract number audit cron disabled", "reason", "NUMBER_AUDIT_CRON_SCHEDULE 为空")
 	}
@@ -164,5 +171,12 @@ func main() {
 	ready.Store(true)
 	<-ctx.Done()
 	ready.Store(false)
+	// Temporal Stop 顺序保持现状：先停 worker 再 join 后台投递 goroutine。
 	w.Stop()
+	// 投递 goroutine 随 ctx 取消返回；在途批次用独立 ctx 完成落库。
+	// 超预算列出未退出组件后以非零码退出，不 panic：与 platform/Settlement 一致，
+	// 后台组件没停下时不能以 0 退出，否则编排侧会把“排空超预算”误判成正常停机。
+	if !background.LogUnfinished(logger, "contract workflow worker", shutdownBudget) {
+		os.Exit(1)
+	}
 }
