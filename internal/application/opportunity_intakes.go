@@ -5,15 +5,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
 const (
 	OpportunityIntakeAccepted      = "ACCEPTED"
 	OpportunityIntakeLinkConfirmed = "LINK_CONFIRMED"
 	OpportunityIntakeLinkException = "LINK_EXCEPTION"
+
+	// maxOpportunityIntakeRefLength 与 con_opportunity_intake 的 VARCHAR(128) 列宽一致。
+	maxOpportunityIntakeRefLength = 128
 )
 
 // ErrOpportunityLinkRejected 表示商机核对命中了来源/状态/客户归属门禁。
@@ -67,8 +73,28 @@ func (s *Service) AcceptOpportunityIntake(ctx context.Context, intake Opportunit
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return OpportunityIntake{}, err
 	}
-	if strings.TrimSpace(intake.TenantID) == "" || strings.TrimSpace(intake.EventID) == "" || intake.OpportunityID == 0 || intake.EventVersion == 0 || strings.TrimSpace(intake.ContractRef) == "" || intake.OccurredAt.IsZero() {
+	intake.ContractRef = strings.TrimSpace(intake.ContractRef)
+	intake.OpportunityNo = strings.TrimSpace(intake.OpportunityNo)
+	intake.SourceRequestID = strings.TrimSpace(intake.SourceRequestID)
+	intake.ExpectedAmount = strings.TrimSpace(intake.ExpectedAmount)
+	if strings.TrimSpace(intake.TenantID) == "" || strings.TrimSpace(intake.EventID) == "" || intake.OpportunityID == 0 || intake.EventVersion == 0 || intake.ContractRef == "" || intake.OccurredAt.IsZero() {
 		return OpportunityIntake{}, ErrValidation
+	}
+	// 文本字段与 con_opportunity_intake 的 VARCHAR(128) 列宽对齐，超长在入库前拒绝。
+	for _, field := range []struct{ name, value string }{
+		{"contract_ref", intake.ContractRef},
+		{"opportunity_no", intake.OpportunityNo},
+		{"source_request_id", intake.SourceRequestID},
+	} {
+		if len([]rune(field.value)) > maxOpportunityIntakeRefLength {
+			return OpportunityIntake{}, fmt.Errorf("%w: %s 不能超过 %d 个字符", ErrValidation, field.name, maxOpportunityIntakeRefLength)
+		}
+	}
+	// 金额按合同域的十进制解析校验：拒绝符号、科学计数与三位以上小数。
+	// 解析以 int64 分为单位，其上限 92233720368547758.07 严格小于 DECIMAL(20,2) 的
+	// 999999999999999999.99，因此解析成功即保证写入不溢出、不被数据库静默舍入。
+	if _, err := contract.PaymentAmountMinor(intake.ExpectedAmount); err != nil {
+		return OpportunityIntake{}, fmt.Errorf("%w: expected_amount 必须是范围合法的两位小数金额", ErrValidation)
 	}
 	repo, ok := s.Repo.(OpportunityIntakeRepository)
 	if !ok {

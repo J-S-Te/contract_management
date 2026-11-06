@@ -32,6 +32,13 @@ const (
 	CountersignAny CountersignMode = "any"
 )
 
+// 节点处理时限的允许区间。0 表示沿用服务层的默认时限（既有语义），
+// 显式配置时必须落在一小时到三十天之间，避免出现瞬时过期或长期挂起的审批节点。
+const (
+	MinNodeTimeout = time.Hour
+	MaxNodeTimeout = 30 * 24 * time.Hour
+)
+
 type Node struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`

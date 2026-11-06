@@ -95,7 +95,7 @@ func NormalizeContractNumberRule(rule ContractNumberRule) (ContractNumberRule, e
 }
 
 // ContractNumberAffixAllowedChars 是前缀/后缀允许的字符集说明，与
-// contractNumberAffixAllowed 一一对应，用于错误消息与接口文档保持一致。
+// ContractNumberAffixAllowed 一一对应，用于错误消息与接口文档保持一致。
 const ContractNumberAffixAllowedChars = "只能包含字母、数字和 - _ . /"
 
 // validateContractNumberAffix 校验前缀/后缀是否落在下游系统可接受的字符白名单内。
@@ -109,17 +109,18 @@ func validateContractNumberAffix(label, value string) error {
 		return fmt.Errorf("%w: %s不能超过 %d 个字符", ErrInvalidNumberRule, label, ContractNumberAffixMaxLength)
 	}
 	for _, char := range value {
-		if !contractNumberAffixAllowed(char) {
+		if !ContractNumberAffixAllowed(char) {
 			return fmt.Errorf("%w: %s%s（当前含非法字符 %q）", ErrInvalidNumberRule, label, ContractNumberAffixAllowedChars, char)
 		}
 	}
 	return nil
 }
 
-// contractNumberAffixAllowed 判断单个字符是否属于前缀/后缀白名单：A-Z a-z 0-9 - _ . /
+// ContractNumberAffixAllowed 判断单个字符是否属于编号白名单：A-Z a-z 0-9 - _ . /
 // 参数：char 为待判断字符。
 // 返回值：允许时为 true。
-func contractNumberAffixAllowed(char rune) bool {
+// 该白名单同时被合同编号规则前缀/后缀和模板 number_format 复用，避免两处字符集漂移。
+func ContractNumberAffixAllowed(char rune) bool {
 	switch {
 	case char >= 'A' && char <= 'Z', char >= 'a' && char <= 'z', char >= '0' && char <= '9':
 		return true

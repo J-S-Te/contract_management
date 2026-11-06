@@ -80,13 +80,19 @@ func validatePDFStructure(body []byte) error {
 // forbiddenPDFName 对解码后的字典名及动作名执行统一准入策略。
 // 参数：name为PDF名称对象的原始或已解码值。
 // 返回值：禁止特征或非法名称为true。
+// 除脚本/嵌入/启动/加密外，这里同时拦截外部跳转动作（URI/GoToR/GoToE）、
+// 表单提交与数据导入（SubmitForm/ImportData）、附加动作与打开动作（AA/OpenAction）
+// 以及多媒体动作（Rendition/Sound/Movie）：它们都会让静态合同在阅读器中触发外部
+// 访问或非预期副作用，因此一律按活动内容拒绝。名称比较沿用PDF规范的大小写形式。
 func forbiddenPDFName(name string) bool {
 	decoded, err := types.DecodeName(name)
 	if err != nil {
 		return true
 	}
 	switch decoded {
-	case "JavaScript", "JS", "EmbeddedFile", "EmbeddedFiles", "Launch", "Encrypt":
+	case "JavaScript", "JS", "EmbeddedFile", "EmbeddedFiles", "Launch", "Encrypt",
+		"URI", "GoToR", "GoToE", "SubmitForm", "ImportData", "AA", "OpenAction",
+		"Rendition", "Sound", "Movie":
 		return true
 	}
 	return false

@@ -104,10 +104,25 @@ func (s *Service) GetImportBatch(ctx context.Context, actor Principal, id string
 	}
 	for _, permission := range importBatchReadPermissions {
 		if importAccess(actor, b, permission) == nil {
-			return b, nil
+			return importBatchForReader(b, actor), nil
 		}
 	}
-	return b, importConfirmationAccess(actor, b)
+	if e := importConfirmationAccess(actor, b); e != nil {
+		return b, e
+	}
+	return importBatchForReader(b, actor), nil
+}
+
+// importBatchForReader 按读取人收窄台账响应。
+// 参数：b为已通过权限复核的台账，actor为当前可信身份。
+// 返回值：创建人拿到原样台账；其他读取人（如独立审批人）拿到清空 preview_token 的副本。
+// 取舍：preview_token 是创建人提交预检的唯一凭据，审批人只需要台账事实，
+// 因此不把提交凭据序列化给非创建人，也不改变创建人的现有字段。
+func importBatchForReader(b contract.ImportBatch, actor Principal) contract.ImportBatch {
+	if b.ActorID != actor.UserID {
+		b.PreviewToken = ""
+	}
+	return b
 }
 
 // editableImport 确保在途和已建单基线不能被编辑覆盖。

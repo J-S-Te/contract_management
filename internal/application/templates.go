@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/docx"
+	"github.com/j-s-te/contract-management/internal/domain/contract"
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
 	"github.com/oklog/ulid/v2"
 )
@@ -226,6 +227,14 @@ func normalizeNumberFormat(value string) (string, error) {
 	remaining := strings.NewReplacer("{YYYYMMDD}", "", "{YYYY}", "", "{MM}", "", "{DD}", "", "{ID8}", "").Replace(value)
 	if strings.ContainsAny(remaining, "{}") {
 		return "", fmt.Errorf("%w: 合同编号格式包含不支持的占位符", ErrValidation)
+	}
+	// 占位符之外的固定文本与合同编号规则前缀/后缀共用同一字符白名单，
+	// 这样模板生成的单号不会因为中文、空格、括号或 # 在下游编号校验处被整条拒绝。
+	for _, char := range remaining {
+		if !contract.ContractNumberAffixAllowed(char) {
+			return "", fmt.Errorf("%w: 合同编号格式固定文本%s（当前含非法字符 %q）", ErrValidation,
+				contract.ContractNumberAffixAllowedChars, char)
+		}
 	}
 	return value, nil
 }

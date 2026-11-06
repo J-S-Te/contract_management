@@ -30,6 +30,16 @@ const (
 	OperatorIn  Operator = "in"
 )
 
+// 审批规则的规模上限。表达式按节点树递归匹配，规则按天被重复求值，
+// 因此必须在保存时限制节点、条件组、条件与嵌套深度，
+// 避免单条规则把匹配成本放大到不可控。
+const (
+	MaxRuleNodes            = 20
+	MaxExpressionGroups     = 50
+	MaxExpressionConditions = 50
+	MaxExpressionDepth      = 8
+)
+
 var ErrInvalidExpression = errors.New("invalid approval rule expression")
 
 type Expression struct {
@@ -111,6 +121,41 @@ func (e Expression) Match(f Facts) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// ValidateLimits 校验表达式的规模与嵌套深度上限。
+// 参数：无；从根表达式开始递归统计，根组本身计为一个条件组。
+// 返回值：超出条件组数、条件数或嵌套深度上限时返回 ErrInvalidExpression。
+func (e Expression) ValidateLimits() error {
+	counts := expressionLimits{}
+	return e.walkLimits(1, &counts)
+}
+
+// expressionLimits 累计递归遍历中的条件组与条件数量。
+type expressionLimits struct {
+	groups     int
+	conditions int
+}
+
+// walkLimits 递归统计并即时失败，避免超限规则在保存前完整展开。
+// 参数：depth为当前组深度（根为1），counts为累计计数。
+// 返回值：超出上限时返回 ErrInvalidExpression。
+func (e Expression) walkLimits(depth int, counts *expressionLimits) error {
+	if depth > MaxExpressionDepth {
+		return fmt.Errorf("%w: 条件组嵌套深度不能超过 %d 层", ErrInvalidExpression, MaxExpressionDepth)
+	}
+	counts.groups++
+	counts.conditions += len(e.Conditions)
+	if counts.groups > MaxExpressionGroups || counts.conditions > MaxExpressionConditions {
+		return fmt.Errorf("%w: 条件组不能超过 %d 个、条件不能超过 %d 个", ErrInvalidExpression,
+			MaxExpressionGroups, MaxExpressionConditions)
+	}
+	for _, group := range e.Groups {
+		if err := group.walkLimits(depth+1, counts); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c Condition) match(f Facts) (bool, error) {

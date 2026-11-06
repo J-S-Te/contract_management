@@ -117,11 +117,15 @@ func (h *Handler) listImportBatches(c *gin.Context) {
 		return
 	}
 	visible := []contract.ImportBatch{}
-	for _, b := range batches {
-		if _, e = h.service.GetImportBatch(c.Request.Context(), actor, b.ID); e == nil {
-			sanitizeImportBatch(&b)
-			visible = append(visible, b)
+	for _, candidate := range batches {
+		// 以服务层复核后的台账为响应事实：它已按读取人收窄 preview_token，
+		// 审批人拿不到创建人的提交凭据。
+		b, e := h.service.GetImportBatch(c.Request.Context(), actor, candidate.ID)
+		if e != nil {
+			continue
 		}
+		sanitizeImportBatch(&b)
+		visible = append(visible, b)
 	}
 	// 授权过滤可能把候选页变成空页，翻页位置必须按候选而非可见数量推进。
 	next := offset + len(batches)
