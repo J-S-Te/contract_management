@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1036,5 +1037,43 @@ func TestGetApprovalDetailDoesNotInventSnapshotWhenWorkflowAndSnapshotMissing(t 
 	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true, "contract.read": true}, PermissionScopes: allowAllScope("contract.read")}
 	if _, err := service.GetApprovalDetail(context.Background(), actor, "approval-gone"); !errors.Is(err, ErrApprovalWorkflowUnavailable) {
 		t.Fatalf("err=%v, want ErrApprovalWorkflowUnavailable without snapshot", err)
+	}
+}
+
+// TestCommandRejectsOversizedTargetUserIDs 验证审批命令的目标用户列表在发信号前就有界：
+// 超过 20 个或单个标识超过 64 字符都返回校验错误，不会进入工作流。
+// 参数：t为测试上下文。
+// 返回值：无；超限命令被受理或被误判为权限错误时失败。
+func TestCommandRejectsOversizedTargetUserIDs(t *testing.T) {
+	temporal := temporalmocks.NewClient(t)
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	encoded := temporalmocks.NewEncodedValue(t)
+	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
+		target := arguments.Get(0).(*workflows.ApprovalState)
+		*target = state
+	}).Return(nil)
+	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).Return(encoded, nil)
+	repository := &recordingRepository{approvalMeta: approval.Meta{
+		ID: "approval-1", TenantID: "tenant-1", Status: approval.StatusRunning,
+		WorkflowID: "workflow-1", RunID: "run-1",
+	}, contract: contract.Contract{ID: "contract-1", TenantID: "tenant-1", OwnerUserID: "applicant-1"}}
+	service := &Service{Repo: repository, Temporal: temporal}
+	actor := Principal{
+		TenantID:         "tenant-1",
+		UserID:           "approver-1",
+		Permissions:      map[string]bool{"approval.process": true, "contract.read": true},
+		PermissionScopes: allowAllScope("contract.read"),
+	}
+
+	tooMany := make([]string, 0, maxApprovalCommandTargets+1)
+	for index := 0; index <= maxApprovalCommandTargets; index++ {
+		tooMany = append(tooMany, fmt.Sprintf("user-%d", index))
+	}
+	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: tooMany}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("Command(%d targets) error = %v, want ErrValidation", len(tooMany), err)
+	}
+	tooLong := []string{strings.Repeat("u", maxApprovalCommandTargetLength+1)}
+	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: tooLong}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("Command(overlong target) error = %v, want ErrValidation", err)
 	}
 }

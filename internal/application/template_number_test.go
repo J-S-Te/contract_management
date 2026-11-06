@@ -68,3 +68,43 @@ func TestReplaceTemplateSourcePreservesSettingsAndRejectsInvalid(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeNumberFormatSharesContractNumberWhitelist 验证模板 number_format 的固定文本
+// 与合同编号规则前缀/后缀共用 [A-Za-z0-9._/-] 白名单：占位符允许，其它字符与超长一律 422。
+// 参数：t为测试上下文。
+// 返回值：无；非法字符被放行或合法格式被拒时失败。
+func TestNormalizeNumberFormatSharesContractNumberWhitelist(t *testing.T) {
+	for _, value := range []string{
+		contracttemplate.DefaultNumberFormat,
+		"HT-{YYYY}-{ID8}",
+		"A_b.c/d-{YYYYMMDD}-{ID8}",
+		"{ID8}",
+	} {
+		normalized, err := normalizeNumberFormat(value)
+		if err != nil || normalized != value {
+			t.Fatalf("合法格式 %q 被拒: %q %v", value, normalized, err)
+		}
+	}
+	for _, value := range []string{
+		"HT {ID8}",       // 空格不在白名单
+		"合同-{ID8}",       // 中文不在白名单
+		"HT#{ID8}",       // # 不在白名单
+		"HT（{ID8}）",      // 全角括号不在白名单
+		"HT-{ID8}-{BAD}", // 不支持的占位符
+		"HT-{YYYY}",
+		"",
+		strings.Repeat("A", 161) + "{ID8}",
+	} {
+		if _, err := normalizeNumberFormat(value); !errors.Is(err, ErrValidation) {
+			t.Fatalf("非法格式 %q error = %v, want ErrValidation", value, err)
+		}
+	}
+
+	service := &Service{Templates: &memoryTemplateRepository{items: map[string]contracttemplate.Template{
+		"template-1": {ID: "template-1", TenantID: "tenant-1", Name: "旧名称"},
+	}}}
+	if _, err := service.UpdateTemplate(context.Background(), Principal{TenantID: "tenant-1", Roles: []string{"admin"}},
+		"template-1", "标准合同", "合同-{ID8}", nil); !errors.Is(err, ErrValidation) {
+		t.Fatalf("UpdateTemplate() error = %v, want ErrValidation", err)
+	}
+}

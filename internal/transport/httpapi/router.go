@@ -453,20 +453,57 @@ func integrationOutboxReadiness(ctx context.Context, service *application.Servic
 	return "ready", counts, total
 }
 
+// opportunityIntakeRequest 是商机签署事件的机器入站投影，只接收来源系统的输入面。
+// status/version/reviewed_by/contract_id 属于服务端受理与审批结果，数据库也从不采纳
+// 请求体的这些值，因此不再接收；未知字段由 decode 的 DisallowUnknownFields 拒绝为 422。
+type opportunityIntakeRequest struct {
+	IntakeID            string     `json:"intake_id"`
+	TenantID            string     `json:"tenant_id"`
+	EventID             string     `json:"event_id"`
+	OpportunityID       uint64     `json:"opportunity_id"`
+	EventVersion        uint64     `json:"event_version"`
+	OpportunityNo       string     `json:"opportunity_no"`
+	CustomerID          uint64     `json:"customer_id"`
+	ContractRef         string     `json:"contract_ref"`
+	ContractNumber      string     `json:"contract_number"`
+	ExpectedAmount      string     `json:"expected_amount"`
+	OccurredAt          time.Time  `json:"occurred_at"`
+	SourceRequestID     string     `json:"source_request_id"`
+	ReviewerDisplayName string     `json:"reviewer_display_name"`
+	ReviewedAt          *time.Time `json:"reviewed_at"`
+	ReviewReason        string     `json:"review_reason"`
+}
+
 func (h *Handler) acceptOpportunityIntake(c *gin.Context) {
 	if !principal(c).Has("opportunity_intake.receive") {
 		writeError(c, application.ErrForbidden)
 		return
 	}
-	var input application.OpportunityIntake
-	if !decode(c, &input) {
+	var body opportunityIntakeRequest
+	if !decode(c, &body) {
 		return
 	}
-	if input.TenantID == "" {
-		input.TenantID = principal(c).TenantID
-	} else if principal(c).TenantID != "" && input.TenantID != principal(c).TenantID {
-		writeError(c, application.ErrForbidden)
+	// 租户边界只来自机器令牌绑定：主体缺少租户时失败关闭，
+	// 请求体 tenant_id 只能与之一致，不能覆盖（口径同 handoverTenant）。
+	tenant := strings.TrimSpace(principal(c).TenantID)
+	requested := strings.TrimSpace(body.TenantID)
+	if tenant == "" {
+		writeEnvelopeError(c, http.StatusForbidden, "CON_INTAKE_TENANT_REQUIRED", "商机接入请求缺少机器令牌绑定租户", nil)
 		return
+	}
+	if requested != "" && requested != tenant {
+		writeEnvelopeError(c, http.StatusForbidden, "CON_INTAKE_TENANT_MISMATCH", "商机接入请求的租户与机器令牌绑定租户不一致", nil)
+		return
+	}
+	input := application.OpportunityIntake{
+		IntakeID: body.IntakeID, TenantID: tenant, EventID: body.EventID,
+		OpportunityID: body.OpportunityID, EventVersion: body.EventVersion,
+		OpportunityNo: body.OpportunityNo, CustomerID: body.CustomerID,
+		ContractRef: body.ContractRef, ContractNumber: body.ContractNumber,
+		ExpectedAmount: body.ExpectedAmount, OccurredAt: body.OccurredAt,
+		SourceRequestID:     body.SourceRequestID,
+		ReviewerDisplayName: body.ReviewerDisplayName, ReviewedAt: body.ReviewedAt,
+		ReviewReason: body.ReviewReason,
 	}
 	if input.IntakeID == "" {
 		input.IntakeID = ulid.Make().String()

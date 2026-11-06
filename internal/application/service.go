@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/auditctx"
@@ -982,6 +983,10 @@ func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, co
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
 }
 
+// MaxStatusChangeReasonRunes 是合同状态变更原因的最大长度（与 lifecycle.reason 列 VARCHAR(1000) 对齐）。
+// 在应用层拦一次，既有 HTTP 直接变更、也有审批工作流入参，避免超长原因到库层才失败或被截断。
+const MaxStatusChangeReasonRunes = 1000
+
 // ChangeStatus 通过现审批路径变更普通合同状态，拒绝历史基线改写。
 // 参数：ctx/actor为上下文与主体，contractID/version为目标及版本，target为状态，reason为业务原因。
 // 返回值：审批启动结果或权限、状态、版本与依赖错误。
@@ -995,6 +1000,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	}
 	if reason == "" {
 		return StartResult{}, ErrValidation
+	}
+	if utf8.RuneCountInString(reason) > MaxStatusChangeReasonRunes {
+		return StartResult{}, fmt.Errorf("%w: 变更原因不能超过%d个字符", ErrValidation, MaxStatusChangeReasonRunes)
 	}
 	c, err := s.getContractScoped(ctx, filter, contractID)
 	if err != nil {
@@ -1087,6 +1095,16 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	}
 	if len([]rune(command.Comment)) > 2000 {
 		return "", fmt.Errorf("%w: 审批意见不能超过 2000 个字符", ErrValidation)
+	}
+	// 命令目标用户直接进入工作流的加签/转派节点，必须在发信号前限制规模与单个标识长度，
+	// 避免一次命令把审批链或通知扇出放大到不可控。
+	if len(command.TargetUserIDs) > maxApprovalCommandTargets {
+		return "", fmt.Errorf("%w: 审批命令目标用户不能超过 %d 个", ErrValidation, maxApprovalCommandTargets)
+	}
+	for _, target := range command.TargetUserIDs {
+		if len([]rune(target)) > maxApprovalCommandTargetLength {
+			return "", fmt.Errorf("%w: 审批命令目标用户标识不能超过 %d 个字符", ErrValidation, maxApprovalCommandTargetLength)
+		}
 	}
 	if command.Action == workflows.ActionAddSign {
 		directory, directoryErr := s.loadPersonnel(ctx, actor, []string{"admin", "sales_director", "tech_director", "finance_director"})
@@ -1641,6 +1659,12 @@ func validateRule(rule approval.Rule) error {
 	if len([]rune(rule.Name)) > 128 {
 		return fmt.Errorf("%w: 审批规则名称不能超过 128 个字符", ErrValidation)
 	}
+	if len(rule.Nodes) > approval.MaxRuleNodes {
+		return fmt.Errorf("%w: 审批规则节点不能超过 %d 个", ErrValidation, approval.MaxRuleNodes)
+	}
+	if err := rule.Expression.ValidateLimits(); err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
+	}
 	if _, err := rule.Expression.Match(approval.Facts{}); err != nil {
 		return fmt.Errorf("%w: %v", ErrValidation, err)
 	}
@@ -1654,6 +1678,11 @@ func validateRule(rule approval.Rule) error {
 		}
 		if node.Countersign != "" && node.Countersign != approval.CountersignAll && node.Countersign != approval.CountersignAny {
 			return ErrValidation
+		}
+		// 0 保持“沿用服务默认时限”的既有语义；显式配置必须在一小时到三十天之间。
+		if node.Timeout != 0 && (node.Timeout < approval.MinNodeTimeout || node.Timeout > approval.MaxNodeTimeout) {
+			return fmt.Errorf("%w: 审批节点处理时限必须在 %s 到 %s 之间", ErrValidation,
+				approval.MinNodeTimeout, approval.MaxNodeTimeout)
 		}
 		seen[node.ID] = true
 	}
@@ -1721,6 +1750,13 @@ func approversForRole(directory []UserReference, roleCode string) []string {
 	}
 	return unique(result)
 }
+
+// 审批命令目标用户的规模上限：数量与单个用户标识长度都必须有界，
+// 否则一次加签/转派命令可以放大审批链与通知扇出。
+const (
+	maxApprovalCommandTargets      = 20
+	maxApprovalCommandTargetLength = 64
+)
 
 func validateApprovalProcessTargets(directory []UserReference, targetUserIDs []string) error {
 	targets := unique(targetUserIDs)

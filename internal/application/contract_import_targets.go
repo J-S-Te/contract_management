@@ -104,7 +104,12 @@ func (s *Service) ReleaseImportItem(ctx context.Context, actor Principal, item, 
 	if e != nil {
 		return b, e
 	}
-	return store.GetImportItemBatch(ctx, actor.TenantID, item)
+	// 放行响应同样按读取人收窄台账：独立审批人不需要创建人的 preview_token。
+	b, e = store.GetImportItemBatch(ctx, actor.TenantID, item)
+	if e != nil {
+		return b, e
+	}
+	return importBatchForReader(b, actor), nil
 }
 
 // stableImportCommand 派生兼容接收方32hex约束的稳定阶段命令。
