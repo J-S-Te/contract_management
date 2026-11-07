@@ -7,9 +7,25 @@ package auditoutbox
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/infrastructure/platform"
+)
+
+const (
+	// purgeBatchSize 是单批清理行数上限，与 GORMStore 的 purgeBatchLimit 一致。
+	purgeBatchSize = purgeBatchLimit
+	// purgeBatches 是单轮清理的最大批次数，避免一次追平历史积压时长时间占用连接。
+	purgeBatches = 20
+	// purgeInterval 是清理间隔：删除是后台维护动作，不必跟随 2s 投递周期。
+	purgeInterval = time.Hour
+	// defaultDeliveredRetention 是已投递行的默认保留时长（30 天）。
+	defaultDeliveredRetention = 30 * 24 * time.Hour
+	// deliveredRetentionEnv 是保留时长的配置键（单位天，<=0 关闭清理）。
+	deliveredRetentionEnv = "AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS"
 )
 
 // Entry 是一条待投递的审计事件。
@@ -26,6 +42,12 @@ type Store interface {
 	Claim(ctx context.Context, workerID string, limit int, now time.Time) ([]Entry, error)
 	MarkDelivered(ctx context.Context, id string, now time.Time) error
 	MarkFailed(ctx context.Context, id string, code string, retryAt time.Time, now time.Time) error
+}
+
+// Purger 清理已成功投递的历史行。实现必须按 batchSize 分批删除，
+// 不允许无界 DELETE 把 outbox 表长时间锁住。
+type Purger interface {
+	PurgeDelivered(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
 }
 
 // Dispatcher 依配置的周期投递，达到上限后放弃并保留错误码供告警。
@@ -48,12 +70,72 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
+	// 已投递行保留清理：默认 30 天，AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS<=0 关闭。
+	// 投递器未启动（审计发布器配置缺失）时本循环不存在，清理也随之不跑，由启动
+	// WARN 与 /readyz 的 audit_outbox_dispatcher 字段暴露。
+	retention := DeliveredRetentionFromEnv()
+	var lastPurge time.Time
 	for {
 		d.deliverOnce(ctx)
+		if now := time.Now(); purgeDue(retention, lastPurge, now) {
+			lastPurge = now
+			d.purgeDelivered(ctx, now.UTC().Add(-retention))
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+	}
+}
+
+// DeliveredRetentionFromEnv 读取 AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS（单位天）。
+// 缺省为 30 天；<=0 表示关闭清理；非法值退回默认值。该键不是必填键，
+// 缺失或写错都不得改变启动成败。
+func DeliveredRetentionFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(deliveredRetentionEnv))
+	if raw == "" {
+		return defaultDeliveredRetention
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultDeliveredRetention
+	}
+	if days <= 0 {
+		return 0
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+// purgeDue 报告本轮是否执行清理：保留期关闭（<=0）时永不清理，
+// 且两次清理之间至少间隔 purgeInterval，避免跟随 2s 投递周期反复扫表。
+func purgeDue(retention time.Duration, lastPurge, now time.Time) bool {
+	if retention <= 0 {
+		return false
+	}
+	return lastPurge.IsZero() || now.Sub(lastPurge) >= purgeInterval
+}
+
+// purgeDelivered 分批删除超过保留期的已投递行；批次间检查 ctx，失败只记日志，
+// 不影响投递主流程（投递可用性优先于表维护）。
+func (d *Dispatcher) purgeDelivered(ctx context.Context, cutoff time.Time) {
+	purger, ok := d.Store.(Purger)
+	if !ok {
+		return
+	}
+	for batch := 0; batch < purgeBatches; batch++ {
+		if ctx.Err() != nil {
+			return
+		}
+		purged, err := purger.PurgeDelivered(ctx, cutoff, purgeBatchSize)
+		if err != nil {
+			if ctx.Err() == nil {
+				d.logger().WarnContext(ctx, "purge delivered audit outbox rows", "cutoff", cutoff, "error", err)
+			}
+			return
+		}
+		if purged == 0 {
+			return
 		}
 	}
 }

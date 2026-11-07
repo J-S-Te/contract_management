@@ -1,19 +1,26 @@
 package httpapi
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/auditoutbox"
 )
 
 // metricsContentType 是 Prometheus 文本暴露格式（version=0.0.4）的固定 Content-Type。
 // 抓取端按此头选择解析器；改变它会让既有 scrape 配置失效。
 const metricsContentType = "text/plain; version=0.0.4; charset=utf-8"
 
-// integrationOutboxMetrics 以 Prometheus 文本格式暴露四类集成 Outbox 的死信计数。
+// integrationOutboxMetrics 以 Prometheus 文本格式暴露两类积压计数：
+// 四类集成 Outbox 的死信数（contract_integration_outbox_dead*），
+// 以及事务内审计 Outbox 的待投递/死信数（contract_audit_outbox_pending|dead，
+// 后者见 auditOutboxReadiness）。
 //
 // 暴露面与安全边界：
 //  1. 只注册在 /healthz、/readyz 同级的无鉴权基础设施路由上（见 router.go），
@@ -43,7 +50,58 @@ func (h *Handler) integrationOutboxMetrics(c *gin.Context) {
 			"# ERROR contract integration outbox dead counts unavailable (reason="+reason+"): no metric samples emitted\n")
 		return
 	}
-	c.String(http.StatusOK, renderIntegrationOutboxMetrics(counts, total))
+	// B4：事务内审计 Outbox（con_audit_outbox）的积压与死信同样挂在这个已有端点上。
+	// 审计发布器未配置时投递器不启动，此时没有"投递积压"这一事实可报，
+	// 因此不输出审计采样行（disabled 由 /readyz 的 audit_outbox_dispatcher 表达）；
+	// 查询失败按本端点既有的失败关闭风格返回 503，绝不用 0 掩盖。
+	auditState, auditPending, auditDead := auditOutboxReadiness(c.Request.Context(), h.auditOutbox)
+	if auditState == "unavailable" {
+		c.String(http.StatusServiceUnavailable,
+			"# ERROR contract audit outbox counts unavailable (reason=count_query_failed): no metric samples emitted\n")
+		return
+	}
+	body := renderIntegrationOutboxMetrics(counts, total)
+	if auditState == "ready" {
+		body += renderAuditOutboxMetrics(auditPending, auditDead)
+	}
+	c.String(http.StatusOK, body)
+}
+
+// auditOutboxReadiness 汇总 con_audit_outbox 的待投递与终态失败计数。
+// 参数：ctx 为抓取请求上下文；store 为审计 Outbox 仓储，未装配时为 nil。
+// 返回值：state 为 ready/disabled/unavailable；两个计数仅在 ready 时有效。
+// 取舍：单条分组查询 + 2s 上限，与 integrationOutboxReadiness 同一风格，
+// 不做重查询也不缓存，避免指标与表内事实漂移。
+func auditOutboxReadiness(ctx context.Context, store *auditoutbox.GORMStore) (string, int64, int64) {
+	if store == nil {
+		return "disabled", 0, 0
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	pending, dead, err := store.DeliveryStatusCounts(probeCtx)
+	if err != nil {
+		slog.ErrorContext(ctx, "audit outbox count query failed", "error", err)
+		return "unavailable", 0, 0
+	}
+	return "ready", pending, dead
+}
+
+// renderAuditOutboxMetrics 渲染审计 Outbox 的 pending/dead gauge 文本。
+// 参数：pending 为 pending/retry/processing 行数，dead 为 failed 行数。
+// 返回值：可直接追加到 /metrics 正文的字符串，每个采样行以换行结尾。
+func renderAuditOutboxMetrics(pending, dead int64) string {
+	var body strings.Builder
+	body.WriteString("# HELP contract_audit_outbox_pending Undelivered events in the transaction audit outbox (delivery_status pending/retry/processing).\n")
+	body.WriteString("# TYPE contract_audit_outbox_pending gauge\n")
+	body.WriteString("contract_audit_outbox_pending ")
+	body.WriteString(strconv.FormatInt(pending, 10))
+	body.WriteString("\n")
+	body.WriteString("# HELP contract_audit_outbox_dead Dead letters in the transaction audit outbox (delivery_status failed).\n")
+	body.WriteString("# TYPE contract_audit_outbox_dead gauge\n")
+	body.WriteString("contract_audit_outbox_dead ")
+	body.WriteString(strconv.FormatInt(dead, 10))
+	body.WriteString("\n")
+	return body.String()
 }
 
 // renderIntegrationOutboxMetrics 渲染四类 dead gauge 与 total gauge 文本。
