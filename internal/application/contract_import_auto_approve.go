@@ -74,24 +74,62 @@ func (s *Service) SetImportAutoApproveSetting(ctx context.Context, actor Princip
 	return store.SetImportAutoApproveSetting(ctx, actor.TenantID, enabled, expectedVersion, actor.UserID)
 }
 
-// importAutoApproveEnabled 判定当前租户的历史导入是否应自动确认。
-// 只要 env 能力关闭就直接返回 false 且不读库，保证既有部署逐字节保持「人工会签」行为。
+// importAutoApproveLive 读取「此刻」的生效判定与设置版本。
+//
+// 只用于两种场景：提交事务外预判是否需要 Temporal，以及确认台账未固化策略的
+// 旧数据执行期回退判定。已固化策略的确认不得再调用本函数——否则执行期会被
+// 开关变更改道，重新制造提交/执行口径不一致。
+//
 // 参数：ctx 为执行上下文，tenantID 为批次所属租户。
-// 返回值：是否生效；仓储缺能力返回 ErrImportUnsupported（失败关闭），读取错误原样上抛
-// 让调度器把该项记为可重试依赖故障，而不是静默跳过。
-func (s *Service) importAutoApproveEnabled(ctx context.Context, tenantID string) (bool, error) {
+// 返回值：是否生效、设置版本（env 关闭时为 0）；仓储缺能力返回 ErrImportUnsupported
+// （失败关闭），读取错误原样上抛让调度器把该项记为可重试依赖故障。
+func (s *Service) importAutoApproveLive(ctx context.Context, tenantID string) (bool, uint64, error) {
 	if !s.ContractImportAutoApproveHistorical {
-		return false, nil
+		return false, 0, nil
 	}
 	store, ok := s.Repo.(ContractImportAutoApproveSettingStore)
 	if !ok {
-		return false, ErrImportUnsupported
+		return false, 0, ErrImportUnsupported
 	}
 	setting, err := store.GetImportAutoApproveSetting(ctx, tenantID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
-	return setting.Enabled, nil
+	return setting.Enabled, setting.Version, nil
+}
+
+// ImportAutoApprovePolicy 是自动确认执行期的策略快照。
+//
+// Auto 决定是否执行自动确认；Version 是要写进合成确认台账的设置版本；
+// AllowLegacyUpgrade 只在「确认台账存在但尚未固化策略」的旧数据上为真，
+// 用于把提交时已自动批准、缺少新字段的历史批次就地升级，而不放宽其他状态。
+type ImportAutoApprovePolicy struct {
+	Auto               bool
+	Version            uint64
+	AllowLegacyUpgrade bool
+}
+
+// importAutoApprovePolicy 解析本批次执行期应使用的策略。
+//
+// 三条分支对应三种数据形态：
+//   - 已固化策略（PolicyPinned）：只认 pin，完全不读 env/库，开关后续变更不影响在途批次；
+//   - 无确认台账（Confirmation==nil）：跟随 live，合成本次开立所需的确认形状；
+//   - 有确认台账但未固化（旧数据）：跟随 live 并允许严格护栏下的就地升级。
+//
+// 参数：ctx 为执行上下文，b 为已认领批次。
+// 返回值：策略快照或读取/能力错误（由调度器按可重试依赖故障处理）。
+func (s *Service) importAutoApprovePolicy(ctx context.Context, b contract.ImportBatch) (ImportAutoApprovePolicy, error) {
+	if b.Confirmation != nil && b.Confirmation.PolicyPinned() {
+		return ImportAutoApprovePolicy{Auto: b.Confirmation.AutoApproved(), Version: b.Confirmation.PolicyVersion}, nil
+	}
+	live, version, err := s.importAutoApproveLive(ctx, b.TenantID)
+	if err != nil {
+		return ImportAutoApprovePolicy{}, err
+	}
+	if b.Confirmation == nil {
+		return ImportAutoApprovePolicy{Auto: live, Version: version}, nil
+	}
+	return ImportAutoApprovePolicy{Auto: live, Version: version, AllowLegacyUpgrade: live}, nil
 }
 
 // ContractImportAutoApproveStore 由仓储实现历史导入的自动确认写入。
@@ -100,9 +138,10 @@ func (s *Service) importAutoApproveEnabled(ctx context.Context, tenantID string)
 type ContractImportAutoApproveStore interface {
 	// AutoConfirmHistoricalImportItem 在单事务内把一条历史开立项确认为声明终态。
 	// 参数：ctx 为上下文，tenantID/batchID/itemID 定位批次与单项，roles 为自动确认
-	// 记入确认台账的审批角色（用于与人工会签保持同一可审计形状）。
+	// 记入确认台账的审批角色（用于与人工会签保持同一可审计形状），policy 为执行期
+	// 策略快照（决定是否允许旧数据升级与写入哪个设置版本）。
 	// 返回值：冲突、清单或存储错误；重复调用必须幂等。
-	AutoConfirmHistoricalImportItem(ctx context.Context, tenantID, batchID, itemID string, roles []string) error
+	AutoConfirmHistoricalImportItem(ctx context.Context, tenantID, batchID, itemID string, roles []string, policy ImportAutoApprovePolicy) error
 }
 
 // autoConfirmHistoricalImportItem 在 CRM 开立成功后自动确认并归档一条历史项。
@@ -112,12 +151,13 @@ type ContractImportAutoApproveStore interface {
 // 正是历史确认（confirmHistoricalItem）要求的前置基线。此时确认既能复用既有的
 // 编号分配与审计写入，又避免人工会签再等一轮。
 //
-// 参数：ctx 为执行上下文，b 为已认领批次（提供租户与批次围栏），itemID 为单项 ID。
+// 参数：ctx 为执行上下文，b 为已认领批次（提供租户与批次围栏），itemID 为单项 ID，
+// policy 为调用点已解析的策略快照（原样透传给仓储，不在这里二次判定）。
 // 返回值：仓储缺失返回 ErrImportUnsupported，其余为仓储错误。
-func (s *Service) autoConfirmHistoricalImportItem(ctx context.Context, b contract.ImportBatch, itemID string) error {
+func (s *Service) autoConfirmHistoricalImportItem(ctx context.Context, b contract.ImportBatch, itemID string, policy ImportAutoApprovePolicy) error {
 	store, ok := s.Repo.(ContractImportAutoApproveStore)
 	if !ok {
 		return ErrImportUnsupported
 	}
-	return store.AutoConfirmHistoricalImportItem(ctx, b.TenantID, b.ID, itemID, s.ContractImportConfirmationRoles)
+	return store.AutoConfirmHistoricalImportItem(ctx, b.TenantID, b.ID, itemID, s.ContractImportConfirmationRoles, policy)
 }

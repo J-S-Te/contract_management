@@ -386,14 +386,14 @@ func (s *Service) executeProvisionImportItem(ctx context.Context, actor Principa
 		// 开立台账已完成但单项没收口，说明上一次在建单之后中断（例如自动审批的
 		// 事务回滚）。自动审批生效时必须在这里把确认重试到落地，否则恢复（resume）
 		// 只补 COMPLETE、合同却永远停在 version=1 的导入草稿。仓储侧按已确认幂等，
-		// 因此这里可以无条件重放。生效判定 = env 能力开启且本租户运行开关开启；
-		// 读取失败必须上抛（逐项可重试依赖故障），不能静默跳过。
-		autoApprove, autoApproveErr := s.importAutoApproveEnabled(ctx, b.TenantID)
-		if autoApproveErr != nil {
-			return autoApproveErr
+		// 因此这里可以无条件重放。判定口径按批次已固化的策略（AUTO/MANUAL），
+		// 旧数据才回退到 live 开关；读取失败必须上抛（逐项可重试依赖故障）。
+		policy, policyErr := s.importAutoApprovePolicy(ctx, b)
+		if policyErr != nil {
+			return policyErr
 		}
-		if autoApprove {
-			if err := s.autoConfirmHistoricalImportItem(ctx, b, item.ID); err != nil {
+		if policy.Auto {
+			if err := s.autoConfirmHistoricalImportItem(ctx, b, item.ID, policy); err != nil {
 				return err
 			}
 		}
@@ -479,15 +479,15 @@ func (s *Service) executeProvisionImportItem(ctx context.Context, actor Principa
 		if err := s.completeProvisionOpportunity(ctx, actor, store, key, record, c, resolveOwner); err != nil {
 			return err
 		}
-		// 自动审批是开立成功之后的追加步骤（env 能力开关 + 租户运行开关，默认均关闭）：
-		// 任一关闭时保持"只开立、等人工会签"的既有行为不变；两者都开启时由仓储在
-		// 同一事务内按清单声明状态归档并生成待投递目标。
-		autoApprove, autoApproveErr := s.importAutoApproveEnabled(ctx, b.TenantID)
-		if autoApproveErr != nil {
-			return autoApproveErr
+		// 自动审批是开立成功之后的追加步骤：判定口径取批次已固化的策略
+		// （提交时 AUTO 才自动确认，MANUAL 保持等人工会签），旧数据才回退 live 开关。
+		// 生效时由仓储在同一事务内按清单声明状态归档并生成待投递目标。
+		policy, policyErr := s.importAutoApprovePolicy(ctx, b)
+		if policyErr != nil {
+			return policyErr
 		}
-		if autoApprove {
-			return s.autoConfirmHistoricalImportItem(ctx, b, item.ID)
+		if policy.Auto {
+			return s.autoConfirmHistoricalImportItem(ctx, b, item.ID, policy)
 		}
 		return nil
 	})

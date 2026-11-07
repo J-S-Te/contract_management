@@ -39,6 +39,50 @@ func importAutoApproveSettingFromRecord(record importAutoApproveSettingRecord) c
 	}
 }
 
+// FreezeImportConfirmation 在单事务内冻结历史确认并读取本租户运行开关。
+//
+// 加锁顺序是硬约束：先批次行 FOR UPDATE，再设置行 FOR SHARE。
+//   - 先锁批次行：批次是本次写入的目标行，冻结必须与 AdvanceImportConfirmation/
+//     自动确认串行，否则两个事务会各写一份确认台账。
+//   - 设置行只加共享锁：冻结只需读到一个一致的开关版本。反向（先设置行后批次行）
+//     会与 SetImportAutoApproveSetting（只锁设置行、写 version+1）形成反向锁序，
+//     一旦并发升级开关就可能死锁。禁止调换这两条语句的顺序。
+//
+// 设置行不存在时按 Version=0/Enabled=false 处理（默认关闭），不报错：这是合法状态，
+// 表示本租户从未开过自动审批。
+//
+// 参数：ctx 为上下文，tenantID/batchID 定位台账，change 为冻结回调（拿到批次与设置）。
+// 返回值：冲突（批次不存在视为围栏冲突）、存储或回调错误。
+func (r *Repository) FreezeImportConfirmation(ctx context.Context, tenantID, batchID string, change func(*contract.ImportBatch, contract.ImportAutoApproveSetting) error) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row importBatchRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id=? AND id=?", tenantID, batchID).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// 冻结目标已在并发中被清理/改写：按围栏冲突交给调用方重读。
+				return application.ErrImportConflict
+			}
+			return err
+		}
+		b, err := decodeImportBatch(row)
+		if err != nil {
+			return err
+		}
+		// 批次行锁已在手，这里再申请设置行共享锁（顺序不可颠倒）。
+		var settingRecord importAutoApproveSettingRecord
+		setting := contract.ImportAutoApproveSetting{}
+		err = tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("tenant_id=?", tenantID).Take(&settingRecord).Error
+		if err == nil {
+			setting = importAutoApproveSettingFromRecord(settingRecord)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err = change(&b, setting); err != nil {
+			return err
+		}
+		return saveImportBatch(tx, &b)
+	})
+}
+
 // GetImportAutoApproveSetting 读取租户级自动审批运行开关。
 // 参数：ctx 为请求上下文，tenantID 为租户。
 // 返回值：无记录时返回零值（Version=0）且不报错，供接口表达「默认关闭」。

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/j-s-te/contract-management/internal/apperrors"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
@@ -89,8 +90,10 @@ func (r *Repository) AdvanceImportConfirmation(ctx context.Context, in workflows
 				return e
 			}
 			// 第二步：逐条确认；此时合同行锁全部在手，循环内只会再申请流水行锁。
+			// 人工会签按既有协议写入：确认主体是批次创建人，不带策略来源。
+			write := importConfirmationWrite{ActorID: b.ActorID}
 			for i := range b.Items {
-				if e = confirmHistoricalItem(tx, &b, &b.Items[i], locked); e != nil {
+				if e = confirmHistoricalItem(tx, &b, &b.Items[i], locked, write); e != nil {
 					return e
 				}
 			}
@@ -140,10 +143,28 @@ func lockImportContractRows(tx *gorm.DB, tenantID string, ids []string) (map[str
 	return locked, nil
 }
 
+// importConfirmationWrite 描述一次历史确认写入的身份与策略来源。
+//
+// 为什么把「谁确认的」和「依据什么策略」分开：人工会签的确认主体是批次创建人，
+// 自动审批的确认主体是 SYSTEM，而策略来源必须能从审计里独立核对（policy/
+// policy_source/policy_version）。三者在同一事务内落库，不能事后补记。
+type importConfirmationWrite struct {
+	// ActorID 写入 updated_by 与 IMPORT_CONFIRMED 审计；人工为批次创建人，自动为 SYSTEM。
+	ActorID string
+	// Policy/PolicySource 为空表示人工确认（payload 不写策略字段）。
+	Policy       string
+	PolicySource string
+	// PolicyVersion 是判定所依据的租户运行开关版本。
+	PolicyVersion uint64
+	// Upgraded 表示本次确认把旧数据确认台账就地升级为 AUTO，需在审计里显式标记。
+	Upgraded bool
+}
+
 // confirmHistoricalItem 仅经独立历史确认写入声明事实及模式终态，不触发普通v1出站。
-// 参数：tx为批次事务，b及item为审批冻结基线，locked为批次事务前置锁定的合同 ID 集合。
+// 参数：tx为批次事务，b及item为审批冻结基线，locked为批次事务前置锁定的合同 ID 集合，
+// write为本次写入的主体与策略来源。
 // 返回值：校验、合同并发或审计失败；失败整体回滚。
-func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.ImportItemState, locked map[string]bool) error {
+func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.ImportItemState, locked map[string]bool, write importConfirmationWrite) error {
 	if item.Confirmed {
 		return nil
 	}
@@ -171,7 +192,7 @@ func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.
 		"import_source_revision": item.SourceRevision,
 		"import_confirmed_at":    now,
 		"updated_at":             now,
-		"updated_by":             b.ActorID}
+		"updated_by":             write.ActorID}
 	// 系统号独立分配，原件和纸面编号保持原字节；采用系统级规则，规则缺失时回退旧格式。
 	number, err := allocateContractNumberInTx(tx, b.TenantID, c.ID, c.ContractNumberFormat, now)
 	if err != nil {
@@ -218,8 +239,37 @@ func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.
 		}
 		item.Targets = append(item.Targets, contract.ImportTarget{Target: target, State: state, Version: 1, ReleaseVersion: 1, ErrorCode: code})
 	}
-	payload, _ := contract.ImportDigest(item.Item)
-	return insertAuditOutbox(tx, b.TenantID, newID(), AuditOutboxEntry{ActorID: b.ActorID, Action: "CONTRACT_MANAGEMENT:IMPORT_CONFIRMED", ResourceType: "contract", ResourceID: c.ID, Payload: []byte(`{"manifest_digest":"` + payload + `"}`)})
+	payload, err := confirmationAuditPayload(item.Item, write)
+	if err != nil {
+		return err
+	}
+	return insertAuditOutbox(tx, b.TenantID, newID(), AuditOutboxEntry{ActorID: write.ActorID, Action: "CONTRACT_MANAGEMENT:IMPORT_CONFIRMED", ResourceType: "contract", ResourceID: c.ID, Payload: payload})
+}
+
+// confirmationAuditPayload 组装 IMPORT_CONFIRMED 审计载荷。
+//
+// 人工确认保持既有形状（只有 manifest_digest），自动审批额外写策略来源，
+// 旧数据升级再加 policy_upgraded，使审计可以独立回答「系统凭什么自动确认」。
+//
+// 参数：item 为已确认清单项，write 为写入主体与策略来源。
+// 返回值：JSON 载荷或编码错误。
+func confirmationAuditPayload(item contract.ImportItem, write importConfirmationWrite) ([]byte, error) {
+	payload, err := contract.ImportDigest(item)
+	if err != nil {
+		return nil, err
+	}
+	if write.Policy == "" {
+		return []byte(`{"manifest_digest":"` + payload + `"}`), nil
+	}
+	body := map[string]any{"manifest_digest": payload, "policy": write.Policy}
+	if write.PolicySource != "" {
+		body["policy_source"] = write.PolicySource
+	}
+	body["policy_version"] = write.PolicyVersion
+	if write.Upgraded {
+		body["policy_upgraded"] = true
+	}
+	return json.Marshal(body)
 }
 
 // ListImportBatchesPage 有界读取创建人及受派人的候选批次。

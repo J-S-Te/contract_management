@@ -183,20 +183,20 @@ func TestSetImportAutoApproveSettingPropagatesVersionConflict(t *testing.T) {
 	}
 }
 
-// TestImportAutoApproveEnabledRequiresBothSwitches 验证生效判定组合：
-// env 关闭时恒为 false 且不读库；env 开启时以租户设置为准；
+// TestImportAutoApproveLiveRequiresBothSwitches 验证 live 判定组合（旧数据与提交前预判专用）：
+// env 关闭时恒为 false 且不读库（版本也按 0 返回）；env 开启时以租户设置为准并带回版本；
 // 读取错误上抛；仓储缺设置接口时失败关闭（ErrImportUnsupported），不静默跳过。
 // 参数：t 为测试上下文。
 // 返回值：任一组合与预期不符时失败。
-func TestImportAutoApproveEnabledRequiresBothSwitches(t *testing.T) {
+func TestImportAutoApproveLiveRequiresBothSwitches(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("environment-off-skips-store", func(t *testing.T) {
 		repo := &autoApproveSettingRepository{setting: contract.ImportAutoApproveSetting{Enabled: true, Version: 1}}
 		service := &Service{Repo: repo, ContractImportAutoApproveHistorical: false}
-		enabled, err := service.importAutoApproveEnabled(ctx, "tenant-1")
-		if err != nil || enabled {
-			t.Fatalf("enabled=%t err=%v", enabled, err)
+		enabled, version, err := service.importAutoApproveLive(ctx, "tenant-1")
+		if err != nil || enabled || version != 0 {
+			t.Fatalf("enabled=%t version=%d err=%v", enabled, version, err)
 		}
 		if repo.getCalls != 0 {
 			t.Fatalf("env 关闭仍然读库: getCalls=%d", repo.getCalls)
@@ -206,18 +206,18 @@ func TestImportAutoApproveEnabledRequiresBothSwitches(t *testing.T) {
 	t.Run("tenant-setting-off", func(t *testing.T) {
 		repo := &autoApproveSettingRepository{setting: contract.ImportAutoApproveSetting{Enabled: false, Version: 2}}
 		service := &Service{Repo: repo, ContractImportAutoApproveHistorical: true}
-		enabled, err := service.importAutoApproveEnabled(ctx, "tenant-1")
-		if err != nil || enabled || repo.getCalls != 1 || repo.tenantID != "tenant-1" {
-			t.Fatalf("enabled=%t err=%v calls=%d tenant=%q", enabled, err, repo.getCalls, repo.tenantID)
+		enabled, version, err := service.importAutoApproveLive(ctx, "tenant-1")
+		if err != nil || enabled || version != 2 || repo.getCalls != 1 || repo.tenantID != "tenant-1" {
+			t.Fatalf("enabled=%t version=%d err=%v calls=%d tenant=%q", enabled, version, err, repo.getCalls, repo.tenantID)
 		}
 	})
 
 	t.Run("tenant-setting-on", func(t *testing.T) {
 		repo := &autoApproveSettingRepository{setting: contract.ImportAutoApproveSetting{Enabled: true, Version: 2}}
 		service := &Service{Repo: repo, ContractImportAutoApproveHistorical: true}
-		enabled, err := service.importAutoApproveEnabled(ctx, "tenant-1")
-		if err != nil || !enabled {
-			t.Fatalf("enabled=%t err=%v", enabled, err)
+		enabled, version, err := service.importAutoApproveLive(ctx, "tenant-1")
+		if err != nil || !enabled || version != 2 {
+			t.Fatalf("enabled=%t version=%d err=%v", enabled, version, err)
 		}
 	})
 
@@ -225,17 +225,17 @@ func TestImportAutoApproveEnabledRequiresBothSwitches(t *testing.T) {
 		readErr := errors.New("settings table unavailable")
 		repo := &autoApproveSettingRepository{getErr: readErr}
 		service := &Service{Repo: repo, ContractImportAutoApproveHistorical: true}
-		enabled, err := service.importAutoApproveEnabled(ctx, "tenant-1")
-		if enabled || !errors.Is(err, readErr) {
-			t.Fatalf("enabled=%t err=%v, want read error", enabled, err)
+		enabled, version, err := service.importAutoApproveLive(ctx, "tenant-1")
+		if enabled || version != 0 || !errors.Is(err, readErr) {
+			t.Fatalf("enabled=%t version=%d err=%v, want read error", enabled, version, err)
 		}
 	})
 
 	t.Run("missing-store-fails-closed", func(t *testing.T) {
 		service := &Service{Repo: &recordingRepository{}, ContractImportAutoApproveHistorical: true}
-		enabled, err := service.importAutoApproveEnabled(ctx, "tenant-1")
-		if enabled || !errors.Is(err, ErrImportUnsupported) {
-			t.Fatalf("enabled=%t err=%v, want ErrImportUnsupported", enabled, err)
+		enabled, version, err := service.importAutoApproveLive(ctx, "tenant-1")
+		if enabled || version != 0 || !errors.Is(err, ErrImportUnsupported) {
+			t.Fatalf("enabled=%t version=%d err=%v, want ErrImportUnsupported", enabled, version, err)
 		}
 	})
 }

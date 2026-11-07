@@ -201,6 +201,32 @@ jobs:
             exit 1
           fi
           assert_contains "$clean_log" '合同编号与登记表一致' '清理夹具后巡检未给出干净结论'
+      # 历史导入自动审批（P0 修复）的隔离数据库验证。
+      # 范围声明（请勿扩大解读）：本 step 只证明三件事——
+      #   1) 生产提交链路冻结的「APPROVED + AUTO」确认会被执行期认可并完成归档
+      #      （合同 version=2、批次 TARGETS_PENDING），不再出现提交成功即必冲突的 P0；
+      #   2) 「MANUAL」确认不被自动审批劫持（冲突且合同停留 version=1）；
+      #   3) AUTO 判定在提交事务内固化，执行前关闭租户开关不影响在途批次（pin）。
+      # 它使用与巡检 step 同一个临时 MySQL 服务但独立的 contract_test_* 库，
+      # 不连接任何业务库，也不替代部署后的真实业务验收或工作流联调。
+      - name: Verify historical import auto-approval on isolated MySQL
+        env:
+          # 仓内纪律：库名 contract_test_*，回环 TCP，仅本作业独占的临时库与测试口令。
+          CONTRACT_TEST_DSN: root:isolated-contract-audit-ci@tcp(127.0.0.1:3306)/contract_test_import?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
+          CONTRACT_TEST_DB: contract_test_import
+          CONTRACT_TEST_USER: root
+          CONTRACT_TEST_PASSWORD: isolated-contract-audit-ci
+        run: |
+          set -Eeuo pipefail
+          # 独立库与巡检库隔离：CREATE DATABASE 先行，迁移由测试内的 migration.Run 完成。
+          MYSQL_PWD="$CONTRACT_TEST_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 -P 3306 -u "$CONTRACT_TEST_USER" \
+            --default-character-set=utf8mb4 --connect-timeout=10 \
+            -e "CREATE DATABASE IF NOT EXISTS $CONTRACT_TEST_DB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+          # 仓储层：P0 主回归、旧数据升级护栏、APPROVED 终态早退与既有历史确认路径。
+          go test ./internal/infrastructure/mysql -count=1 -run 'TestHistoricalImport|TestAutoConfirm|TestAdvanceImportConfirmation'
+          # 传输层：真实 HTTP create→files→manifest→preview→submit-confirmation→dispatch
+          # 端到端链路，含 pin 与反向（人工会签）用例。
+          go test ./internal/transport/httpapi -count=1 -run 'TestHistoricalImportAutoApproveEndToEnd'
 
   image:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
