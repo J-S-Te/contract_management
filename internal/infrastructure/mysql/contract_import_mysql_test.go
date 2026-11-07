@@ -97,7 +97,17 @@ func TestImportCommitIdempotencyMySQL(t *testing.T) {
 	}
 	draft.ID = ulid.Make().String()
 	draft.OriginImportItemID = other.Items[0].ID
-	if _, e = fresh.CommitImportDraft(ctx, tenant, other.ID, other.Revision, other.Epoch, other.Items[0].ID, draft, actor); !errors.Is(e, application.ErrImportIdentityConflict) {
+	_, e = fresh.CommitImportDraft(ctx, tenant, other.ID, other.Revision, other.Epoch, other.Items[0].ID, draft, actor)
+	if !errors.Is(e, application.ErrImportIdentityConflict) {
 		t.Fatalf("同来源异内容未阻断: %v", e)
+	}
+	// 冲突必须可定位：操作者要知道「已导入成哪一条合同」，否则只能反复重试。
+	var conflict *application.ImportIdentityConflictError
+	if !errors.As(e, &conflict) {
+		t.Fatalf("冲突缺少定位信息: %v", e)
+	}
+	if conflict.Kind != application.ImportConflictKindAlreadyImported || conflict.ContractID != only || conflict.ItemID != itemID {
+		t.Fatalf("冲突定位=%+v want kind=%s contract=%s item=%s",
+			conflict, application.ImportConflictKindAlreadyImported, only, itemID)
 	}
 }

@@ -183,6 +183,10 @@ func main() {
 		Personnel:                       personnelDirectory,
 		DetectionCategories:             projectDetectionCategories,
 		CRMContractReferences:           crmContractReferences,
+
+		// 历史导入自动审批能力开关（默认关闭）：开启后仍须超管按租户打开运行开关，
+		// 两者同时开启才在开立成功后自动确认并按声明状态归档。
+		ContractImportAutoApproveHistorical: cfg.ContractImportAutoApproveHistorical,
 	}
 	// 注入点只做装配：编排（预览 NEEDS_PROVISION / 确认期逐项开立）在下一路实现。
 	// 开启但任一依赖缺失即启动失败，避免开关打开后静默不生效。

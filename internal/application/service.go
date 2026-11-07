@@ -130,14 +130,20 @@ type ContractPageRepository interface {
 }
 
 type Service struct {
-	ExternalPDFEnabled              bool
-	ContractImportHistoryEnabled    bool
-	ContractImportConfirmationRoles []string
-	ImportReportReadConfigured      bool
-	ImportProject                   *ImportTargetTransport
-	ImportFinance                   *ImportTargetTransport
-	ImportReport                    *ImportTargetTransport
-	ImportOwners                    interface {
+	ExternalPDFEnabled           bool
+	ContractImportHistoryEnabled bool
+	// ContractImportAutoApproveHistorical 是历史导入自动审批的能力开关
+	//（CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL，默认 false）。开启后接口与前端
+	// 才可读写租户级运行开关（con_import_auto_approve_setting，默认关闭）；
+	// env 能力开启且租户开关为真时，历史开立行在 CRM 客户/商机开立成功后由系统
+	// 自动确认并按清单声明状态归档，跳过人工会签；关闭时逐字节保持既有行为。
+	ContractImportAutoApproveHistorical bool
+	ContractImportConfirmationRoles     []string
+	ImportReportReadConfigured          bool
+	ImportProject                       *ImportTargetTransport
+	ImportFinance                       *ImportTargetTransport
+	ImportReport                        *ImportTargetTransport
+	ImportOwners                        interface {
 		ResolveOwner(context.Context, string, string) (UserReference, error)
 	}
 	ContractImportEnabled    bool

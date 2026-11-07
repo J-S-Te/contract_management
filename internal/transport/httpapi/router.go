@@ -2151,6 +2151,10 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusConflict, "IMPORT_SOURCE_ID_CONFLICT", "来源业务身份与冻结基线冲突，需要核对", nil)
 	case errors.Is(err, application.ErrImportUnsupported):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_POLICY_UNSUPPORTED", "导入能力或此模式尚未开放", nil)
+	case errors.Is(err, application.ErrImportAutoApproveDisabled):
+		// 租户级运行开关受部署能力开关门禁：能力关闭时接口不可写，返回明确码让前端
+		// 直接展示「需运维开启」，而不是把 422 通用码当参数错误。
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_AUTO_APPROVE_DISABLED", "历史导入自动审批能力未在部署层开启，无法修改租户运行开关", nil)
 	case errors.Is(err, application.ErrCommercialLicense):
 		writeEnvelopeError(c, http.StatusForbidden, "COMMERCIAL_LICENSE_RESTRICTED", "商业授权不允许此操作；历史查询与导出仍可使用", nil)
 	case errors.Is(err, platform.ErrUnauthenticated):

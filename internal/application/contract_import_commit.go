@@ -97,10 +97,14 @@ func (s *Service) ControlImport(ctx context.Context, actor Principal, id string,
 		b.SessionHash = append([]byte(nil), session...)
 		b.State = "QUEUED"
 		for i := range b.Items {
-			if b.Items[i].ContractID == "" {
-				b.Items[i].Issues = nil
-				b.Items[i].State = "READY"
+			// 已建单行与需要人工纠错/身份重建的终态行（纠错/待复核状态、身份冲突类
+			// BLOCKED）不重置：保留 State/Issues，否则「恢复 → 再失败 → 再恢复」会变成
+			// 死循环。围栏/权限/校验/依赖类 BLOCKED 仍重置为 READY，由 resume 重试。
+			if b.Items[i].ContractID != "" || importItemTerminal(b.Items[i]) {
+				continue
 			}
+			b.Items[i].Issues = nil
+			b.Items[i].State = "READY"
 		}
 		return nil
 	})

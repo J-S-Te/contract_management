@@ -408,7 +408,7 @@ func (s *Service) prepareImportItemWith(ctx context.Context, actor Principal, b 
 		return c, "", e
 	}
 	if c.SourceSHA256 != source.SHA256 {
-		return c, "", ErrImportIdentityConflict
+		return c, "", &ImportIdentityConflictError{Kind: ImportConflictKindBaselineDrift}
 	}
 	if utf8.RuneCountInString(c.ExternalPaperNumber) > 128 {
 		return c, "", ErrValidation
@@ -584,7 +584,8 @@ func withoutProvisionCustomerRequirement(issues []contract.ImportIssue) []contra
 
 // previewImportItemIssue 把预检失败映射为可定位的逐项 Issue。
 // 参数：err 为预检错误。
-// 返回值：字段路径、稳定错误码与可重试标记（不泄露业务正文）。
+// 返回值：字段路径、稳定错误码与可重试标记（不泄露业务正文）；
+// 来源身份冲突单列一支，避免落到「可重试的依赖故障」上诱使操作者反复重试。
 func previewImportItemIssue(err error) contract.ImportIssue {
 	switch {
 	case errors.Is(err, ErrCRMActorContextRequired):
@@ -593,6 +594,13 @@ func previewImportItemIssue(err error) contract.ImportIssue {
 		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_POLICY_UNSUPPORTED"}
 	case errors.Is(err, ErrForbidden):
 		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_AUTHORIZATION_REQUIRED"}
+	case errors.Is(err, ErrImportIdentityConflict):
+		// 必须在「非校验错误 → 可重试依赖故障」之前判定：
+		// 身份冲突是终态，重试只会复现同一冲突。
+		if issue, conflict := importIdentityConflictIssue(err, "metadata"); conflict {
+			return issue
+		}
+		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_SOURCE_ID_CONFLICT"}
 	case !errors.Is(err, ErrValidation):
 		return contract.ImportIssue{Field: "metadata", Code: "IMPORT_DEPENDENCY_UNAVAILABLE", Retryable: true}
 	default:
