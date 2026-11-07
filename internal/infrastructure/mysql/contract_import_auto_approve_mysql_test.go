@@ -499,3 +499,70 @@ func TestAdvanceImportConfirmationNoOpOnApproved(t *testing.T) {
 		t.Fatalf("APPROVED 早退后仍确认了合同: version=%d status=%s", c.Version, c.Status)
 	}
 }
+
+// TestAutoConfirmHistoricalImportItemWritesStableAuditEventIDs 验证自动路径的审计事件 ID
+// 由业务键确定性派生，而不是每次重试生成新的随机 ULID。
+//
+// 为什么这件事重要：自动审批/自动确认的事务可能整段回滚后重放，若 event_id 带随机位，
+// 平台侧无法按 event_id 去重，同一次自动确认会在审计平台出现两条；对账也无从把
+// 「源库这条 outbox」与「平台那条事件」对上。
+//
+// 参数：t 为测试上下文；仅 CONTRACT_TEST_DSN 指向隔离库时运行。
+// 返回值：event_id 与业务键派生值不符、长度不为 26、重放新增审计或唯一键被吞时失败。
+func TestAutoConfirmHistoricalImportItemWritesStableAuditEventIDs(t *testing.T) {
+	ctx := context.Background()
+	r, tenant := draftE2ERepository(t)
+	b := autoApproveHistoryFixture(t, r, tenant)
+	itemID, contractID := b.Items[0].ID, b.Items[0].ContractID
+	roles := []string{"admin"}
+	if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{
+		"CONTRACT_MANAGEMENT:IMPORT_AUTO_APPROVED": stableEventID(tenant, b.ID, itemID, "IMPORT_AUTO_APPROVED", "2"),
+		"CONTRACT_MANAGEMENT:IMPORT_CONFIRMED":     stableEventID(tenant, b.ID, itemID, "IMPORT_CONFIRMED", "2"),
+	}
+	for action, wantID := range want {
+		var ids []string
+		if err := r.db.Model(&auditOutboxRecord{}).
+			Where("tenant_id=? AND action=? AND resource_id=?", tenant, action, contractID).
+			Pluck("event_id", &ids).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) != 1 || ids[0] != wantID || len(ids[0]) != 26 {
+			t.Fatalf("%s event_id=%v, want [%s]（26 字符确定性派生）", action, ids, wantID)
+		}
+	}
+
+	// 重启后的重放：新仓储实例、同一业务键，不得写出第二条 outbox。
+	restarted := NewRepository(r.db)
+	if err := restarted.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(2)); err != nil {
+		t.Fatalf("重放失败: %v", err)
+	}
+	for action := range want {
+		count, err := countAuditOutbox(r, tenant, action, contractID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s 重放后审计条数=%d, want 1", action, count)
+		}
+	}
+
+	// 唯一键语义：同一 (tenant_id,event_id) 的重复插入必须报错，不得被静默吞掉。
+	duplicate := auditOutboxRecord{
+		ID: newID(), TenantID: tenant, EventID: want["CONTRACT_MANAGEMENT:IMPORT_AUTO_APPROVED"],
+		Action: "CONTRACT_MANAGEMENT:IMPORT_AUTO_APPROVED", ResourceType: "contract", ResourceID: contractID,
+		IPSource: "UNKNOWN", Result: "SUCCESS", DeliveryStatus: "pending",
+		NextAttemptAt: time.Now().UTC(), CreatedAt: time.Now().UTC(),
+	}
+	if err := r.db.Create(&duplicate).Error; err == nil {
+		t.Fatal("重复 event_id 被静默接受，平台侧去重依据失效")
+	}
+
+	// 策略版本是业务事实的一部分：版本不同必须派生不同 id，否则新事实会被旧 id 吞掉。
+	if want["CONTRACT_MANAGEMENT:IMPORT_AUTO_APPROVED"] == stableEventID(tenant, b.ID, itemID, "IMPORT_AUTO_APPROVED", "3") {
+		t.Fatal("策略版本未参与 event_id 派生")
+	}
+}

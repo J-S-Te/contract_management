@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -243,7 +244,14 @@ func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.
 	if err != nil {
 		return err
 	}
-	return insertAuditOutbox(tx, b.TenantID, newID(), AuditOutboxEntry{ActorID: write.ActorID, Action: "CONTRACT_MANAGEMENT:IMPORT_CONFIRMED", ResourceType: "contract", ResourceID: c.ID, Payload: payload})
+	// 事件 ID 的口径与写入路径绑定：人工会签保持随机 ULID（每次人工动作是独立事实），
+	// 自动确认按业务键派生稳定 ID，使开立/确认事务回滚后的重放写出同一 event_id，
+	// 由 (tenant_id,event_id) 唯一键与平台侧 event_id 去重共同保证只有一条。
+	eventID := newID()
+	if write.Policy != "" {
+		eventID = stableEventID(b.TenantID, b.ID, item.ID, "IMPORT_CONFIRMED", strconv.FormatUint(write.PolicyVersion, 10))
+	}
+	return insertAuditOutbox(tx, b.TenantID, eventID, AuditOutboxEntry{ActorID: write.ActorID, Action: "CONTRACT_MANAGEMENT:IMPORT_CONFIRMED", ResourceType: "contract", ResourceID: c.ID, Payload: payload})
 }
 
 // confirmationAuditPayload 组装 IMPORT_CONFIRMED 审计载荷。

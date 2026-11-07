@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/j-s-te/contract-management/internal/application"
@@ -132,7 +133,10 @@ func (r *Repository) AutoConfirmHistoricalImportItem(ctx context.Context, tenant
 		if err != nil {
 			return err
 		}
-		if err = insertAuditOutbox(tx, tenantID, newID(), AuditOutboxEntry{
+		// 事件 ID 按业务键确定性派生：本事务可能因下游失败整段回滚后重放，
+		// 只有稳定 ID 才能让平台侧按 event_id 去重并让两侧事件可对齐。
+		eventID := stableEventID(tenantID, b.ID, item.ID, "IMPORT_AUTO_APPROVED", strconv.FormatUint(policy.Version, 10))
+		if err = insertAuditOutbox(tx, tenantID, eventID, AuditOutboxEntry{
 			ActorID:      "SYSTEM",
 			Action:       "CONTRACT_MANAGEMENT:IMPORT_AUTO_APPROVED",
 			ResourceType: "contract",

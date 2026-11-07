@@ -1,10 +1,12 @@
 package mysql
 
 import (
+	"crypto/sha256"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"gorm.io/gorm"
 )
 
@@ -65,6 +67,26 @@ func insertAuditOutbox(tx *gorm.DB, tenantID, eventID string, entry AuditOutboxE
 		Result: result, PayloadJSON: entry.Payload,
 		DeliveryStatus: "pending", NextAttemptAt: now, CreatedAt: now,
 	}).Error
+}
+
+// stableEventID 由稳定业务键派生可重放的 26 字符事件 ID。
+//
+// 为什么需要它：自动审批的审计事件由重试驱动（开立/确认事务回滚后整体重放），
+// 用 newID()（ULID，含随机位）每次重试都会生成新 event_id，平台无法按 event_id
+// 去重，也无法把「同一次自动审批」在源库与审计平台对齐。
+//
+// 算法：sha256(parts 以 \x00 连接) 取前 16 字节，按 ULID 的 Crockford base32 编码
+// 成 26 字符（与 newID() 同长度，可安全写入 char(26) 且有 (tenant_id,event_id)
+// 唯一键兜底）。parts 必须包含区分业务对象的全部维度（租户/批次/单项/动作/策略
+// 版本），否则不同对象会撞同一个事件。
+//
+// 参数：parts 为稳定且不含随机量或时间的事实键。
+// 返回值：26 字符事件 ID；同一组 parts 恒定返回同一值。
+func stableEventID(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	var id ulid.ULID
+	copy(id[:], sum[:16])
+	return id.String()
 }
 
 // ipBytes 把规范化后的 IP 字面量存成 VARBINARY(16)；非法值写 NULL，避免脏数据。
