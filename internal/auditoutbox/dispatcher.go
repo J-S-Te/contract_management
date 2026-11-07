@@ -23,9 +23,11 @@ const (
 	purgeBatches = 20
 	// purgeInterval 是清理间隔：删除是后台维护动作，不必跟随 2s 投递周期。
 	purgeInterval = time.Hour
-	// defaultDeliveredRetention 是已投递行的默认保留时长（30 天）。
-	defaultDeliveredRetention = 30 * 24 * time.Hour
-	// deliveredRetentionEnv 是保留时长的配置键（单位天，<=0 关闭清理）。
+	// defaultDeliveredRetention 是已投递行的默认保留时长：0 表示关闭清理。
+	// 清理删除的是仅存在于本地的审计证据（平台侧可能缺失或不可回查），保留期
+	// 未经批准不得启用，因此缺省不动任何行，只有显式配置正整数天才启用。
+	defaultDeliveredRetention time.Duration = 0
+	// deliveredRetentionEnv 是保留时长的配置键（单位天，0/缺省/非法=关闭清理，正数启用）。
 	deliveredRetentionEnv = "AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS"
 )
 
@@ -71,10 +73,19 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
-	// 已投递行保留清理：默认 30 天，AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS<=0 关闭。
+	// 已投递行保留清理：默认关闭（0 天），只有显式配置
+	// AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS 为正整数才启用。
 	// 投递器未启动（审计发布器配置缺失）时本循环不存在，清理也随之不跑，由启动
 	// WARN 与 /readyz 的 audit_outbox_dispatcher 字段暴露。
 	retention := DeliveredRetentionFromEnv()
+	if retention <= 0 {
+		// 启动日志必须明确“清理未启用”：delivered 行是本地审计证据，默认永久保留。
+		d.logger().InfoContext(ctx, "audit outbox delivered-row purge disabled (retention 0); delivered rows are kept indefinitely as local audit evidence",
+			"table", "con_audit_outbox", "purge", "disabled", "retention_days", 0, "env", deliveredRetentionEnv)
+	} else {
+		d.logger().InfoContext(ctx, "audit outbox delivered-row purge enabled",
+			"table", "con_audit_outbox", "purge", "enabled", "retention", retention.String(), "env", deliveredRetentionEnv)
+	}
 	var lastPurge time.Time
 	for {
 		d.deliverOnce(ctx)
@@ -91,8 +102,9 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 // DeliveredRetentionFromEnv 读取 AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS（单位天）。
-// 缺省为 30 天；<=0 表示关闭清理；非法值退回默认值。该键不是必填键，
-// 缺失或写错都不得改变启动成败。
+// 缺省、非法值、<=0 一律返回 0 = 关闭清理：删除的是仅本地保存的已投递审计证据，
+// 保留期未经批准不得启用，只有显式配置正整数天才启用。该键不是必填键，缺失或
+// 写错都不得改变启动成败。
 func DeliveredRetentionFromEnv() time.Duration {
 	raw := strings.TrimSpace(os.Getenv(deliveredRetentionEnv))
 	if raw == "" {
