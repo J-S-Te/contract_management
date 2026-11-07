@@ -112,6 +112,16 @@ func main() {
 			MaxAttempts: 20, MaxBackoff: 5 * time.Minute, Logger: logger,
 		}
 		background.Go("audit-outbox", func() { auditDispatcher.Run(dispatchCtx) })
+	} else {
+		// 审计发布器配置不完整时不会启动投递循环：事务内审计仍写入
+		// con_audit_outbox，但没有任何循环把它送到平台，表会只增不减、
+		// 平台的合同审计也会静默缺失。保持既有"启动不 fail-fast"语义
+		// （是否必开由 PLATFORM_AUDIT_REQUIRED 与 /readyz 决定），
+		// 但必须留下可检索的 WARN，避免这类静默故障只能靠翻表发现。
+		logger.Warn("audit outbox dispatcher not started: PLATFORM_AUDIT_CLIENT_ID/PLATFORM_AUDIT_CLIENT_SECRET/PLATFORM_APPLICATION_CODE/PLATFORM_ENVIRONMENT_CODE incomplete; rows written to con_audit_outbox will never be delivered to the platform until the audit publisher is configured",
+			"table", "con_audit_outbox", "dispatcher", "disabled",
+			"impact", "transactional audit events accumulate locally and are not visible on the platform",
+			"readyz_field", "audit_outbox_dispatcher")
 	}
 	if cfg.PlatformNotificationClientID != "" && cfg.PlatformNotificationSecret != "" {
 		notificationDispatcher := &notificationintegration.Dispatcher{

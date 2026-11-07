@@ -207,6 +207,17 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 			"status": state, "audit": auditAvailability(audit), "signing_phone_key": phoneKeyState,
 			"integration_outbox": outboxState,
 		}
+		// B4：审计 outbox 投递器的启动状态必须可观测。投递循环只在审计发布器
+		// 配置完整时启动（见 cmd/api/main.go），配置缺失时事务审计仍写入
+		// con_audit_outbox 却永不投递——此前只能靠比对表增长发现。
+		// 这里只表达启动事实，不在此做重查询；required && disabled 的 503
+		// 语义由上面的 auditRequired() 分支保持不变。
+		auditOutboxDispatcher := "disabled"
+		if audit != nil {
+			auditOutboxDispatcher = "running"
+		}
+		data["audit_outbox_dispatcher"] = auditOutboxDispatcher
+		data["audit_outbox_required"] = auditRequired()
 		// C14：能力维度快照由装配层经 AttachReadinessCapabilities 注入；
 		// 可选未启用只反映在 state=disabled，不影响整体就绪判定。
 		if capabilitiesValue, ok := c.Get(readinessCapabilitiesContextKey); ok {
