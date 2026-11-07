@@ -36,6 +36,72 @@ func (h *Handler) registerContractImports(api *gin.RouterGroup) {
 	api.POST("/contract-import-batches/:id/commit", h.commitImportBatch)
 	api.POST("/contract-import-batches/:id/pause", h.controlImportBatch)
 	api.POST("/contract-import-batches/:id/resume", h.controlImportBatch)
+	// 历史导入自动审批的租户级运行开关：仅合同系统超级管理员（角色 admin）可读写。
+	api.GET("/contract-import/auto-approve", h.getImportAutoApproveSetting)
+	api.PUT("/contract-import/auto-approve", h.putImportAutoApproveSetting)
+}
+
+// importAutoApproveSettingData 是运行开关接口的响应数据。
+// updated_at 用指针表达「无记录时为 null」，与前端契约一致。
+type importAutoApproveSettingData struct {
+	CapabilityEnabled bool       `json:"capability_enabled"`
+	Enabled           bool       `json:"enabled"`
+	Version           uint64     `json:"version"`
+	UpdatedBy         string     `json:"updated_by"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+}
+
+// importAutoApproveSettingResponse 把设置与 env 能力开关投影成响应数据。
+// 参数：setting 为租户设置（无记录为零值），capability 为 env 能力开关状态。
+// 返回值：可直接序列化的响应数据。
+func importAutoApproveSettingResponse(setting contract.ImportAutoApproveSetting, capability bool) importAutoApproveSettingData {
+	data := importAutoApproveSettingData{
+		CapabilityEnabled: capability, Enabled: setting.Enabled,
+		Version: setting.Version, UpdatedBy: setting.UpdatedBy,
+	}
+	if !setting.UpdatedAt.IsZero() {
+		updatedAt := setting.UpdatedAt
+		data.UpdatedAt = &updatedAt
+	}
+	return data
+}
+
+// getImportAutoApproveSetting 读取当前租户的历史导入自动审批运行开关。
+// 参数：c 为已鉴权请求；非 admin 由服务层拒绝（403）。
+// 返回值：无；能力关闭时仍返回 capability_enabled=false 与租户现有设置。
+func (h *Handler) getImportAutoApproveSetting(c *gin.Context) {
+	setting, capability, e := h.service.GetImportAutoApproveSetting(c.Request.Context(), principal(c))
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	writeData(c, http.StatusOK, importAutoApproveSettingResponse(setting, capability))
+}
+
+// putImportAutoApproveSetting 以乐观版本写入当前租户的运行开关。
+// 参数：c 为已鉴权请求，body 必须且只能包含 enabled 与 expected_version。
+// 返回值：无；成功返回与 GET 相同的结构（version 已 +1）。
+func (h *Handler) putImportAutoApproveSetting(c *gin.Context) {
+	var body struct {
+		Enabled         *bool   `json:"enabled"`
+		ExpectedVersion *uint64 `json:"expected_version"`
+	}
+	if !decodeImportJSON(c, &body) {
+		return
+	}
+	// enabled 必须是显式布尔值；expected_version 必须显式提供（首次写入为 0），
+	// 缺失或负数都在这里按参数不合法拒绝，不猜默认值。
+	if body.Enabled == nil || body.ExpectedVersion == nil {
+		writeError(c, application.ErrValidation)
+		return
+	}
+	setting, e := h.service.SetImportAutoApproveSetting(c.Request.Context(), principal(c), *body.Enabled, *body.ExpectedVersion)
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	// 写入成功意味着 env 能力必定开启（否则服务层已拒绝），返回值与 GET 同形。
+	writeData(c, http.StatusOK, importAutoApproveSettingResponse(setting, h.service.ContractImportAutoApproveHistorical))
 }
 
 // importData 清除内部对象和执行会话标识后返回业务台账。

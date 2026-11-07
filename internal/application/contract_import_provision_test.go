@@ -145,7 +145,9 @@ type provisionImportRepository struct {
 	commits int
 	// commitErrs 逐次消费，用于模拟建合同步骤的失败。
 	commitErrs []error
-	written    struct {
+	// autoApproveSetting 是测试用的租户级运行开关；零值表示默认关闭。
+	autoApproveSetting contract.ImportAutoApproveSetting
+	written            struct {
 		contractID    string
 		opportunityID uint64
 		name          string

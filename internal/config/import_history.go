@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,23 @@ func loadImportHistoryConfig(c *Config) error {
 	}
 	if c.ContractImportHistoryEnabled && len(c.ContractImportConfirmationRoles) == 0 {
 		return fmt.Errorf("CONTRACT_IMPORT_CONFIRMATION_ROLES requires explicit business approval template")
+	}
+	// 历史导入自动审批默认关闭，且只是部署层能力开关：开启后仍须由合同系统超级
+	// 管理员（角色 admin）按租户开启运行开关（DB 持久化、默认关闭），两者同时开启
+	// 才自动确认并按清单声明状态归档。这是"跳过人工会签"的例外，必须显式配置，
+	// 不能随历史/开立开关一起被打开；依赖历史模式已验证、开立通道已装配。
+	autoApprove, autoApproveErr := strconv.ParseBool(env("CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL", "false"))
+	if autoApproveErr != nil {
+		return fmt.Errorf("CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL must be a boolean")
+	}
+	c.ContractImportAutoApproveHistorical = autoApprove
+	if autoApprove {
+		if !c.ContractImportHistoryEnabled {
+			return fmt.Errorf("CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL requires CONTRACT_IMPORT_HISTORY_ENABLED=true")
+		}
+		if !c.ContractImportCRMProvisionEnabled {
+			return fmt.Errorf("CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL requires CONTRACT_IMPORT_CRM_PROVISION_ENABLED=true")
+		}
 	}
 	targets := []struct {
 		prefix, scope string

@@ -23,14 +23,19 @@ type Config struct {
 	ContractImportEnabled           bool
 	ContractImportHistoryEnabled    bool
 	ContractImportConfirmationRoles []string
-	ImportProject                   ImportTargetConfig
-	ImportFinance                   ImportTargetConfig
-	ImportReport                    ImportTargetConfig
-	ImportReportRead                ImportReportReadConfig
-	ContractImportMaxItems          int
-	ContractImportMaxConcurrency    int
-	ContractImportStagingTTL        time.Duration
-	HTTPAddress                     string
+	// ContractImportAutoApproveHistorical 是历史导入自动审批的能力开关
+	//（CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL，默认 false）：开启后接口与前端
+	// 才允许按租户开启运行开关，且仍须租户开关为真才自动确认并按声明状态归档。
+	// 关闭时逐字节保持既有行为（仍需人工确认链路），接口按能力未开启拒绝。
+	ContractImportAutoApproveHistorical bool
+	ImportProject                       ImportTargetConfig
+	ImportFinance                       ImportTargetConfig
+	ImportReport                        ImportTargetConfig
+	ImportReportRead                    ImportReportReadConfig
+	ContractImportMaxItems              int
+	ContractImportMaxConcurrency        int
+	ContractImportStagingTTL            time.Duration
+	HTTPAddress                         string
 	// TrustedProxies 是唯一允许采信 X-Real-IP / X-Forwarded-For 的直接对端集合。
 	TrustedProxies         []string
 	MySQLDSN               string

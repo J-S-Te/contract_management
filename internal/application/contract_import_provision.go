@@ -378,10 +378,24 @@ func (s *Service) executeProvisionImportItem(ctx context.Context, actor Principa
 	if record.State == contract.ImportCRMProvisionCompleted {
 		// 幂等终态：开立已完成，只补齐批次单项结果，不再调用任何 CRM 写接口。
 		if item.ContractID == "" {
-			return ErrImportIdentityConflict
+			return &ImportIdentityConflictError{ItemID: item.ID, Kind: ImportConflictKindLedgerMismatch}
 		}
 		if item.State == "COMPLETE" {
 			return nil
+		}
+		// 开立台账已完成但单项没收口，说明上一次在建单之后中断（例如自动审批的
+		// 事务回滚）。自动审批生效时必须在这里把确认重试到落地，否则恢复（resume）
+		// 只补 COMPLETE、合同却永远停在 version=1 的导入草稿。仓储侧按已确认幂等，
+		// 因此这里可以无条件重放。生效判定 = env 能力开启且本租户运行开关开启；
+		// 读取失败必须上抛（逐项可重试依赖故障），不能静默跳过。
+		autoApprove, autoApproveErr := s.importAutoApproveEnabled(ctx, b.TenantID)
+		if autoApproveErr != nil {
+			return autoApproveErr
+		}
+		if autoApprove {
+			if err := s.autoConfirmHistoricalImportItem(ctx, b, item.ID); err != nil {
+				return err
+			}
 		}
 		return s.markImportItemComplete(ctx, b, item)
 	}
@@ -458,11 +472,24 @@ func (s *Service) executeProvisionImportItem(ctx context.Context, actor Principa
 	if record.State != contract.ImportCRMProvisionContractReady && record.State != contract.ImportCRMProvisionOpportunityReady {
 		// 走到这里说明台账状态与批次进度自相矛盾（如台账称合同已建但批次没有合同 ID），
 		// 按基线冲突阻断并等待人工核账，绝不猜测继续。
-		return ErrImportIdentityConflict
+		return &ImportIdentityConflictError{ContractID: item.ContractID, ItemID: item.ID, Kind: ImportConflictKindLedgerMismatch}
 	}
 	// 步骤 5-8 在合同入库后执行：建商机 → 推进签约 → 回写商机 → 推进 COMPLETED。
 	return s.finishImportItem(ctx, actor, b, item, item.ContractID, func(c contract.Contract) error {
-		return s.completeProvisionOpportunity(ctx, actor, store, key, record, c, resolveOwner)
+		if err := s.completeProvisionOpportunity(ctx, actor, store, key, record, c, resolveOwner); err != nil {
+			return err
+		}
+		// 自动审批是开立成功之后的追加步骤（env 能力开关 + 租户运行开关，默认均关闭）：
+		// 任一关闭时保持"只开立、等人工会签"的既有行为不变；两者都开启时由仓储在
+		// 同一事务内按清单声明状态归档并生成待投递目标。
+		autoApprove, autoApproveErr := s.importAutoApproveEnabled(ctx, b.TenantID)
+		if autoApproveErr != nil {
+			return autoApproveErr
+		}
+		if autoApprove {
+			return s.autoConfirmHistoricalImportItem(ctx, b, item.ID)
+		}
+		return nil
 	})
 }
 

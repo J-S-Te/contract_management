@@ -47,7 +47,7 @@ func (s *Service) GetImportSourceDocument(ctx context.Context, actor Principal, 
 		return c, e
 	}
 	if fmt.Sprintf("%x", sha256.Sum256(c.Document)) != source.SHA256 {
-		return c, ErrImportIdentityConflict
+		return c, &ImportIdentityConflictError{Kind: ImportConflictKindBaselineDrift}
 	}
 	c.DocumentFormat, e = contractdocument.EffectiveDocumentFormat(c.DocumentFormat, c.Document)
 	if e != nil {
