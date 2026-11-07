@@ -14,17 +14,17 @@ import (
 
 // AutoConfirmHistoricalImportItem 把一条历史开立项自动确认为清单声明终态。
 //
-// 使用场景：CONTRACT_IMPORT_AUTO_APPROVE_HISTORICAL 能力开启且租户运行开关为真的
-// 历史导入。CRM 客户/商机开立完成时合同行刚由 CommitImportDraft 写成 version=1、SourceFileStatus=READY、
+// 使用场景：批次确认已按 AUTO 策略冻结（提交事务内判定并固化），CRM 客户/商机
+// 开立完成时合同行刚由 CommitImportDraft 写成 version=1、SourceFileStatus=READY、
 // OriginKind=IMPORTED，正是 confirmHistoricalItem 要求的前置基线，因此这里直接复用
 // 既有确认写入：更新 status=声明状态、version=2、分配系统号、写 IMPORT_CONFIRMED
 // 审计并生成 PROJECT/FINANCE/REPORT 目标，而不是另写一套归档逻辑。
 //
 // 参数：ctx 为上下文，tenantID/batchID/itemID 定位批次与单项，roles 为合成确认台账
-// 记录的审批角色（开启自动审批时来自 CONTRACT_IMPORT_CONFIRMATION_ROLES）。
-// 返回值：幂等成功为 nil；批次/单项不存在、确认流程已被人工占用、清单或合同基线
+// 记录的审批角色（来自 CONTRACT_IMPORT_CONFIRMATION_ROLES），policy 为执行期策略快照。
+// 返回值：幂等成功为 nil；批次/单项不存在、确认未被 AUTO 批准、清单或合同基线
 // 不满足时返回冲突或清单错误；失败整体回滚（不取号、不写审计）。
-func (r *Repository) AutoConfirmHistoricalImportItem(ctx context.Context, tenantID, batchID, itemID string, roles []string) error {
+func (r *Repository) AutoConfirmHistoricalImportItem(ctx context.Context, tenantID, batchID, itemID string, roles []string, policy application.ImportAutoApprovePolicy) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 与人工确认同一把锁：批次行 FOR UPDATE 保证自动确认与 AdvanceImportConfirmation
 		// 串行，不会出现「系统自动批了但人工命令还在追加」的双写。
@@ -63,10 +63,14 @@ func (r *Repository) AutoConfirmHistoricalImportItem(ctx context.Context, tenant
 		if contract.ValidateHistoryEvidence(item.Item) != nil || item.ContractID == "" {
 			return contract.ErrImportManifest
 		}
-		if b.Confirmation == nil {
+		write := importConfirmationWrite{ActorID: "SYSTEM", Policy: "auto", PolicySource: "tenant_setting", PolicyVersion: policy.Version}
+		now := time.Now().UTC()
+		switch {
+		case b.Confirmation == nil:
 			// 合成一份已获批的确认台账：目标投递器（ClaimImportTarget）与前端都按
 			// confirmation.state=APPROVED 判断基线已冻结，因此这里必须落成同一形状，
 			// 摘要按人工提交时的 {Revision,Items,Sources} 结构计算，保证可核对。
+			// 策略字段同样固化，避免后续执行期再回退到 live 判定。
 			digest, digestErr := contract.ImportDigest(struct {
 				Revision uint64
 				Items    []contract.ImportItemState
@@ -75,38 +79,55 @@ func (r *Repository) AutoConfirmHistoricalImportItem(ctx context.Context, tenant
 			if digestErr != nil {
 				return digestErr
 			}
-			now := time.Now().UTC()
 			b.Confirmation = &contract.ImportConfirmation{
-				WorkflowID:    "contract-import-auto-" + b.ID,
-				Revision:      b.Revision,
-				Digest:        digest,
-				State:         "APPROVED",
-				Roles:         roles,
-				ApprovedRoles: append([]string(nil), roles...),
-				Assignees:     map[string][]string{},
-				Commands:      []contract.ImportConfirmationCommand{},
-				SubmittedAt:   now,
-				ExpiresAt:     now.Add(24 * time.Hour),
+				WorkflowID:     "contract-import-auto-" + b.ID,
+				Revision:       b.Revision,
+				Digest:         digest,
+				State:          "APPROVED",
+				Roles:          roles,
+				ApprovedRoles:  append([]string(nil), roles...),
+				Assignees:      map[string][]string{},
+				Commands:       []contract.ImportConfirmationCommand{},
+				SubmittedAt:    now,
+				ExpiresAt:      now.Add(24 * time.Hour),
+				PolicyDecision: contract.ImportPolicyDecisionAuto,
+				PolicyVersion:  policy.Version,
 			}
-		} else if b.Confirmation.State != "APPROVED" {
-			// 人工确认已受理但未完成（PENDING/STARTING/REJECTED/...）：自动审批不得
-			// 劫持既有会签流程，按冲突交给调度器逐项阻塞并等人工收敛。
+		case b.Confirmation.PolicyDecision == "" && policy.AllowLegacyUpgrade &&
+			(b.Confirmation.State == "STARTING" || b.Confirmation.State == "EXPIRED") &&
+			len(b.Confirmation.Commands) == 0 && len(b.Confirmation.ApprovedRoles) == 0 &&
+			(b.Confirmation.State != "STARTING" || b.Confirmation.ExpiresAt.After(now)):
+			// 旧数据升级：引入 PolicyDecision 之前的批次确认没有策略字段，提交时
+			// 无法固化判定。严格护栏保证只升级「确实没有任何人工动作」的确认：
+			// 无命令、无已批角色；STARTING 还必须在有效期内（否则本应走 EXPIRED 收敛）。
+			// 就地改写为 AUTO/APPROVED 并按新版协议留痕（policy_upgraded=true）。
+			b.Confirmation.PolicyDecision = contract.ImportPolicyDecisionAuto
+			b.Confirmation.PolicyVersion = policy.Version
+			b.Confirmation.ApprovedRoles = append([]string(nil), b.Confirmation.Roles...)
+			b.Confirmation.State = "APPROVED"
+			write.Upgraded = true
+		case b.Confirmation.State != "APPROVED":
+			// 人工确认已受理但未完成（PENDING/STARTING/REJECTED/...）或已固化 MANUAL：
+			// 自动审批不得劫持既有会签流程，按冲突交给调度器逐项阻塞并等人工收敛。
 			return application.ErrImportConflict
 		}
 		locked, err := lockImportContractRows(tx, tenantID, []string{item.ContractID})
 		if err != nil {
 			return err
 		}
-		if err = confirmHistoricalItem(tx, &b, item, locked); err != nil {
+		if err = confirmHistoricalItem(tx, &b, item, locked, write); err != nil {
 			return err
 		}
-		// 自动审批是真正的业务写入，必须与合同确认同事务留痕：只记录可核对的标识
-		// 与声明状态，不写清单正文、客户名或任何原件内容。
+		// 自动审批是真正的业务写入，必须与合同确认同事务留痕：只记录可核对的标识、
+		// 声明状态与策略来源，不写清单正文、客户名或任何原件内容。
 		payload, err := json.Marshal(map[string]any{
 			"batch_id":          b.ID,
 			"item_id":           item.ID,
 			"historical_status": item.Item.HistoryEvidence.HistoricalStatus,
 			"source_revision":   item.SourceRevision,
+			"policy":            "auto",
+			"policy_source":     "tenant_setting",
+			"setting_version":   policy.Version,
 		})
 		if err != nil {
 			return err

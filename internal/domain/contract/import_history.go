@@ -23,6 +23,19 @@ type ImportHistoryEvidence struct {
 	ExpectedFacts          *[]ImportFact `json:"expected_facts"`
 	ReportRequiredChannels string        `json:"report_required_channels"`
 }
+
+// ImportPolicyDecisionAuto / ImportPolicyDecisionManual 是确认冻结时落下的策略判定。
+//
+// 为什么要把判定固化到确认台账里：自动审批的生效条件（env 能力 + 租户运行开关）
+// 会在批次生命周期内变化。若执行期重新读运行开关，「提交时开着、执行时关掉」会让
+// 已冻结的提交路径中途改道；反之「提交时人工、执行时打开开关」也不该劫持人工会签。
+// 因此提交事务内看到的判定即本批次后续执行期的唯一口径（pin），空值只出现在
+// 引入本字段之前的旧数据上。
+const (
+	ImportPolicyDecisionAuto   = "AUTO"
+	ImportPolicyDecisionManual = "MANUAL"
+)
+
 type ImportConfirmation struct {
 	WorkflowID    string                      `json:"workflow_id"`
 	Revision      uint64                      `json:"revision"`
@@ -34,7 +47,24 @@ type ImportConfirmation struct {
 	Commands      []ImportConfirmationCommand `json:"commands"`
 	SubmittedAt   time.Time                   `json:"submitted_at"`
 	ExpiresAt     time.Time                   `json:"expires_at"`
+	// PolicyDecision 是冻结时的策略判定（AUTO/MANUAL）；旧数据为空。
+	// 刻意不参与 ImportDigest({Revision,Items,Sources})：摘要只固定清单内容，
+	// 策略判定是执行口径，不能让摘要随开关变化而变化。
+	PolicyDecision string `json:"policy_decision,omitempty"`
+	// PolicyVersion 是判定所依据的租户运行开关版本，用于审计与追溯。
+	PolicyVersion uint64 `json:"policy_version,omitempty"`
 }
+
+// AutoApproved 判断本确认是否由自动审批冻结（跳过人工会签）。
+// 参数：无。
+// 返回值：冻结时判定为 AUTO 时为 true。
+func (c ImportConfirmation) AutoApproved() bool { return c.PolicyDecision == ImportPolicyDecisionAuto }
+
+// PolicyPinned 判断本确认是否已固化策略判定（引入字段后提交的批次）。
+// 参数：无。
+// 返回值：PolicyDecision 非空时为 true；旧数据为 false，执行期才需要回退到 live 判定。
+func (c ImportConfirmation) PolicyPinned() bool { return c.PolicyDecision != "" }
+
 type ImportConfirmationCommand struct {
 	Key     string    `json:"command_key"`
 	ActorID string    `json:"actor_id"`

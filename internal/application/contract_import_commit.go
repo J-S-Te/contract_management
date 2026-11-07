@@ -58,6 +58,25 @@ func (s *Service) CommitImport(ctx context.Context, actor Principal, id string, 
 	return s.GetImportBatch(ctx, actor, id)
 }
 
+// importConfirmationResumable 判定当前确认台账是否仍允许暂停/恢复。
+//
+// STARTING 是人工会签刚冻结、工作流尚未推进的窗口，恢复正好用于补启动；
+// APPROVED 只有在「自动审批冻结」时才可恢复（该状态没有工作流，恢复只是重排
+// 待投递目标）；PENDING/REJECTED/WITHDRAWN/EXPIRED 以及人工 APPROVED 都不允许，
+// 否则管理员可以用恢复把已收敛或仍在会签的批次重新拉回执行态。
+//
+// 参数：cf 为批次确认台账。
+// 返回值：允许恢复时为 true。
+func importConfirmationResumable(cf contract.ImportConfirmation) bool {
+	switch cf.State {
+	case "STARTING":
+		return true
+	case "APPROVED":
+		return cf.AutoApproved()
+	}
+	return false
+}
+
 // ControlImport 暂停或恢复新认领，保留原操作及来源身份。
 // 参数：ctx及actor为当前身份，id/version为台账版本，resume为恢复，session为恢复操作者会话。
 // 返回值：权限、并发或存储错误。
@@ -70,7 +89,7 @@ func (s *Service) ControlImport(ctx context.Context, actor Principal, id string,
 		if e := importAccess(actor, *b, "contract.import.commit"); e != nil {
 			return e
 		}
-		if b.Confirmation != nil && b.Confirmation.State != "STARTING" {
+		if b.Confirmation != nil && !importConfirmationResumable(*b.Confirmation) {
 			return ErrImportConflict
 		}
 		if b.Version != version || b.OperationID == "" || b.State == "COMPLETED" {

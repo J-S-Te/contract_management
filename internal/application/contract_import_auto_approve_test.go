@@ -19,15 +19,16 @@ type autoApproveImportRepository struct {
 	batchID  string
 	itemID   string
 	roles    []string
+	policy   ImportAutoApprovePolicy
 	err      error
 }
 
 // AutoConfirmHistoricalImportItem 记录调用参数并返回预置结果。
-// 参数：ctx 为上下文，tenantID/batchID/itemID 定位批次，roles 为确认角色。
+// 参数：ctx 为上下文，tenantID/batchID/itemID 定位批次，roles 为确认角色，policy 为策略快照。
 // 返回值：预置错误；默认成功。
-func (r *autoApproveImportRepository) AutoConfirmHistoricalImportItem(_ context.Context, tenantID, batchID, itemID string, roles []string) error {
+func (r *autoApproveImportRepository) AutoConfirmHistoricalImportItem(_ context.Context, tenantID, batchID, itemID string, roles []string, policy ImportAutoApprovePolicy) error {
 	r.calls++
-	r.tenantID, r.batchID, r.itemID, r.roles = tenantID, batchID, itemID, roles
+	r.tenantID, r.batchID, r.itemID, r.roles, r.policy = tenantID, batchID, itemID, roles, policy
 	return r.err
 }
 
@@ -40,7 +41,8 @@ func TestAutoConfirmHistoricalImportItemPassesBatchIdentityAndRoles(t *testing.T
 	service := &Service{Repo: repo, ContractImportConfirmationRoles: []string{"admin", "finance_director"}}
 	b := contract.ImportBatch{ID: "batch-1", TenantID: "tenant-1", Items: []contract.ImportItemState{{ID: "item-1"}}}
 
-	if err := service.autoConfirmHistoricalImportItem(context.Background(), b, "item-1"); err != nil {
+	policy := ImportAutoApprovePolicy{Auto: true, Version: 7}
+	if err := service.autoConfirmHistoricalImportItem(context.Background(), b, "item-1", policy); err != nil {
 		t.Fatal(err)
 	}
 	if repo.calls != 1 || repo.tenantID != "tenant-1" || repo.batchID != "batch-1" || repo.itemID != "item-1" {
@@ -49,10 +51,14 @@ func TestAutoConfirmHistoricalImportItemPassesBatchIdentityAndRoles(t *testing.T
 	if !slices.Equal(repo.roles, []string{"admin", "finance_director"}) {
 		t.Fatalf("roles=%v", repo.roles)
 	}
+	// 策略快照必须原样透传：仓储据此决定是否允许旧数据升级、写入哪个设置版本。
+	if repo.policy != policy {
+		t.Fatalf("policy=%+v, want %+v", repo.policy, policy)
+	}
 
 	// 仓储错误必须原样上抛：调度器据此写逐项 Issue，不得吞错变成"已完成"。
 	repo.err = ErrImportConflict
-	if err := service.autoConfirmHistoricalImportItem(context.Background(), b, "item-1"); !errors.Is(err, ErrImportConflict) {
+	if err := service.autoConfirmHistoricalImportItem(context.Background(), b, "item-1", policy); !errors.Is(err, ErrImportConflict) {
 		t.Fatalf("error=%v, want ErrImportConflict", err)
 	}
 }
@@ -63,7 +69,7 @@ func TestAutoConfirmHistoricalImportItemPassesBatchIdentityAndRoles(t *testing.T
 // 返回值：错误码不符时失败。
 func TestAutoConfirmHistoricalImportItemRequiresStoreCapability(t *testing.T) {
 	service := &Service{Repo: &recordingRepository{}}
-	err := service.autoConfirmHistoricalImportItem(context.Background(), contract.ImportBatch{ID: "batch-1", TenantID: "tenant-1"}, "item-1")
+	err := service.autoConfirmHistoricalImportItem(context.Background(), contract.ImportBatch{ID: "batch-1", TenantID: "tenant-1"}, "item-1", ImportAutoApprovePolicy{})
 	if !errors.Is(err, ErrImportUnsupported) {
 		t.Fatalf("error=%v, want ErrImportUnsupported", err)
 	}
@@ -95,10 +101,16 @@ func (r *provisionImportRepository) provisionAutoApprove(batchID, itemID string,
 }
 
 // AutoConfirmHistoricalImportItem 让测试仓储满足 ContractImportAutoApproveStore。
-// 参数：ctx 为上下文，tenantID/batchID 定位批次，itemID 为单项，roles 为确认角色。
+// 参数：ctx 为上下文，tenantID/batchID 定位批次，itemID 为单项，roles 为确认角色，
+// policy 为策略快照（仅 Auto 为真时才允许合成/确认，模拟真实仓储的冲突语义）。
 // 返回值：租户或批次不匹配返回冲突。
-func (r *provisionImportRepository) AutoConfirmHistoricalImportItem(_ context.Context, tenantID, batchID, itemID string, roles []string) error {
+func (r *provisionImportRepository) AutoConfirmHistoricalImportItem(_ context.Context, tenantID, batchID, itemID string, roles []string, policy ImportAutoApprovePolicy) error {
 	if tenantID != r.batch.TenantID {
+		return ErrImportConflict
+	}
+	r.autoApproveCalls = append(r.autoApproveCalls, policy)
+	if !policy.Auto {
+		// 真实仓储在这里会返回 ErrImportConflict：非 AUTO 策略不得自动确认。
 		return ErrImportConflict
 	}
 	return r.provisionAutoApprove(batchID, itemID, roles)
@@ -195,15 +207,15 @@ type flakyAutoApproveRepository struct {
 }
 
 // AutoConfirmHistoricalImportItem 按剩余失败次数注入冲突。
-// 参数：ctx/tenantID/batchID/itemID/roles 与真实仓储一致。
+// 参数：ctx/tenantID/batchID/itemID/roles/policy 与真实仓储一致。
 // 返回值：注入期内返回围栏冲突，之后委托真实实现。
-func (r *flakyAutoApproveRepository) AutoConfirmHistoricalImportItem(ctx context.Context, tenantID, batchID, itemID string, roles []string) error {
+func (r *flakyAutoApproveRepository) AutoConfirmHistoricalImportItem(ctx context.Context, tenantID, batchID, itemID string, roles []string, policy ImportAutoApprovePolicy) error {
 	r.calls++
 	if r.failures > 0 {
 		r.failures--
 		return ErrImportConflict
 	}
-	return r.provisionImportRepository.AutoConfirmHistoricalImportItem(ctx, tenantID, batchID, itemID, roles)
+	return r.provisionImportRepository.AutoConfirmHistoricalImportItem(ctx, tenantID, batchID, itemID, roles, policy)
 }
 
 // TestImportProvisionAutoApproveRetriesAfterInterruption 验证自动审批只在确认真正落地后

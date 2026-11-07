@@ -53,7 +53,26 @@ func importConfirmationAccess(actor Principal, b contract.ImportBatch) error {
 	return ErrForbidden
 }
 
+// ContractImportConfirmationFreezer 在单事务内冻结历史确认，并把同一事务内读到的
+// 租户自动审批运行开关交给调用方，使「策略判定」与「确认写入」原子一致。
+//
+// 为什么必须由仓储提供而不是复用 UpdateImportBatch：判定要读设置行，而设置行由
+// 开关管理员独立写入。两条语句必须在同一事务内、且按「先批次行后设置行」的固定
+// 顺序加锁，否则会与开关写入形成反向锁序。缺失该能力时提交按能力未开放失败关闭。
+type ContractImportConfirmationFreezer interface {
+	// FreezeImportConfirmation 锁定批次行后读取租户设置（无记录按零值），
+	// 调用 change 修改批次并保存；change 返回错误时整体回滚。
+	// 参数：ctx为上下文，tenantID/batchID定位台账，change为冻结回调。
+	// 返回值：冲突、存储或回调错误。
+	FreezeImportConfirmation(ctx context.Context, tenantID, batchID string, change func(*contract.ImportBatch, contract.ImportAutoApproveSetting) error) error
+}
+
 // SubmitImportConfirmation 冻结独立历史审批与异步原件建单身份。
+//
+// 策略判定（AUTO/MANUAL）在冻结事务内依据租户运行开关一次性固化：AUTO 直接落
+// APPROVED 台账且不启动 Temporal（执行期由开立编排自动确认），MANUAL 保持既有
+// STARTING + 工作流行为。判定一旦固化即成为本批次执行期的唯一口径。
+//
 // 参数：ctx及actor为当前会话，id/revision/token为预检基线，key为稳定命令键，session为受信会话哈希。
 // 返回值：已受理台账或审批角色、版本、权限及Temporal启动错误。
 func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal, id string, revision uint64, token, key string, session []byte) (contract.ImportBatch, error) {
@@ -76,9 +95,20 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 		if b.Revision != revision || b.CommitKeyHash != keyHash {
 			return b, ErrImportConflict
 		}
+		// AUTO 已冻结的确认没有工作流可启动（startImportConfirmation 内部早退），
+		// 因此重放路径同样不需要 Temporal。
 		return b, s.startImportConfirmation(ctx, b)
 	}
-	if !s.ContractImportHistoryEnabled || !s.ContractImportEnabled || s.Temporal == nil {
+	if !s.ContractImportHistoryEnabled || !s.ContractImportEnabled {
+		return b, ErrImportUnsupported
+	}
+	// 事务外预读只为决定「本次是否需要 Temporal」：AUTO 路径不启工作流，
+	// 因此缺 Temporal 不构成拒绝理由（真正的人工路径仍必须显式失败）。
+	liveAuto, _, e := s.importAutoApproveLive(ctx, b.TenantID)
+	if e != nil {
+		return b, e
+	}
+	if s.Temporal == nil && !liveAuto {
 		return b, ErrImportUnsupported
 	}
 	if b.Revision != revision || b.State != "PREVIEWED" || b.PreviewToken != token || token == "" || !b.PreviewExpiresAt.After(time.Now()) {
@@ -90,17 +120,6 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 	roles := s.ContractImportConfirmationRoles
 	if len(roles) == 0 {
 		return b, &ApprovalAssigneeUnavailableError{RoleCodes: []string{"CONTRACT_IMPORT_CONFIRMATION_ROLES"}}
-	}
-	users, e := s.loadPersonnel(ctx, actor, roles)
-	if e != nil {
-		return b, e
-	}
-	assigned := map[string][]string{}
-	for _, role := range roles {
-		assigned[role] = approversForRole(users, role)
-		if len(assigned[role]) == 0 {
-			return b, &ApprovalAssigneeUnavailableError{RoleCodes: []string{role}}
-		}
 	}
 	for _, item := range b.Items {
 		issues := importFieldIssues(item.Item)
@@ -115,6 +134,12 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 			return b, e
 		}
 	}
+	freezer, ok := s.Repo.(ContractImportConfirmationFreezer)
+	if !ok {
+		// 缺冻结能力时不能退化成「普通更新 + 执行期再读开关」：那会让判定与确认
+		// 写入分处两个事务，重新制造本 P0 要消除的冲突窗口。
+		return b, ErrImportUnsupported
+	}
 	digest, _ := contract.ImportDigest(struct {
 		Revision uint64
 		Items    []contract.ImportItemState
@@ -122,20 +147,48 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 	}{b.Revision, b.Items, b.Sources})
 	now := time.Now().UTC()
 	expected := b.Version
-	e = r.UpdateImportBatch(ctx, b.TenantID, b.ID, func(current *contract.ImportBatch) error {
+	e = freezer.FreezeImportConfirmation(ctx, b.TenantID, b.ID, func(current *contract.ImportBatch, setting contract.ImportAutoApproveSetting) error {
 		if current.Version != expected || current.Revision != revision || current.Confirmation != nil {
 			return ErrImportConflict
 		}
-		current.Confirmation = &contract.ImportConfirmation{WorkflowID: "contract-import-confirmation-" + b.ID + "-" + strconv.FormatUint(revision, 10),
+		// 判定与确认写入同一事务：这里的 auto 就是本批次执行期的唯一口径。
+		auto := s.ContractImportAutoApproveHistorical && setting.Enabled
+		confirmation := &contract.ImportConfirmation{
 			Revision:      revision,
 			Digest:        digest,
-			State:         "STARTING",
 			Roles:         roles,
-			Assignees:     assigned,
-			ApprovedRoles: []string{},
 			Commands:      []contract.ImportConfirmationCommand{},
 			SubmittedAt:   now,
-			ExpiresAt:     now.Add(72 * time.Hour)}
+			ExpiresAt:     now.Add(72 * time.Hour),
+			PolicyVersion: setting.Version,
+		}
+		if auto {
+			// AUTO：台账即为最终批准形状，跳过人工会签与 Temporal。
+			confirmation.PolicyDecision = contract.ImportPolicyDecisionAuto
+			confirmation.WorkflowID = "contract-import-auto-" + b.ID
+			confirmation.State = "APPROVED"
+			confirmation.ApprovedRoles = append([]string(nil), roles...)
+			confirmation.Assignees = map[string][]string{}
+		} else {
+			// MANUAL：保持既有语义——解析受派人，缺任一人即拒绝受理。
+			confirmation.PolicyDecision = contract.ImportPolicyDecisionManual
+			users, loadErr := s.loadPersonnel(ctx, actor, roles)
+			if loadErr != nil {
+				return loadErr
+			}
+			assigned := map[string][]string{}
+			for _, role := range roles {
+				assigned[role] = approversForRole(users, role)
+				if len(assigned[role]) == 0 {
+					return &ApprovalAssigneeUnavailableError{RoleCodes: []string{role}}
+				}
+			}
+			confirmation.WorkflowID = "contract-import-confirmation-" + b.ID + "-" + strconv.FormatUint(revision, 10)
+			confirmation.State = "STARTING"
+			confirmation.Assignees = assigned
+			confirmation.ApprovedRoles = []string{}
+		}
+		current.Confirmation = confirmation
 		current.State, current.OperationID, current.CommittedRevision = "QUEUED", "history-"+b.ID, revision
 		current.SessionHash, current.CommitKeyHash = append([]byte(nil), session...), keyHash
 		current.Epoch++
@@ -153,9 +206,19 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 }
 
 // startImportConfirmation 使用稳定WorkflowID恢复未知启动响应。
+//
+// AUTO 确认在冻结时已批准，没有需要启动或恢复的工作流，直接视为成功；
+// 这也是「自动审批提交不需要 Temporal」的唯一实现依据。
+//
 // 参数：ctx为上下文，b为持久化冻结台账。
 // 返回值：启动成功、已存在或明确Temporal不可用错误。
 func (s *Service) startImportConfirmation(ctx context.Context, b contract.ImportBatch) error {
+	if b.Confirmation == nil {
+		return ErrApprovalWorkflowUnavailable
+	}
+	if b.Confirmation.AutoApproved() {
+		return nil
+	}
 	if s.Temporal == nil {
 		return ErrApprovalWorkflowUnavailable
 	}

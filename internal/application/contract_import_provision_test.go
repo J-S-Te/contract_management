@@ -147,7 +147,9 @@ type provisionImportRepository struct {
 	commitErrs []error
 	// autoApproveSetting 是测试用的租户级运行开关；零值表示默认关闭。
 	autoApproveSetting contract.ImportAutoApproveSetting
-	written            struct {
+	// autoApproveCalls 记录每次自动确认收到的策略快照，用于断言 pin/live 口径。
+	autoApproveCalls []ImportAutoApprovePolicy
+	written          struct {
 		contractID    string
 		opportunityID uint64
 		name          string
