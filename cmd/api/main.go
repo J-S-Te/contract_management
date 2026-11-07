@@ -24,6 +24,7 @@ import (
 	platformintegration "github.com/j-s-te/contract-management/internal/integration/platform"
 	projectintegration "github.com/j-s-te/contract-management/internal/integration/project"
 	settlementintegration "github.com/j-s-te/contract-management/internal/integration/settlement"
+	"github.com/j-s-te/contract-management/internal/lifecycle"
 	"github.com/j-s-te/contract-management/internal/transport/httpapi"
 	"github.com/oklog/ulid/v2"
 )
@@ -45,6 +46,15 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// 后台投递循环使用独立可取消 ctx：收到信号后必须先 server.Shutdown 停止接收
+	// 新请求，再取消投递 ctx，给在途批次留出排空窗口。signal ctx 在信号到达时
+	// 立即取消，直接复用会让投递器在 HTTP 优雅停机期间就被中断。
+	dispatchCtx, stopDispatch := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopDispatch()
+	// 退出预算：默认 20s，可用 CONTRACT_SHUTDOWN_DRAIN_SECONDS（秒）覆盖；
+	// 非法值或 <=0 回落默认，避免配置手误把进程退出变成立即杀后台或无限等待。
+	shutdownBudget := lifecycle.DrainBudget(os.Getenv("CONTRACT_SHUTDOWN_DRAIN_SECONDS"), lifecycle.DefaultDrainBudget)
+	background := lifecycle.NewWaiter(shutdownBudget)
 	licenseGate, err := bootstrap.StartCommercialLicense(ctx, logger)
 	if err != nil {
 		logger.Error("commercial license configuration failed")
@@ -86,7 +96,8 @@ func main() {
 		logger.Info("CRM link integration enabled", "base_url", cfg.CRMLinkBaseURL, "scope", cfg.CRMLinkScope)
 	}
 	if !splitProcess && cfg.CRMLinkEnabled {
-		go (&crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, TokenSource: crmLinkTokenSource, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger}).Run(ctx)
+		crmLinkDispatcher := &crm.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.CRMLinkBaseURL, TokenSource: crmLinkTokenSource, MaxAttempts: 20, Poll: 2 * time.Second, Logger: logger}
+		background.Go("crm-link-outbox", func() { crmLinkDispatcher.Run(dispatchCtx) })
 	}
 	personnelDirectory := platform.NewPersonnelDirectory(cfg.PlatformBaseURL, cfg.PlatformPersonnelClientID, cfg.PlatformPersonnelSecret, cfg.OIDCAuthorizationTimeout)
 	// 事务内审计 outbox 的投递循环独立于通知配置：通知关闭、审计开启时仍必须消费，
@@ -100,7 +111,7 @@ func main() {
 			Reporter: auditReporter, WorkerID: "contract-api-audit", Poll: 2 * time.Second, BatchSize: 50,
 			MaxAttempts: 20, MaxBackoff: 5 * time.Minute, Logger: logger,
 		}
-		go auditDispatcher.Run(ctx)
+		background.Go("audit-outbox", func() { auditDispatcher.Run(dispatchCtx) })
 	} else {
 		// 审计发布器配置不完整时不会启动投递循环：事务内审计仍写入
 		// con_audit_outbox，但没有任何循环把它送到平台，表会只增不减、
@@ -128,7 +139,7 @@ func main() {
 				return ids, nil
 			},
 		}
-		go notificationDispatcher.Run(ctx)
+		background.Go("notification-outbox", func() { notificationDispatcher.Run(dispatchCtx) })
 	}
 	oidcStore, err := platform.NewGORMOIDCStore(db)
 	if err != nil {
@@ -142,7 +153,7 @@ func main() {
 		dispatcher := &projectintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.ProjectAPIBaseURL, MaxAttempts: cfg.ProjectIntegrationRetries, Poll: cfg.ProjectIntegrationPoll, Logger: logger,
 			TokenSource: tokenSource}
 		if !splitProcess {
-			go dispatcher.Run(ctx)
+			background.Go("project-outbox", func() { dispatcher.Run(dispatchCtx) })
 		}
 	}
 	if cfg.ProjectCategoryDirectoryEnabled {
@@ -153,7 +164,7 @@ func main() {
 		settlementDispatcher := &settlementintegration.Dispatcher{Store: repository, LicenseGate: licenseGate, BaseURL: cfg.SettlementAPIBaseURL, MaxAttempts: cfg.SettlementIntegrationRetries, Poll: cfg.SettlementIntegrationPoll, Logger: logger,
 			TokenSource: projectintegration.NewClientCredentialsTokenSource(ctx, cfg.SettlementIntegrationTokenURL, cfg.SettlementIntegrationClientID, cfg.SettlementIntegrationClientSecret, cfg.SettlementIntegrationAudience)}
 		if !splitProcess {
-			go settlementDispatcher.Run(ctx)
+			background.Go("settlement-outbox", func() { settlementDispatcher.Run(dispatchCtx) })
 		}
 	}
 	if cfg.CRMReferenceEnabled {
@@ -217,8 +228,9 @@ func main() {
 		service.StampedFileGateway = gateway
 		service.StampedFileMode = cfg.StampedFileMode
 		service.StampedFileApplicationID = cfg.StampedFileApplicationID
+		templateFileDispatcher := &application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}
 		if !splitProcess {
-			go (&application.TemplateFileDispatcher{Store: repository, Gateway: gateway, ApplicationID: cfg.StampedFileApplicationID, TenantID: cfg.OIDCTenantID, LicenseGate: licenseGate, Logger: logger}).Run(ctx)
+			background.Go("template-file-outbox", func() { templateFileDispatcher.Run(dispatchCtx) })
 		}
 	}
 	var dashboardBearer platform.ClientCredentialsTokenVerifier
@@ -355,7 +367,7 @@ func main() {
 		}
 	}
 	service.ImportActorResolver = identity.ResolveImportActor
-	go service.RunImportDispatcher(ctx)
+	background.Go("import-outbox", func() { service.RunImportDispatcher(dispatchCtx) })
 	service.ImportReportReadConfigured = cfg.ImportReportRead.ClientID != ""
 	var importReportVerifier platform.ClientCredentialsTokenVerifier
 	if cfg.ImportReportRead.ClientID != "" {
@@ -402,7 +414,10 @@ func main() {
 	}
 
 	httpapi.RegisterImportReportSource(server.Handler.(*gin.Engine), service, importReportVerifier)
+	// ① 信号到达先停止接收新请求：在途请求最多 10s 完成，期间后台投递仍在跑。
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -412,6 +427,17 @@ func main() {
 	logger.Info("contract API started", "address", cfg.HTTPAddress)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
+		os.Exit(1)
+	}
+	// ListenAndServe 在监听器关闭后即返回，Server.Shutdown 可能仍在等待在途请求；
+	// 等到它返回再取消后台投递，严格保证“先停止接收、再排空投递”的顺序。
+	<-shutdownDone
+	// ② 取消后台投递 ctx：在途批次用独立 ctx 完成落库后返回。
+	stopDispatch()
+	// ③ 预算内等待后台组件返回；超预算列出未退出组件后以非零码退出，不 panic。
+	// 与 platform/Settlement 的停机契约一致：后台组件没停下时不能以 0 退出，
+	// 否则编排侧会把“排空超预算”误判成正常停机。
+	if !background.LogUnfinished(logger, "contract API", shutdownBudget) {
 		os.Exit(1)
 	}
 }

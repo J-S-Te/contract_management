@@ -141,6 +141,10 @@ func (d *TemplateFileDispatcher) Run(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
+		// 收到 SIGTERM 后不再认领新模板代次；在途代次的持久化由仓储行锁与租约恢复。
+		if ctx.Err() != nil {
+			return
+		}
 		for count := 0; count < 20; count++ {
 			found, err := d.DeliverOnce(ctx)
 			if err != nil && ctx.Err() == nil {

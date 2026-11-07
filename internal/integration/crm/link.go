@@ -16,6 +16,7 @@ import (
 	core "github.com/J-S-Te/license-core"
 
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/lifecycle"
 )
 
 type LinkDelivery struct {
@@ -105,6 +106,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	ticker := time.NewTicker(d.Poll)
 	defer ticker.Stop()
 	for {
+		// 收到 SIGTERM 后不再认领新记录；在途记录的终态由 dispatchOne 用独立 ctx 落库。
+		if ctx.Err() != nil {
+			return
+		}
 		if err := d.dispatchOne(ctx); err != nil && ctx.Err() == nil && d.Logger != nil {
 			d.Logger.Error("dispatch contract opportunity link to CRM", "error", err)
 		}
@@ -144,7 +149,10 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 			if callErr == nil {
 				defer resp.Body.Close()
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					return d.Store.MarkOpportunityLinkDelivered(ctx, delivery.ID)
+					// 退出期间也必须写入终态：不能把已投递记录留在 CLAIMED 等租约。
+					persistCtx, cancel := lifecycle.PersistContext(ctx)
+					defer cancel()
+					return d.Store.MarkOpportunityLinkDelivered(persistCtx, delivery.ID)
 				}
 				callErr = fmt.Errorf("CRM API returned %d", resp.StatusCode)
 			}
@@ -152,7 +160,9 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 		}
 	}
 	dead := delivery.Attempts >= d.MaxAttempts
-	if markErr := d.Store.MarkOpportunityLinkFailed(ctx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
+	persistCtx, cancel := lifecycle.PersistContext(ctx)
+	defer cancel()
+	if markErr := d.Store.MarkOpportunityLinkFailed(persistCtx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
 		return fmt.Errorf("link delivery error: %v; persist retry: %w", err, markErr)
 	}
 	return err
