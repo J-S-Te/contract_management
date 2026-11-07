@@ -12,6 +12,8 @@ import (
 	"time"
 
 	core "github.com/J-S-Te/license-core"
+
+	"github.com/j-s-te/contract-management/internal/lifecycle"
 )
 
 // 合同 → 结算的财务生效事件投递。
@@ -119,6 +121,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 	for {
+		// 收到 SIGTERM 后不再开启新一轮认领；在途批次终态由 deliver 用独立 ctx 落库。
+		if ctx.Err() != nil {
+			return
+		}
 		if !time.Now().Before(reconcileAt) {
 			reconcileAt = d.reconcileCycle(ctx, reconcileEvery)
 		}
@@ -368,7 +374,10 @@ func (d *Dispatcher) deliver(ctx context.Context, delivery Delivery, delivered f
 				defer response.Body.Close()
 				body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 				if response.StatusCode >= 200 && response.StatusCode < 300 {
-					return delivered(ctx, delivery.ID)
+					// 退出期间也必须写入终态：不能把已投递记录留在认领状态等租约。
+					persistCtx, cancel := lifecycle.PersistContext(ctx)
+					defer cancel()
+					return delivered(persistCtx, delivery.ID)
 				}
 				permanent = permanentDeliveryFailure(response.StatusCode)
 				err = fmt.Errorf("settlement API returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
@@ -376,7 +385,9 @@ func (d *Dispatcher) deliver(ctx context.Context, delivery Delivery, delivered f
 		}
 	}
 	dead := permanent || delivery.Attempts >= d.MaxAttempts
-	if markErr := failed(ctx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
+	persistCtx, cancel := lifecycle.PersistContext(ctx)
+	defer cancel()
+	if markErr := failed(persistCtx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
 		return fmt.Errorf("delivery error: %v; persist retry: %w", err, markErr)
 	}
 	return err

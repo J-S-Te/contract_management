@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/j-s-te/contract-management/internal/lifecycle"
 )
 
 // Delivery 是一条待投递的合同通知快照，字段来自 con_notification_outbox。
@@ -58,6 +60,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	ticker := time.NewTicker(d.Poll)
 	defer ticker.Stop()
 	for {
+		// 收到 SIGTERM 后不再认领新通知；在途通知的终态由 dispatchOne 用独立 ctx 落库。
+		if ctx.Err() != nil {
+			return
+		}
 		if err := d.dispatchOne(ctx); err != nil && ctx.Err() == nil && d.Logger != nil {
 			d.Logger.Error("dispatch contract notification to platform", "error", err)
 		}
@@ -80,7 +86,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 	}
 	if len(recipients) == 0 {
 		// 角色在目录中已无符合条件的人员，无可送达对象，视为完成以避免无限重试。
-		return d.Store.MarkNotificationDelivered(ctx, delivery.ID)
+		return d.markDelivered(ctx, delivery.ID)
 	}
 	identity, err := notificationDeliveryIdentity(delivery)
 	if err != nil {
@@ -128,9 +134,18 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		return d.Store.MarkNotificationDelivered(ctx, delivery.ID)
+		return d.markDelivered(ctx, delivery.ID)
 	}
 	return d.fail(ctx, delivery, fmt.Errorf("platform notification API returned %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody))))
+}
+
+// markDelivered 写入成功终态：ctx 已取消时改用独立 ctx，避免通知行停留在认领状态。
+// 参数：ctx 为投递循环 ctx，id 为 outbox 行 ID。
+// 返回值：仓储错误。
+func (d *Dispatcher) markDelivered(ctx context.Context, id string) error {
+	persistCtx, cancel := lifecycle.PersistContext(ctx)
+	defer cancel()
+	return d.Store.MarkNotificationDelivered(persistCtx, id)
 }
 
 // 工作流去重键标识业务事件，而非接收者 Outbox
@@ -167,7 +182,10 @@ func (d *Dispatcher) resolveRecipients(ctx context.Context, delivery Delivery) (
 
 func (d *Dispatcher) fail(ctx context.Context, delivery Delivery, err error) error {
 	dead := delivery.Attempts >= d.MaxAttempts
-	if markErr := d.Store.MarkNotificationFailed(ctx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
+	// 退出期间也必须持久化失败退避：用已取消的 ctx 回写会二次失败并丢掉落库机会。
+	persistCtx, cancel := lifecycle.PersistContext(ctx)
+	defer cancel()
+	if markErr := d.Store.MarkNotificationFailed(persistCtx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
 		return fmt.Errorf("delivery error: %v; persist retry: %w", err, markErr)
 	}
 	return err

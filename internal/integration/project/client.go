@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/j-s-te/contract-management/internal/lifecycle"
 )
 
 type Delivery struct {
@@ -48,6 +50,9 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	if d.Store == nil {
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if count, err := d.reconcile(ctx); err != nil {
 		if d.Logger != nil {
 			d.Logger.Error("reconcile historical contract deliveries", "error", err)
@@ -58,6 +63,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	ticker := time.NewTicker(d.Poll)
 	defer ticker.Stop()
 	for {
+		// 收到 SIGTERM 后不再认领新记录；在途记录的终态由 dispatchOne 用独立 ctx 落库。
+		if ctx.Err() != nil {
+			return
+		}
 		if err := d.dispatchOne(ctx); err != nil && ctx.Err() == nil && d.Logger != nil {
 			d.Logger.Error("dispatch contract activation to project management", "error", err)
 		}
@@ -122,14 +131,19 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) error {
 				defer response.Body.Close()
 				body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 				if response.StatusCode >= 200 && response.StatusCode < 300 {
-					return d.Store.MarkProjectDeliveryDelivered(ctx, delivery.ID)
+					// 退出期间也必须写入终态：不能把已投递记录留在认领状态等租约。
+					persistCtx, cancel := lifecycle.PersistContext(ctx)
+					defer cancel()
+					return d.Store.MarkProjectDeliveryDelivered(persistCtx, delivery.ID)
 				}
 				err = fmt.Errorf("project API returned %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 			}
 		}
 	}
 	dead := delivery.Attempts >= d.MaxAttempts
-	if markErr := d.Store.MarkProjectDeliveryFailed(ctx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
+	persistCtx, cancel := lifecycle.PersistContext(ctx)
+	defer cancel()
+	if markErr := d.Store.MarkProjectDeliveryFailed(persistCtx, delivery.ID, err.Error(), delivery.Attempts, dead); markErr != nil {
 		return fmt.Errorf("delivery error: %v; persist retry: %w", err, markErr)
 	}
 	return err
