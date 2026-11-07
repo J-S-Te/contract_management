@@ -211,7 +211,14 @@ func (r *Repository) CommitImportDraft(ctx context.Context, tenant, batch string
 					return e
 				}
 				if identity.Digest != item.Digest {
-					return application.ErrImportIdentityConflict
+					// 带上既有身份行指向的合同/导入项：操作者需要知道「已导入成哪一条」，
+					// Unwrap 保证错误分类仍是 ErrImportIdentityConflict。
+					conflict := &application.ImportIdentityConflictError{ItemID: identity.ItemID,
+						Kind: application.ImportConflictKindAlreadyImported}
+					if identity.ContractID != nil {
+						conflict.ContractID = *identity.ContractID
+					}
+					return conflict
 				}
 				if identity.ContractID != nil {
 					id = *identity.ContractID

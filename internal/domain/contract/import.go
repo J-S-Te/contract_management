@@ -100,6 +100,13 @@ type ImportIssue struct {
 	// Message 是给操作者的静态可操作提示（不回显外部系统原文）；
 	// 为空表示该错误码自解释，前端按码表展示即可。
 	Message string `json:"message,omitempty"`
+	// ContractID/ItemID 是冲突时已存在的平台内部身份（来源单号此前导入的去向），
+	// 只在可定位的冲突类 Issue 上出现，让操作者能核对原合同而不是反复重试。
+	ContractID string `json:"contract_id,omitempty"`
+	ItemID     string `json:"item_id,omitempty"`
+	// ConflictKind 区分「已导入」与「预检基线漂移」两类来源身份冲突，
+	// 前端据此决定引导用户去核对原合同还是重新预检。
+	ConflictKind string `json:"conflict_kind,omitempty"`
 }
 type ImportItemState struct {
 	Item               ImportItem      `json:"item"`

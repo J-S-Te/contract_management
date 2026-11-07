@@ -73,10 +73,13 @@ func (s *Service) DispatchImportOnce(ctx context.Context) error {
 	}
 	index := -1
 	for i, item := range b.Items {
-		if item.State != "COMPLETE" {
-			index = i
-			break
+		// 跳过已完成与不可自动推进的终态行：一个不可重试的 BLOCKED 行
+		// 不能把整批卡在同一位置上无限重试。
+		if item.State == "COMPLETE" || importItemTerminal(item) {
+			continue
 		}
+		index = i
+		break
 	}
 	if err == nil {
 		err = s.checkBusinessLicense(run)
@@ -111,11 +114,25 @@ func (s *Service) DispatchImportOnce(ctx context.Context) error {
 			}
 		}
 		if complete {
-			current.State = "COMPLETED"
-			if current.Confirmation != nil {
+			// 全部开立完成后的收敛：已获批（含自动审批写入的合成确认）说明逐目标
+			// 基线已冻结，批次进入 TARGETS_PENDING 由目标投递器接手；仍待会签的
+			// 保持 CONFIRMATION_PENDING；没有确认台账（普通导入）仍直接 COMPLETED。
+			switch {
+			case current.Confirmation != nil && current.Confirmation.State == "APPROVED":
+				current.State = "TARGETS_PENDING"
+			case current.Confirmation != nil:
 				current.State = "CONFIRMATION_PENDING"
+			default:
+				current.State = "COMPLETED"
 			}
 			current.SessionHash = nil
+			return nil
+		}
+		if index < 0 {
+			// 剩余项全部是不可自动推进的终态（如不可重试的 BLOCKED）：
+			// 批次转 PARTIAL 并停止重排 QUEUED，否则调度器会每秒空转重领同一批；
+			// 操作者更正数据或恢复（resume）后再推进。
+			current.State = "PARTIAL"
 		}
 		return nil
 	})
@@ -150,14 +167,39 @@ func importErrorCode(err error) string {
 // importItemIssue 把一次后台执行失败映射为逐项 Issue。
 // 参数：err 为执行错误。
 // 返回值：历史开立失败按设计定稿 3.3 的五个错误码落 Issue（字段路径与可重试标记
-// 由分类结果给出）；其余错误保持原有类别与可重试判定。
+// 由分类结果给出）；来源身份冲突额外带出既有合同/导入项与冲突类别；
+// 其余错误保持原有类别与可重试判定。
 func importItemIssue(err error) contract.ImportIssue {
 	var provision *importProvisionFailure
 	if errors.As(err, &provision) {
 		return provision.issue()
 	}
+	if issue, conflict := importIdentityConflictIssue(err, "commit"); conflict {
+		return issue
+	}
 	return contract.ImportIssue{Field: "commit", Code: importErrorCode(err),
 		Retryable: !errors.Is(err, ErrImportIdentityConflict) && !errors.Is(err, ErrImportConflict) && !errors.Is(err, ErrImportNeedsReview)}
+}
+
+// importItemTerminal 判断单项是否已处于不可自动推进的终态。
+// 只有「需要人工纠错或来源身份重建」的项才算终态：纠错/待复核状态，或身份冲突类
+// BLOCKED。围栏冲突（IMPORT_REVISION_CONFLICT）、权限、校验、依赖类 BLOCKED 仍可
+// 通过 resume/重新预检恢复，不能因 Retryable=false 就永久锁死。
+// 参数：item 为批次中的单项。
+// 返回值：需业务更正/复核或来源身份重建时返回 true。
+func importItemTerminal(item contract.ImportItemState) bool {
+	switch item.State {
+	case "CORRECTION_REQUIRED", "NEEDS_REVIEW":
+		return true
+	case "BLOCKED":
+		for _, issue := range item.Issues {
+			switch issue.Code {
+			case "IMPORT_SOURCE_ID_CONFLICT", "IMPORT_CORRECTION_REQUIRED", "IMPORT_NEEDS_REVIEW":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // importItemPreparer 是执行期真正准备合同的函数（普通导入复用普通准备，
@@ -205,7 +247,7 @@ func (s *Service) commitImportContract(ctx context.Context, actor Principal, b c
 		return "", err
 	}
 	if digest != item.Digest {
-		return "", ErrImportIdentityConflict
+		return "", &ImportIdentityConflictError{Kind: ImportConflictKindBaselineDrift}
 	}
 	if err = s.EnsureOwnerNotFrozen(ctx, b.TenantID, actor.UserID); err != nil {
 		return "", err
