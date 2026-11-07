@@ -350,6 +350,13 @@ func TestHistoricalImportAutoApproveEndToEnd(t *testing.T) {
 		}
 
 		path := "/api/v1/contract-import-batches/" + b.ID
+		// 摘要必须对外可复核：提交事务内固化的 manifest_digest 与批次读取逐字符一致。
+		if len(confirmation.Digest) != 64 {
+			t.Fatalf("提交后确认摘要=%q 不是 64 位十六进制", confirmation.Digest)
+		}
+		if fetched := networkImportJSON[contract.ImportBatch](t, n, http.MethodGet, path, nil, "", http.StatusOK); fetched.Confirmation == nil || fetched.Confirmation.Digest != confirmation.Digest {
+			t.Fatalf("批次读取摘要=%+v, want %q", fetched.Confirmation, confirmation.Digest)
+		}
 		final := historicalDispatchUntilSettled(t, service, n, path)
 		if final.State != "TARGETS_PENDING" {
 			t.Fatalf("批次状态=%s items=%+v, want TARGETS_PENDING", final.State, final.Items)

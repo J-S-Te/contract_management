@@ -73,6 +73,9 @@ type ContractImportConfirmationFreezer interface {
 // APPROVED 台账且不启动 Temporal（执行期由开立编排自动确认），MANUAL 保持既有
 // STARTING + 工作流行为。判定一旦固化即成为本批次执行期的唯一口径。
 //
+// digest 在提交事务内随确认台账一起固化（对 {revision,items,sources} 求 SHA256），
+// 客户端可用响应里的 confirmation.manifest_digest 对本次确认范围做独立复核。
+//
 // 参数：ctx及actor为当前会话，id/revision/token为预检基线，key为稳定命令键，session为受信会话哈希。
 // 返回值：已受理台账或审批角色、版本、权限及Temporal启动错误。
 func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal, id string, revision uint64, token, key string, session []byte) (contract.ImportBatch, error) {
@@ -231,6 +234,11 @@ func (s *Service) startImportConfirmation(ctx context.Context, b contract.Import
 }
 
 // ActImportConfirmation 持久化可信当前身份的审批命令供独立Workflow执行。
+//
+// WITHDRAW 覆盖两种确认形态：人工会签（STARTING/PENDING）只追加命令，由工作流收敛；
+// AUTO 已批准确认没有工作流，因此创建人在「零确认项且批次未完成」的严格护栏下撤回时，
+// 由本方法在同一事务内直接落 WITHDRAWN + PAUSED + 升代，不需要等任何异步处理。
+//
 // 参数：ctx及actor为当前鉴权，id/version为批次围栏，key/action为稳定批准、驳回或撤回命令。
 // 返回值：权限、冲突或存储错误；不接受客户端审批结果字段。
 func (s *Service) ActImportConfirmation(ctx context.Context, actor Principal, id string, version uint64, key, action string) error {
@@ -267,7 +275,25 @@ func (s *Service) ActImportConfirmation(ctx context.Context, actor Principal, id
 				return nil
 			}
 		}
-		if b.Version != version || (cf.State != "PENDING" && !(action == "WITHDRAW" && cf.State == "STARTING")) || !cf.ExpiresAt.After(time.Now()) {
+		// AUTO 确认在冻结时即 APPROVED 且没有工作流，永远不会经由
+		// AdvanceImportConfirmation 收敛，因此「撤回」必须在本次事务内完成状态迁移，
+		// 只追加命令等人处理会让错误提交永久卡死。
+		// 护栏刻意保持严格：仅创建人、仅「一条清单项都没确认」且批次未完成时可撤回；
+		// 已确认项意味着合同已取号归档，只能走更正流程，不能靠撤回抹掉事实。
+		autoWithdraw := action == "WITHDRAW" && cf.AutoApproved() && cf.State == "APPROVED"
+		if autoWithdraw {
+			if b.State == "COMPLETED" {
+				return ErrImportConflict
+			}
+			for _, item := range b.Items {
+				if item.Confirmed {
+					return ErrImportConflict
+				}
+			}
+		}
+		// AUTO 撤回不看确认有效期：AUTO 没有能走到 EXPIRED 的收敛路径，用有效期卡住
+		// 只会让逃生口在冻结 72 小时后永久失效；MANUAL 的既有有效期语义不变。
+		if b.Version != version || (cf.State != "PENDING" && !autoWithdraw && !(action == "WITHDRAW" && cf.State == "STARTING")) || (!autoWithdraw && !cf.ExpiresAt.After(time.Now())) {
 			return ErrImportConflict
 		}
 		if len(cf.Commands) >= 1000 {
@@ -280,6 +306,15 @@ func (s *Service) ActImportConfirmation(ctx context.Context, actor Principal, id
 			}
 		}
 		cf.Commands = append(cf.Commands, contract.ImportConfirmationCommand{Key: key, ActorID: actor.UserID, Action: action, Roles: roles, At: time.Now().UTC()})
+		if autoWithdraw {
+			// 镜像工作流撤回（AdvanceImportConfirmation 的 WITHDRAW 收敛）的效果：
+			// 确认标记撤回、批次回到 PAUSED 并升代清租约，让在途的旧执行代次（含可能在途的
+			// 自动确认）立即失效，交回创建人重新预检后提交。
+			cf.State = "WITHDRAWN"
+			b.State = "PAUSED"
+			b.Epoch++
+			b.LeaseUntil = time.Time{}
+		}
 		return nil
 	})
 }
