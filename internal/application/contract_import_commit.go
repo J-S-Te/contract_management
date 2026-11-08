@@ -89,7 +89,8 @@ func (s *Service) ControlImport(ctx context.Context, actor Principal, id string,
 		if e := importAccess(actor, *b, "contract.import.commit"); e != nil {
 			return e
 		}
-		if b.Confirmation != nil && !importConfirmationResumable(*b.Confirmation) {
+		if b.Confirmation != nil && (!importConfirmationResumable(*b.Confirmation) ||
+			(b.Confirmation.AutoApproved() && !s.importAutoApproveBatchEligible(*b))) {
 			return ErrImportConflict
 		}
 		if b.Version != version || b.OperationID == "" || b.State == "COMPLETED" {

@@ -9,8 +9,9 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// ContractApprovalWorkflow 实现 APP-001 和 APP-005。审批节点
-// 在输入中快照化，后续规则编辑仅影响新启动的运行。
+// ContractApprovalWorkflow 驱动冻结节点的合同审批。
+// 参数：ctx为工作流上下文，input为提交时冻结的合同与节点。
+// 返回值：最终审批状态或关键活动错误。
 func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput) (ApprovalState, error) {
 	if input.ApprovalID == "" || input.ContractID == "" || input.ApplicantUserID == "" || len(input.Nodes) == 0 {
 		return ApprovalState{}, fmt.Errorf("invalid contract approval input")
@@ -170,7 +171,19 @@ func ContractApprovalWorkflow(ctx workflow.Context, input ContractApprovalInput)
 	return state, nil
 }
 
+// applyContractCommand 校验任务身份并应用合同审批命令。
+// 参数：state为当前运行状态，command为可信主体的操作及原任务身份。
+// 返回值：是否改变状态、是否终态和拒绝操作的原因。
 func applyContractCommand(state *ApprovalState, command ApprovalCommand) (changed, terminal bool, err error) {
+	if err := validateCommandOrigin(*state, command); err != nil {
+		return false, false, err
+	}
+	originIndex := state.CurrentNodeIndex
+	defer func() {
+		if changed && command.OriginNodeID != "" && originIndex >= 0 && originIndex < len(state.Nodes) {
+			state.Nodes[originIndex].Revision++
+		}
+	}()
 	if command.Action == ActionWithdraw {
 		if command.ActorUserID != state.ApplicantUserID {
 			return false, false, fmt.Errorf("only applicant may withdraw")
@@ -258,6 +271,9 @@ func applyContractCommand(state *ApprovalState, command ApprovalCommand) (change
 			return false, false, fmt.Errorf("target must be an approved historical node")
 		}
 		for i := target; i <= state.CurrentNodeIndex; i++ {
+			if command.OriginNodeID != "" {
+				state.Nodes[i].Revision++
+			}
 			state.Nodes[i].Status = approval.NodePending
 			state.Nodes[i].ApprovedBy = map[string]bool{}
 			state.Nodes[i].StartedAt = time.Time{}

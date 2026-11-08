@@ -69,6 +69,7 @@ type Meta struct {
 	RunID                string `json:"run_id"`
 	Kind                 Kind   `json:"kind"`
 	Status               Status `json:"status"`
+	CompletionApplied    bool   `json:"completion_applied"`
 	FromStatus           string `json:"from_status"`
 	TargetStatus         string `json:"target_status"`
 	Reason               string `json:"reason,omitempty"`

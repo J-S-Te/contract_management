@@ -23,7 +23,9 @@ func encodedApprovalState(t *testing.T, state workflows.ApprovalState) *temporal
 	return encoded
 }
 
-// Signal 被接收后必须等查询确认节点实际转派才返回，并携带节点 ID 与稳定命令 ID。
+// TestReassignApprovalNodeWaitsForWorkflowExecution 验证转派经过工作流及持久化确认。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestReassignApprovalNodeWaitsForWorkflowExecution(t *testing.T) {
 	before := workflows.ApprovalState{
 		ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, CurrentNodeIndex: 0,
@@ -40,7 +42,7 @@ func TestReassignApprovalNodeWaitsForWorkflowExecution(t *testing.T) {
 			len(command.TargetUserIDs) == 1 && command.TargetUserIDs[0] == "user-successor"
 	})).Return(nil)
 	service := &Service{
-		Repo: &recordingRepository{approvalMeta: approval.Meta{
+		Repo: &recordingRepository{actions: []approval.Action{{CommandID: handoverCommandID("handover:batch-1:item-1"), NodeID: "node-2", ActorUserID: "user-leaver", Action: "transfer"}}, approvalMeta: approval.Meta{
 			ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", Status: approval.StatusRunning,
 			WorkflowID: "workflow-1", RunID: "run-1",
 		}},
@@ -56,7 +58,9 @@ func TestReassignApprovalNodeWaitsForWorkflowExecution(t *testing.T) {
 	}
 }
 
-// 已实际转派但回执丢失时，同一幂等键重试应直接返回成功且不再发送 Signal。
+// TestReassignApprovalNodeIsIdempotentAfterExecution 验证回执丢失后同一命令安全重试。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestReassignApprovalNodeIsIdempotentAfterExecution(t *testing.T) {
 	applied := workflows.ApprovalState{
 		ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, CurrentNodeIndex: 0,
@@ -65,7 +69,7 @@ func TestReassignApprovalNodeIsIdempotentAfterExecution(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
 	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).Return(encodedApprovalState(t, applied), nil)
 	service := &Service{
-		Repo: &recordingRepository{approvalMeta: approval.Meta{
+		Repo: &recordingRepository{actions: []approval.Action{{CommandID: handoverCommandID("handover:batch-1:item-1"), NodeID: "node-2", ActorUserID: "user-leaver", Action: "transfer"}}, approvalMeta: approval.Meta{
 			ID: "approval-1", TenantID: "tenant-1", ContractID: "contract-1", Status: approval.StatusRunning,
 			WorkflowID: "workflow-1", RunID: "run-1",
 		}},
@@ -102,4 +106,19 @@ func TestCreateContractChecksFrozenActorNotUnassignedOwner(t *testing.T) {
 	if checker.userID != actor.UserID {
 		t.Fatalf("freeze lookup used %q, want actual owner %q", checker.userID, actor.UserID)
 	}
+}
+
+// TestReassignApprovalNodeRejectsUnconfirmedProjection 验证人员已变更但无同命令持久化证据时不能冒充交接完成。
+// 参数：t为测试上下文。
+// 返回值：无。
+func TestReassignApprovalNodeRejectsUnconfirmedProjection(t *testing.T) {
+	state := workflows.ApprovalState{Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"successor"}}, Status: approval.NodeActive}}}
+	temporal := temporalmocks.NewClient(t)
+	temporal.On("QueryWorkflow", mock.Anything, "wf", "run", workflows.StateQueryName).Return(encodedApprovalState(t, state), nil)
+	service := &Service{Temporal: temporal, Repo: &recordingRepository{approvalMeta: approval.Meta{Status: approval.StatusRunning, WorkflowID: "wf", RunID: "run"}}}
+	evidence, err := service.ReassignApprovalNode(context.Background(), "tenant", "approval", "node", "old", "successor", "handover", "key")
+	if !errors.Is(err, ErrHandoverConflict) || evidence != "" {
+		t.Fatalf("evidence=%q err=%v", evidence, err)
+	}
+	temporal.AssertNotCalled(t, "SignalWorkflow", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }

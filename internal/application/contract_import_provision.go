@@ -64,6 +64,14 @@ type ContractImportCRMProvisionStore interface {
 	ResetImportCRMProvision(context.Context, contract.ImportCRMProvisionKey, int) (contract.ImportCRMProvision, error)
 }
 
+// ContractImportNumberPreparer 在CRM验真前仅预留编号，不确认合同或生成下游目标。
+type ContractImportNumberPreparer interface {
+	// PrepareImportContractNumber 在本地历史导入围栏内预留稳定系统号供CRM验真。
+	// 参数：上下文、租户、批次、清单版本、执行代次、单项ID和合同ID定位授权基线。
+	// 返回值：预留编号；围栏失效或来源不一致时返回冲突，其余返回存储错误。
+	PrepareImportContractNumber(context.Context, string, string, uint64, uint64, string, string) (string, error)
+}
+
 // ContractImportOpportunityWriter 回写开立通道取得的商机引用。
 // 它必须保持合同 version/status 不变：历史确认链路要求 version==1 才能落 archived。
 type ContractImportOpportunityWriter interface {
@@ -141,7 +149,7 @@ func importProvisionAmount(minor int64) string {
 
 // importProvisionSignDate 把合同开始日期格式化为 YYYY-MM-DD。
 // 参数：start 为清单声明开始日期，可为 nil。
-// 返回值：UTC 日期字符串；无开始日期时为空串（由 CRM 侧决定是否拒绝）。
+// 返回值：UTC 日期字符串；无开始日期时为空串（开立预检与执行期均会拒绝）。
 func importProvisionSignDate(start *time.Time) string {
 	if start == nil {
 		return ""
@@ -187,6 +195,35 @@ func importProvisionCustomerProfileFailure(metadata contract.ImportMetadata) *im
 	}
 	return newProvisionFailure(field, codeImportFieldTooLong, false,
 		"客户类型、行业、地区每列最多 64 个字符，请精简后重新导入", field+" exceeds 64 characters")
+}
+
+// importProvisionRequiredFieldIssue 在新建写入前核对CRM契约，不补造日期、姓名或电话。
+// 参数：metadata为真实清单，contactsRequired表示客户查重为零、必须新建登记联系人。
+// 返回值：首个字段问题；满足实际CRM必填与长度限制时返回nil。
+func importProvisionRequiredFieldIssue(metadata contract.ImportMetadata, contactsRequired bool) *contract.ImportIssue {
+	if metadata.StartDate == nil {
+		return &contract.ImportIssue{Field: "metadata.start_date", Code: "REQUIRED", Message: "自动开立CRM商机须填写合同开始日期"}
+	}
+	for _, column := range []struct {
+		field, value string
+		max          int
+	}{
+		{"title", metadata.Title, 200}, {"customer_name", metadata.CustomerName, 200},
+		{"customer_contact", metadata.CustomerContact, 100}, {"customer_phone", metadata.CustomerPhone, 32},
+	} {
+		value := strings.TrimSpace(column.value)
+		contactColumn := column.field == "customer_contact" || column.field == "customer_phone"
+		if contactColumn && !contactsRequired {
+			continue
+		}
+		if contactsRequired && (column.field == "customer_contact" || column.field == "customer_phone") && value == "" {
+			return &contract.ImportIssue{Field: "metadata." + column.field, Code: "REQUIRED", Message: "新建CRM客户须填写真实登记联系人及联系电话"}
+		}
+		if utf8.RuneCountInString(value) > column.max {
+			return &contract.ImportIssue{Field: "metadata." + column.field, Code: codeImportFieldTooLong, Message: "字段超出CRM开立接口长度限制，请精简后重新预检"}
+		}
+	}
+	return nil
 }
 
 // importProvisionIdempotencyKey 生成一次 CRM 调用的稳定幂等键。
@@ -239,6 +276,9 @@ func (s *Service) planImportProvisionCustomer(ctx context.Context, actor Princip
 	switch len(candidates) {
 	case 0:
 		plan.CustomerState = contract.ImportProvisionCustomerToCreate
+		if issue := importProvisionRequiredFieldIssue(item.Metadata, true); issue != nil {
+			return newProvisionFailure(issue.Field, issue.Code, false, issue.Message, "CRM creation required field invalid")
+		}
 		return nil
 	case 1:
 		if !strings.EqualFold(strings.TrimSpace(candidates[0].Status), "ACTIVE") {
@@ -363,6 +403,9 @@ func (s *Service) executeProvisionImportItem(ctx context.Context, actor Principa
 		return newProvisionFailure("metadata", CodeImportCRMProvisionDisabled, false,
 			"历史导入自动开立 CRM 的开关已关闭，该行无法执行", "CRM import provision is disabled")
 	}
+	if issue := importProvisionRequiredFieldIssue(item.Item.Metadata, false); issue != nil {
+		return newProvisionFailure(issue.Field, issue.Code, false, issue.Message, "CRM creation required field invalid")
+	}
 	store, ok := s.Repo.(ContractImportCRMProvisionStore)
 	if !ok {
 		return ErrImportUnsupported
@@ -476,6 +519,15 @@ func (s *Service) executeProvisionImportItem(ctx context.Context, actor Principa
 	}
 	// 步骤 5-8 在合同入库后执行：建商机 → 推进签约 → 回写商机 → 推进 COMPLETED。
 	return s.finishImportItem(ctx, actor, b, item, item.ContractID, func(c contract.Contract) error {
+		preparer, ok := s.Repo.(ContractImportNumberPreparer)
+		if !ok {
+			return ErrImportUnsupported
+		}
+		number, err := preparer.PrepareImportContractNumber(ctx, b.TenantID, b.ID, b.Revision, b.Epoch, item.ID, c.ID)
+		if err != nil {
+			return err
+		}
+		c.Number = number
 		if err := s.completeProvisionOpportunity(ctx, actor, store, key, record, c, resolveOwner); err != nil {
 			return err
 		}
@@ -506,26 +558,30 @@ func (s *Service) recordImportProvisionFailure(ctx context.Context, store Contra
 
 // completeProvisionOpportunity 为已入库合同开立并推进 CRM 商机，然后回写合同并收口台账。
 // 参数：ctx 与 actor 为执行身份，store/key/record 为台账前置，c 为刚入库/已存在的合同，
-// resolveOwner 为销售身份解析（仅创建商机时需要）。
+// resolveOwner 为销售身份解析（新建及同键重放商机时需要）。
 // 返回值：完成或明确失败；失败已写入台账并作为逐项 Issue 返回。
 func (s *Service) completeProvisionOpportunity(ctx context.Context, actor Principal, store ContractImportCRMProvisionStore, key contract.ImportCRMProvisionKey, record contract.ImportCRMProvision, c contract.Contract, resolveOwner func() (string, *importProvisionFailure)) error {
 	if record.State == contract.ImportCRMProvisionOpportunityReady {
 		return s.writeBackImportProvisionOpportunity(ctx, store, key, record, c, record.OpportunityID)
 	}
-	opportunityID, created := record.OpportunityID, false
-	if opportunityID == 0 {
-		identity, failure := resolveOwner()
-		if failure != nil {
-			return s.failImportProvision(ctx, store, key, record, failure)
-		}
-		opportunity, failure := s.createImportProvisionOpportunity(ctx, actor, key, c, identity)
-		if failure != nil {
-			return s.failImportProvision(ctx, store, key, record, failure)
-		}
-		opportunityID, created = opportunity.ID, true
+	// 台账不另存商机版本；复用同一创建幂等键读取CRM当前版本，避免猜测乐观锁。
+	opportunityID := record.OpportunityID
+	identity, failure := resolveOwner()
+	if failure != nil {
+		return s.failImportProvision(ctx, store, key, record, failure)
 	}
+	opportunity, failure := s.createImportProvisionOpportunity(ctx, actor, key, c, identity)
+	if failure != nil {
+		return s.failImportProvision(ctx, store, key, record, failure)
+	}
+	if opportunityID != 0 && opportunityID != opportunity.ID {
+		return ErrImportConflict
+	}
+	created := record.OpportunityCreated || opportunityID == 0
+	opportunityID = opportunity.ID
+	opportunityVersion := opportunity.Version
 	// 推进「已签约 + CLOSED」：CRM 侧校验 contract_ref 与合同验真，幂等键保证重跑不重复。
-	if _, failure := s.signImportProvisionOpportunity(ctx, actor, key, opportunityID, c.ID); failure != nil {
+	if _, failure := s.signImportProvisionOpportunity(ctx, actor, key, opportunityID, c.ID, opportunityVersion); failure != nil {
 		return s.failImportProvision(ctx, store, key, record, failure)
 	}
 	updated, err := store.AdvanceImportCRMProvision(ctx, key, contract.ImportCRMProvisionAdvance{
@@ -578,10 +634,14 @@ func (s *Service) lookupOrCreateImportProvisionCustomer(ctx context.Context, act
 	}
 	switch len(candidates) {
 	case 0:
+		if issue := importProvisionRequiredFieldIssue(metadata, true); issue != nil {
+			return CRMProvisionCustomer{}, false, newProvisionFailure(issue.Field, issue.Code, false, issue.Message, "CRM creation required field invalid")
+		}
 		customerType, industry, region := metadata.ProvisionCustomerProfile()
 		created, err := s.CRMProvisionCustomerClient.CreateCustomer(ctx, actor.IdentityID,
 			importProvisionIdempotencyKey("customer", key), CRMProvisionCustomerInput{
 				Name: name, CustomerType: customerType, Industry: industry, Region: region, OwnerIdentityID: owner,
+				Contacts: []CRMProvisionCustomerContact{{Name: strings.TrimSpace(metadata.CustomerContact), Phone: strings.TrimSpace(metadata.CustomerPhone), IsRegistration: true}},
 			})
 		if err != nil {
 			return CRMProvisionCustomer{}, false, classifyImportProvisionCRMError(err)
@@ -642,11 +702,12 @@ func (s *Service) importProvisionCustomerName(ctx context.Context, actor Princip
 func (s *Service) createImportProvisionOpportunity(ctx context.Context, actor Principal, key contract.ImportCRMProvisionKey, c contract.Contract, owner string) (CRMProvisionOpportunity, *importProvisionFailure) {
 	opportunity, err := s.CRMProvisionOpportunityClient.CreateOpportunity(ctx, actor.IdentityID,
 		importProvisionIdempotencyKey("opportunity", key), CRMProvisionOpportunityInput{
-			CustomerID:       c.CRMCustomerID,
-			OwnerIdentityID:  owner,
-			Name:             strings.TrimSpace(c.Title),
-			Amount:           importProvisionAmount(c.AmountMinor),
-			ExpectedSignDate: importProvisionSignDate(c.StartDate),
+			CustomerID:         c.CRMCustomerID,
+			OwnerIdentityID:    owner,
+			Name:               strings.TrimSpace(c.Title),
+			Amount:             importProvisionAmount(c.AmountMinor),
+			ExpectedSignDate:   importProvisionSignDate(c.StartDate),
+			RequirementSummary: strings.TrimSpace(c.Title),
 		})
 	if err != nil {
 		return CRMProvisionOpportunity{}, classifyImportProvisionCRMError(err)
@@ -659,11 +720,14 @@ func (s *Service) createImportProvisionOpportunity(ctx context.Context, actor Pr
 }
 
 // signImportProvisionOpportunity 把商机推进到「已签约 + CLOSED」。
-// 参数：ctx/actor 为执行身份，key 为开立幂等键，opportunityID 为已建商机，contractRef 为合同 ID。
+// 参数：ctx/actor为执行身份，key为幂等键，opportunityID/contractRef为目标与合同ID，
+//
+//	expectedVersion为CRM返回的当前商机版本，用于拒绝并发变更。
+//
 // 返回值：推进后的商机或失败投影；合同验真未通过映射为可操作提示。
-func (s *Service) signImportProvisionOpportunity(ctx context.Context, actor Principal, key contract.ImportCRMProvisionKey, opportunityID uint64, contractRef string) (CRMProvisionOpportunity, *importProvisionFailure) {
+func (s *Service) signImportProvisionOpportunity(ctx context.Context, actor Principal, key contract.ImportCRMProvisionKey, opportunityID uint64, contractRef string, expectedVersion uint64) (CRMProvisionOpportunity, *importProvisionFailure) {
 	opportunity, err := s.CRMProvisionOpportunityClient.SignOpportunity(ctx, actor.IdentityID,
-		importProvisionIdempotencyKey("sign", key), opportunityID, contractRef)
+		importProvisionIdempotencyKey("sign", key), opportunityID, contractRef, expectedVersion)
 	if err != nil {
 		return CRMProvisionOpportunity{}, classifyImportProvisionCRMError(err)
 	}

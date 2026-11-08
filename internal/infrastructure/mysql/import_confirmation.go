@@ -195,9 +195,16 @@ func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.
 		"updated_at":             now,
 		"updated_by":             write.ActorID}
 	// 系统号独立分配，原件和纸面编号保持原字节；采用系统级规则，规则缺失时回退旧格式。
-	number, err := allocateContractNumberInTx(tx, b.TenantID, c.ID, c.ContractNumberFormat, now)
-	if err != nil {
-		return err
+	number := ""
+	if c.ContractNumber != nil {
+		number = *c.ContractNumber
+	}
+	var err error
+	if number == "" {
+		number, err = allocateContractNumberInTx(tx, b.TenantID, c.ID, c.ContractNumberFormat, now)
+		if err != nil {
+			return err
+		}
 	}
 	updates["contract_number"] = number
 	if evidence.DeclaredSignedDate != "" {

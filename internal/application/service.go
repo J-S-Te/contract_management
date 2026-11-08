@@ -1039,12 +1039,50 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 		return StartResult{}, &ApprovalAssigneeUnavailableError{RoleCodes: []string{"admin"}}
 	}
 	approvalID := ulid.Make().String()
-	workflowID := fmt.Sprintf("status-change:%s:%s:v%d", actor.TenantID, contractID, version)
-	in := workflows.StatusChangeInput{ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, ApplicantDisplayName: actor.DisplayName, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout, Audit: auditMetaFromContext(ctx)}
+	workflowID := fmt.Sprintf("status-change:%s:%s:v%d:%s", actor.TenantID, contractID, version, approvalID)
+	in := workflows.StatusChangeInput{RequireExisting: true, ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID, ContractVersion: version, ApplicantUserID: actor.UserID, ApplicantDisplayName: actor.DisplayName, FromStatus: c.Status, TargetStatus: target, Reason: reason, AdminUserIDs: admins, Timeout: s.NodeTimeout, Audit: auditMetaFromContext(ctx)}
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return StartResult{}, err
 	}
-	run, err := s.Temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: workflowID, TaskQueue: s.taskQueue(), WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE}, workflows.StatusChangeWorkflowName, in)
+	store, ok := s.Repo.(StatusChangeApprovalAcceptor)
+	if !ok {
+		return StartResult{}, fmt.Errorf("status change acceptance store is not configured")
+	}
+	if s.Temporal == nil {
+		return StartResult{}, ErrApprovalWorkflowUnavailable
+	}
+	timeout := s.NodeTimeout
+	if timeout <= 0 {
+		timeout = 72 * time.Hour
+	}
+	start := workflows.StartApprovalActivityInput{
+		ApprovalID: approvalID, TenantID: actor.TenantID, ContractID: contractID,
+		ExpectedVersion: version, ApplicantUserID: actor.UserID,
+		ApplicantDisplayName: actor.DisplayName, Kind: approval.KindStatusChange,
+		FromStatus: c.Status, TargetStatus: target, Reason: reason, WorkflowID: workflowID,
+		Audit: auditMetaFromContext(ctx), Nodes: []approval.Node{{
+			ID: "admin", Name: "管理员审批", RoleCode: "admin", AssigneeIDs: admins,
+			Countersign: approval.CountersignAny, Timeout: timeout,
+		}},
+	}
+	var run client.WorkflowRun
+	err = store.AcceptStatusChange(ctx, start, func(startCtx context.Context) (string, error) {
+		// 有界启动RPC位于受理事务内，避免业务行锁被不可达的Temporal无限占用。
+		startCtx, cancel := context.WithTimeout(startCtx, 5*time.Second)
+		defer cancel()
+		if err := s.checkBusinessLicense(startCtx); err != nil {
+			return "", err
+		}
+		var startErr error
+		run, startErr = s.Temporal.ExecuteWorkflow(startCtx, client.StartWorkflowOptions{
+			ID: workflowID, TaskQueue: s.taskQueue(),
+			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		}, workflows.StatusChangeWorkflowName, in)
+		if startErr != nil {
+			return "", startErr
+		}
+		return run.GetRunID(), nil
+	})
 	if err != nil {
 		var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
 		if errors.As(err, &alreadyStarted) {
@@ -1055,6 +1093,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
 }
 
+// Command 验证客户端原任务身份并发送可幂等重试的审批命令。
+// 参数：ctx为请求上下文，actor为登录主体，approvalID为审批实例，command为操作及来源快照。
+// 返回值：稳定命令ID或权限、任务冲突及工作流通信错误。
 func (s *Service) Command(ctx context.Context, actor Principal, approvalID string, command workflows.ApprovalCommand) (string, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return "", err
@@ -1062,14 +1103,6 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	meta, state, err := s.queryApprovalState(ctx, actor, approvalID)
 	if err != nil {
 		return "", err
-	}
-	if meta.Status != approval.StatusRunning {
-		return "", apperrors.ErrStateConflict
-	}
-	// 转派命令必须绑定当前节点 ID；前端可以不传，但不能让工作流转派落到错误节点。
-	if command.Action == workflows.ActionTransfer && command.TargetNodeID == "" &&
-		state.CurrentNodeIndex >= 0 && state.CurrentNodeIndex < len(state.Nodes) {
-		command.TargetNodeID = state.Nodes[state.CurrentNodeIndex].Node.ID
 	}
 	switch command.Action {
 	case workflows.ActionWithdraw:
@@ -1094,10 +1127,35 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 		if meta.ApplicantUserID == actor.UserID {
 			return "", ErrForbidden
 		}
-	default:
+	case workflows.ActionReject, workflows.ActionAddSign, workflows.ActionTransfer, workflows.ActionReturn:
 		if !actor.Has("approval.process") {
 			return "", ErrForbidden
 		}
+	default:
+		return "", ErrValidation
+	}
+	if command.Action != workflows.ActionWithdraw && command.Action != workflows.ActionUrge && command.Action != workflows.ActionComment {
+		if command.OriginNodeID == "" || command.OriginNodeRevision == nil {
+			return "", fmt.Errorf("%w: 请刷新审批详情后重试", ErrValidation)
+		}
+		command.ActorUserID = actor.UserID
+		commandID := approvalCommandID(actor.TenantID, approvalID, command)
+		if containsString(state.ProcessedCommandIDs, commandID) {
+			return commandID, nil
+		}
+		if state.Status != approval.StatusRunning || state.CurrentNodeIndex < 0 || state.CurrentNodeIndex >= len(state.Nodes) {
+			return "", apperrors.ErrStateConflict
+		}
+		node := state.Nodes[state.CurrentNodeIndex]
+		if node.Node.ID != command.OriginNodeID || node.Revision != *command.OriginNodeRevision || node.Status != approval.NodeActive {
+			return "", apperrors.ErrStateConflict
+		}
+		if !containsString(node.Node.AssigneeIDs, actor.UserID) {
+			return "", ErrForbidden
+		}
+	}
+	if meta.Status != approval.StatusRunning {
+		return "", apperrors.ErrStateConflict
 	}
 	if len([]rune(command.Comment)) > 2000 {
 		return "", fmt.Errorf("%w: 审批意见不能超过 2000 个字符", ErrValidation)
@@ -1125,7 +1183,11 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	// 或签策略，使运行中的工作流无需在引入该行为时
 	// 改写历史决策。
 	command.RoleNodeOrSign = command.Action == workflows.ActionApprove
-	command.CommandID, command.ActorUserID, command.ActorDisplayName, command.OccurredAt = ulid.Make().String(), actor.UserID, actor.DisplayName, time.Now().UTC()
+	command.ActorUserID, command.ActorDisplayName, command.OccurredAt = actor.UserID, actor.DisplayName, time.Now().UTC()
+	command.CommandID = ulid.Make().String()
+	if command.OriginNodeID != "" {
+		command.CommandID = approvalCommandID(actor.TenantID, approvalID, command)
+	}
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return "", err
 	}
@@ -1135,9 +1197,9 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	return command.CommandID, nil
 }
 
-// ReassignApprovalNode 通过权威工作流命令把审批节点从 fromUserID 转派给 toUserID。
-// Signal 被接收不等于已经执行：这里会查询工作流状态，确认当前节点实际完成转派后才
-// 返回证据；幂等键生成稳定命令 ID，重试不会二次转派。
+// ReassignApprovalNode 通过工作流命令转派并查询实际执行结果。
+// 参数：ctx为上下文，其余参数为租户、审批、节点、原接任人、原因及稳定交接幂等键。
+// 返回值：已确认执行的工作流证据引用或可重试冲突。
 func (s *Service) ReassignApprovalNode(ctx context.Context, tenantID, approvalID, nodeID, fromUserID, toUserID, reason, idempotencyKey string) (string, error) {
 	tenantID, approvalID, nodeID = strings.TrimSpace(tenantID), strings.TrimSpace(approvalID), strings.TrimSpace(nodeID)
 	fromUserID, toUserID = strings.TrimSpace(fromUserID), strings.TrimSpace(toUserID)
@@ -1166,7 +1228,12 @@ func (s *Service) ReassignApprovalNode(ctx context.Context, tenantID, approvalID
 	}
 	if containsString(node.Node.AssigneeIDs, toUserID) && !containsString(node.Node.AssigneeIDs, fromUserID) {
 		// 上一次已执行、但回执未落库：同一幂等键直接视为完成。
-		return evidence, nil
+		if confirmed, err := s.approvalTransferPersisted(ctx, tenantID, approvalID, nodeID, fromUserID, handoverCommandID(idempotencyKey)); err != nil {
+			return "", err
+		} else if confirmed {
+			return evidence, nil
+		}
+		return "", fmt.Errorf("transfer projection not confirmed: %w", ErrHandoverConflict)
 	}
 	if node.Status != approval.NodeActive || !containsString(node.Node.AssigneeIDs, fromUserID) {
 		return "", fmt.Errorf("approval node %s is not active for %s: %w", nodeID, fromUserID, ErrHandoverConflict)
@@ -1177,7 +1244,7 @@ func (s *Service) ReassignApprovalNode(ctx context.Context, tenantID, approvalID
 	command := workflows.ApprovalCommand{
 		CommandID: handoverCommandID(idempotencyKey), Action: workflows.ActionTransfer,
 		ActorUserID: fromUserID, Comment: reason, TargetUserIDs: []string{toUserID},
-		TargetNodeID: nodeID, OccurredAt: time.Now().UTC(),
+		TargetNodeID: nodeID, OriginNodeID: nodeID, OriginNodeRevision: &node.Revision, OccurredAt: time.Now().UTC(),
 	}
 	if err := s.Temporal.SignalWorkflow(ctx, meta.WorkflowID, meta.RunID, workflows.CommandSignalName, command); err != nil {
 		return "", fmt.Errorf("signal approval transfer %s: %w", meta.WorkflowID, err)
@@ -1190,7 +1257,11 @@ func (s *Service) ReassignApprovalNode(ctx context.Context, tenantID, approvalID
 		if queryErr == nil {
 			applied := runtimeNodeByID(current, nodeID)
 			if applied != nil && containsString(applied.Node.AssigneeIDs, toUserID) && !containsString(applied.Node.AssigneeIDs, fromUserID) {
-				return evidence, nil
+				if confirmed, err := s.approvalTransferPersisted(ctx, tenantID, approvalID, nodeID, fromUserID, command.CommandID); err != nil {
+					return "", err
+				} else if confirmed {
+					return evidence, nil
+				}
 			}
 			if current.Status != approval.StatusRunning {
 				return "", fmt.Errorf("approval %s completed before transfer was applied: %w", approvalID, ErrHandoverConflict)
@@ -1286,8 +1357,9 @@ func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approv
 	return ApprovalDetail{Meta: meta, State: state, Contract: contractSnapshot, Actions: actions, SnapshotAvailable: snapshotAvailable, StateUnavailable: stateUnavailable}, nil
 }
 
-// RecoverApproval 是工作流执行故障后的受控收口入口：只有工作流已停止、且持久化
-// 运行状态已到达终态时才调用幂等的 CompleteApproval，不猜测运行中的节点结果。
+// RecoverApproval 按持久化终决议收口已明确停止且尚未应用的审批。
+// 参数：ctx为请求上下文，actor为恢复管理员，approvalID为本租户审批身份。
+// 返回值：已完成或恢复成功时为空，否则返回权限、执行状态或持久化错误。
 func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approvalID string) error {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
@@ -1299,8 +1371,8 @@ func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approval
 	if err != nil {
 		return err
 	}
-	if meta.Status != approval.StatusRunning {
-		return fmt.Errorf("%w: 审批已结束，无需恢复", apperrors.ErrStateConflict)
+	if meta.CompletionApplied {
+		return nil
 	}
 	store, ok := s.Repo.(ApprovalRecoveryStore)
 	if !ok {
@@ -1313,8 +1385,12 @@ func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approval
 	if err != nil {
 		return fmt.Errorf("%w: describe approval workflow %s: %v", ErrApprovalWorkflowUnavailable, meta.WorkflowID, err)
 	}
-	if desc.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		return fmt.Errorf("%w: 工作流仍在运行，不能人工收口；请等待执行或检查 Worker", apperrors.ErrStateConflict)
+	switch desc.GetWorkflowExecutionInfo().GetStatus() {
+	case enums.WORKFLOW_EXECUTION_STATUS_COMPLETED, enums.WORKFLOW_EXECUTION_STATUS_FAILED,
+		enums.WORKFLOW_EXECUTION_STATUS_CANCELED, enums.WORKFLOW_EXECUTION_STATUS_TERMINATED,
+		enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+	default:
+		return fmt.Errorf("%w: 工作流未明确停止，不能人工收口；请等待执行或检查 Worker", apperrors.ErrStateConflict)
 	}
 	state, found, err := store.GetApprovalRuntimeState(ctx, actor.TenantID, meta.ID)
 	if err != nil {
@@ -1327,8 +1403,13 @@ func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approval
 	if status == approval.StatusRunning {
 		// 最后一个节点已通过时，工作流会在 CompleteApproval 之前把索引推进到末尾；
 		// 只有这种明确的终态才允许自动判定通过，运行中节点必须人工复核。
-		if state.CurrentNodeIndex < 0 || state.CurrentNodeIndex < len(state.Nodes) {
+		if len(state.Nodes) == 0 || state.CurrentNodeIndex != len(state.Nodes) {
 			return fmt.Errorf("%w: 工作流停在未完成的审批节点，需人工复核后再处理", apperrors.ErrStateConflict)
+		}
+		for _, node := range state.Nodes {
+			if node.Status != approval.NodeApproved {
+				return fmt.Errorf("%w: 审批节点尚未全部通过，不能人工收口", apperrors.ErrStateConflict)
+			}
 		}
 		status = approval.StatusApproved
 	}

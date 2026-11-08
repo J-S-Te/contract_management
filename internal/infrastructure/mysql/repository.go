@@ -536,10 +536,13 @@ func dashboardCurrencyTotals(scope *gorm.DB) ([]contract.CurrencyTotal, int64, i
 	return totals, contracts, amount, nil
 }
 
+// GetApprovalMeta 读取审批身份、状态与业务终决议是否已应用的真实事实。
+// 参数：ctx为请求上下文，tenantID为租户，id为审批身份。
+// 返回值：审批元数据；不存在时返回未找到，查询失败返回数据库错误。
 func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (approval.Meta, error) {
 	var record approvalInstanceRecord
 	err := r.db.WithContext(ctx).
-		Select("id", "tenant_id", "contract_id", "kind", "status", "applicant_user_id", "applicant_display_name", "temporal_workflow_id", "temporal_run_id", "from_status", "target_status", "reason", "rule_id", "rule_version").
+		Select("id", "tenant_id", "contract_id", "kind", "status", "completion_applied", "applicant_user_id", "applicant_display_name", "temporal_workflow_id", "temporal_run_id", "from_status", "target_status", "reason", "rule_id", "rule_version").
 		Where("tenant_id = ? AND id = ?", tenantID, id).Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return approval.Meta{}, apperrors.ErrNotFound
@@ -550,7 +553,8 @@ func (r *Repository) GetApprovalMeta(ctx context.Context, tenantID, id string) (
 	return approval.Meta{
 		ID: record.ID, TenantID: record.TenantID, ContractID: record.ContractID,
 		Kind: approval.Kind(record.Kind), Status: approval.Status(record.Status),
-		ApplicantUserID: record.ApplicantUserID, ApplicantDisplayName: record.ApplicantDisplayName, WorkflowID: record.TemporalWorkflowID, RunID: record.TemporalRunID,
+		CompletionApplied: record.CompletionApplied,
+		ApplicantUserID:   record.ApplicantUserID, ApplicantDisplayName: record.ApplicantDisplayName, WorkflowID: record.TemporalWorkflowID, RunID: record.TemporalRunID,
 		FromStatus: record.FromStatus, TargetStatus: record.TargetStatus,
 		Reason: valueOrEmpty(record.Reason), RuleID: valueOrEmpty(record.RuleID), RuleVersion: uintValueOrZero(record.RuleVersion),
 	}, nil
@@ -656,6 +660,9 @@ func assignedApprovalTaskStatuses() []approval.NodeStatus {
 	return []approval.NodeStatus{approval.NodeActive, approval.NodePending}
 }
 
+// ListTasks 仅返回租户内运行中审批的有效及待流转任务。
+// 参数：ctx为查询上下文，tenantID为租户，userID为受派人，limit为数量上限。
+// 返回值：按活跃优先排序的任务及数据库错误。
 func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, limit int) ([]approval.Task, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -670,7 +677,7 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 	err := r.db.WithContext(ctx).Table("con_approval_task AS t").
 		Select("t.approval_id, i.contract_id, t.node_id, t.node_name, t.assignee_user_id, i.kind, t.status, t.node_index, i.created_at").
 		Joins("JOIN con_approval_instance AS i ON i.id = t.approval_id").
-		Where("i.tenant_id = ? AND t.assignee_user_id = ? AND t.status IN ?", tenantID, userID, assignedApprovalTaskStatuses()).
+		Where("i.tenant_id = ? AND i.status = ? AND t.assignee_user_id = ? AND t.status IN ?", tenantID, approval.StatusRunning, userID, assignedApprovalTaskStatuses()).
 		Order("CASE WHEN t.status = 'active' THEN 0 ELSE 1 END").
 		Order("i.created_at, t.node_index").Limit(limit).Scan(&rows).Error
 	if err != nil {
@@ -688,117 +695,127 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 // 返回值：幂等启动结果或来源、版本、状态及数据库错误。
 func (r *Repository) StartApproval(ctx context.Context, in workflows.StartApprovalActivityInput) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing approvalInstanceRecord
-		err := tx.Select("id").Where("id = ?", in.ApprovalID).Take(&existing).Error
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
+		return startApprovalInTx(tx, in)
+	})
+}
 
-		var current contractRecord
-		// 读取完整合同行（含正文/文档），用于写入审批提交快照。
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return apperrors.ErrNotFound
+// startApprovalInTx 在调用方事务中初始化审批并写入不可变快照及任务。
+// 参数：tx为已开启事务，in为可信审批输入；RequireExisting要求事先已受理。
+// 返回值：成功为空；版本、在途、缺少受理或持久化失败时返回错误。
+func startApprovalInTx(tx *gorm.DB, in workflows.StartApprovalActivityInput) error {
+	if in.RequireExisting {
+		return initializeAcceptedStatusChange(tx, in)
+	}
+	var existing approvalInstanceRecord
+	err := tx.Select("id").Where("id = ?", in.ApprovalID).Take(&existing).Error
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	var current contractRecord
+	// 读取完整合同行（含正文/文档），用于写入审批提交快照。
+	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return apperrors.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !ordinaryContractRecord(current) {
+		return apperrors.ErrStateConflict
+	}
+	if current.Version != in.ExpectedVersion {
+		return apperrors.ErrVersionConflict
+	}
+	if contract.Status(current.Status) != in.FromStatus {
+		return fmt.Errorf("%w: expected %s, got %s", apperrors.ErrStateConflict, in.FromStatus, current.Status)
+	}
+	if in.Kind == approval.KindContract {
+		if in.ContentHash == "" || current.ContentHash == nil || *current.ContentHash != in.ContentHash {
+			return fmt.Errorf("%w: contract SHA-256 mismatch", apperrors.ErrStateConflict)
 		}
+		// 合同行已在本事务内 FOR UPDATE：在途合同审批计数与 draft→pending 同处一个
+		// 临界区，Temporal 重试或重复提交都无法留下第二份在途合同审批。
+		activeContracts, err := countRunningApprovals(tx, in.TenantID, in.ContractID, approval.KindContract)
 		if err != nil {
 			return err
 		}
-		if !ordinaryContractRecord(current) {
+		if activeContracts > 0 {
+			return fmt.Errorf("%w: 该合同已有在途合同审批，请先在审批中心撤回或等待完成", apperrors.ErrStateConflict)
+		}
+		if err := updateStatus(tx, in.TenantID, in.ContractID, in.FromStatus, in.TargetStatus, in.ApplicantUserID); err != nil {
+			return err
+		}
+		if err := insertLifecycle(tx, in, in.FromStatus, in.TargetStatus, in.ApplicantUserID, "submitted for approval", in.ApprovalID+":submitted"); err != nil {
+			return err
+		}
+	} else if in.Kind == approval.KindStatusChange {
+		active, err := countRunningApprovals(tx, in.TenantID, in.ContractID, approval.KindStatusChange)
+		if err != nil {
+			return err
+		}
+		if active > 0 {
 			return apperrors.ErrStateConflict
 		}
-		if current.Version != in.ExpectedVersion {
-			return apperrors.ErrVersionConflict
+	}
+	nodesJSON, err := json.Marshal(in.Nodes)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	instance := approvalInstanceRecord{
+		ID: in.ApprovalID, TenantID: in.TenantID, ContractID: in.ContractID,
+		Kind: string(in.Kind), Status: string(approval.StatusRunning), ApplicantUserID: in.ApplicantUserID, ApplicantDisplayName: in.ApplicantDisplayName,
+		FromStatus: string(in.FromStatus), TargetStatus: string(in.TargetStatus), Reason: stringPtr(in.Reason),
+		RuleID: stringPtr(in.RuleID), RuleVersion: uintPtr(in.RuleVersion), ContentHash: stringPtr(in.ContentHash),
+		NodesJSON: nodesJSON, CurrentNodeIndex: 0, TemporalWorkflowID: in.WorkflowID, TemporalRunID: in.RunID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if in.Kind == approval.KindStatusChange {
+		instance.ActiveStatusChangeKey = stringPtr(in.TenantID + ":" + in.ContractID)
+	}
+	if err := tx.Create(&instance).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return apperrors.ErrStateConflict
 		}
-		if contract.Status(current.Status) != in.FromStatus {
-			return fmt.Errorf("%w: expected %s, got %s", apperrors.ErrStateConflict, in.FromStatus, current.Status)
-		}
-		if in.Kind == approval.KindContract {
-			if in.ContentHash == "" || current.ContentHash == nil || *current.ContentHash != in.ContentHash {
-				return fmt.Errorf("%w: contract SHA-256 mismatch", apperrors.ErrStateConflict)
-			}
-			// 合同行已在本事务内 FOR UPDATE：在途合同审批计数与 draft→pending 同处一个
-			// 临界区，Temporal 重试或重复提交都无法留下第二份在途合同审批。
-			activeContracts, err := countRunningApprovals(tx, in.TenantID, in.ContractID, approval.KindContract)
-			if err != nil {
-				return err
-			}
-			if activeContracts > 0 {
-				return fmt.Errorf("%w: 该合同已有在途合同审批，请先在审批中心撤回或等待完成", apperrors.ErrStateConflict)
-			}
-			if err := updateStatus(tx, in.TenantID, in.ContractID, in.FromStatus, in.TargetStatus, in.ApplicantUserID); err != nil {
-				return err
-			}
-			if err := insertLifecycle(tx, in, in.FromStatus, in.TargetStatus, in.ApplicantUserID, "submitted for approval", in.ApprovalID+":submitted"); err != nil {
-				return err
-			}
-		} else if in.Kind == approval.KindStatusChange {
-			active, err := countRunningApprovals(tx, in.TenantID, in.ContractID, approval.KindStatusChange)
-			if err != nil {
-				return err
-			}
-			if active > 0 {
-				return apperrors.ErrStateConflict
-			}
-		}
-		nodesJSON, err := json.Marshal(in.Nodes)
-		if err != nil {
-			return err
-		}
-		now := time.Now().UTC()
-		instance := approvalInstanceRecord{
-			ID: in.ApprovalID, TenantID: in.TenantID, ContractID: in.ContractID,
-			Kind: string(in.Kind), Status: string(approval.StatusRunning), ApplicantUserID: in.ApplicantUserID, ApplicantDisplayName: in.ApplicantDisplayName,
-			FromStatus: string(in.FromStatus), TargetStatus: string(in.TargetStatus), Reason: stringPtr(in.Reason),
-			RuleID: stringPtr(in.RuleID), RuleVersion: uintPtr(in.RuleVersion), ContentHash: stringPtr(in.ContentHash),
-			NodesJSON: nodesJSON, CurrentNodeIndex: 0, TemporalWorkflowID: in.WorkflowID, TemporalRunID: in.RunID,
-			CreatedAt: now, UpdatedAt: now,
-		}
-		if in.Kind == approval.KindStatusChange {
-			instance.ActiveStatusChangeKey = stringPtr(in.TenantID + ":" + in.ContractID)
-		}
-		if err := tx.Create(&instance).Error; err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) {
-				return apperrors.ErrStateConflict
-			}
-			return err
-		}
-		// 审批历史只认发起时的合同内容：快照与审批实例、状态流转同事务写入。
-		snapshotContract := contractFromRecord(current)
-		var termRows []paymentTermRecord
-		if err := tx.Where("tenant_id = ? AND contract_id = ?", in.TenantID, in.ContractID).
-			Order("installment_no ASC").Find(&termRows).Error; err != nil {
-			return err
-		}
-		snapshotContract.PaymentTerms = make([]contract.PaymentTerm, 0, len(termRows))
-		for _, term := range termRows {
-			snapshotContract.PaymentTerms = append(snapshotContract.PaymentTerms, contract.PaymentTerm{
-				InstallmentNo: int(term.InstallmentNo), DueDate: term.DueDate.Format("2006-01-02"), Amount: formatAmountMinor(term.AmountMinor),
-			})
-		}
-		snapshotContract.Document = nil
-		snapshotContract.CanEditDraft = false
-		snapshotJSON, err := json.Marshal(snapshotContract)
-		if err != nil {
-			return err
-		}
-		if err := tx.Create(&approvalSnapshotRecord{
-			ApprovalID: in.ApprovalID, TenantID: in.TenantID, ContractID: in.ContractID,
-			ContractVersion: current.Version, ContentHash: current.ContentHash, ContractJSON: snapshotJSON,
-			RenderedDocument: current.RenderedDocument, RuleID: stringPtr(in.RuleID), RuleVersion: uintPtr(in.RuleVersion),
-			CreatedAt: now,
-		}).Error; err != nil {
-			return err
-		}
-		tasks := initialTasks(in.ApprovalID, in.Nodes, now)
-		if len(tasks) > 0 {
-			return tx.Create(&tasks).Error
-		}
-		return nil
-	})
+		return err
+	}
+	// 审批历史只认发起时的合同内容：快照与审批实例、状态流转同事务写入。
+	snapshotContract := contractFromRecord(current)
+	var termRows []paymentTermRecord
+	if err := tx.Where("tenant_id = ? AND contract_id = ?", in.TenantID, in.ContractID).
+		Order("installment_no ASC").Find(&termRows).Error; err != nil {
+		return err
+	}
+	snapshotContract.PaymentTerms = make([]contract.PaymentTerm, 0, len(termRows))
+	for _, term := range termRows {
+		snapshotContract.PaymentTerms = append(snapshotContract.PaymentTerms, contract.PaymentTerm{
+			InstallmentNo: int(term.InstallmentNo), DueDate: term.DueDate.Format("2006-01-02"), Amount: formatAmountMinor(term.AmountMinor),
+		})
+	}
+	snapshotContract.Document = nil
+	snapshotContract.CanEditDraft = false
+	snapshotJSON, err := json.Marshal(snapshotContract)
+	if err != nil {
+		return err
+	}
+	if err := tx.Create(&approvalSnapshotRecord{
+		ApprovalID: in.ApprovalID, TenantID: in.TenantID, ContractID: in.ContractID,
+		ContractVersion: current.Version, ContentHash: current.ContentHash, ContractJSON: snapshotJSON,
+		RenderedDocument: current.RenderedDocument, RuleID: stringPtr(in.RuleID), RuleVersion: uintPtr(in.RuleVersion),
+		CreatedAt: now,
+	}).Error; err != nil {
+		return err
+	}
+	tasks := initialTasks(in.ApprovalID, in.Nodes, now)
+	if len(tasks) > 0 {
+		return tx.Create(&tasks).Error
+	}
+	return nil
 }
 
 func (r *Repository) RecordCommand(ctx context.Context, in workflows.RecordCommandActivityInput) error {
@@ -989,7 +1006,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		if result.RowsAffected != 1 {
 			return apperrors.ErrNotFound
 		}
-		return tx.Model(&approvalTaskRecord{}).Where("approval_id = ? AND status = ?", in.ApprovalID, approval.NodeActive).
+		return tx.Model(&approvalTaskRecord{}).Where("approval_id = ? AND status IN ?", in.ApprovalID, assignedApprovalTaskStatuses()).
 			Updates(map[string]any{"status": approval.NodeSkipped, "completed_at": now}).Error
 	})
 }

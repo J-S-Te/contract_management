@@ -87,8 +87,9 @@ func (s *digestSubmitStore) SetImportAutoApproveSetting(context.Context, string,
 func digestHTTPBatch(tenant, actorID string) contract.ImportBatch {
 	manifest := historicalManifest("source-file", actorID)
 	item := manifest.Items[0]
-	// 直接声明 CRM 客户，避免提交用例依赖开立通道的查重前置。
-	item.Metadata.CRMCustomerID = 501
+	// 合法历史CRM开立清单不声明已有引用，摘要测试止于冻结，不执行开立。
+	item.Metadata.CustomerContact = "测试联系人"
+	item.Metadata.CustomerPhone = "13800138000"
 	return contract.ImportBatch{
 		ID: "batch-digest", TenantID: tenant, ActorID: actorID, Version: 1, Revision: 1,
 		State: "PREVIEWED", SourceSystem: "isolated-history", PreviewToken: "preview-token-digest",
@@ -100,11 +101,9 @@ func digestHTTPBatch(tenant, actorID string) contract.ImportBatch {
 	}
 }
 
-// TestImportConfirmationDigestExposedOverHTTP 验证确认摘要对外可复核：
-// 提交响应与批次读取的 JSON 都必须包含 confirmation.manifest_digest，且与提交事务内
-// 固化的摘要逐字符一致（客户端据此核对本次确认覆盖的清单范围）。
-// 参数：t 为测试上下文；纯内存仓储 + 真实 TCP 路由，不连接数据库。
-// 返回值：字段缺失、长度不符或两次读取不一致时失败。
+// TestImportConfirmationDigestExposedOverHTTP 验证提交与读取均暴露冻结清单摘要。
+// 参数：t为测试上下文；合法历史CRM开立AUTO资格，内存仓储与真实TCP路由。
+// 返回值：无；字段缺失、长度不符或两次读取不一致时失败。
 func TestImportConfirmationDigestExposedOverHTTP(t *testing.T) {
 	tenant, actorID := "tenant-digest", "actor-digest"
 	batch := digestHTTPBatch(tenant, actorID)
@@ -117,6 +116,9 @@ func TestImportConfirmationDigestExposedOverHTTP(t *testing.T) {
 		ContractImportAutoApproveHistorical: true,
 		ContractImportConfirmationRoles:     []string{"admin"},
 		ImportOwners:                        historicalImportOwners{},
+		CRMProvisionCustomerClient:          historicalProvisionCustomer{},
+		CRMProvisionOpportunityClient:       historicalProvisionOpportunity{},
+		CRMProvisionOwnerDirectory:          historicalProvisionOwners{},
 	}
 	// AUTO 路径刻意不注入 Temporal：摘要与策略固化都不依赖工作流。
 	client := historicalServer(t, service, tenant, actorID)

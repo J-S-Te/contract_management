@@ -165,8 +165,10 @@ func TestSubmitImportConfirmationFreezesPinnedPolicy(t *testing.T) {
 			batch:   confirmationSubmitBatch(t, contract.ImportArchiveOnly),
 			setting: contract.ImportAutoApproveSetting{Enabled: true, Version: 1},
 		}
+		repo.batch.Items[0].Item.Metadata.CRMCustomerID = 0
 		// 刻意不注入 Temporal：AUTO 路径不得依赖它。
 		service := confirmationSubmitService(repo, nil)
+		_ = service.ConfigureCRMProvision(true, completeProvisionClients())
 
 		b, err := service.SubmitImportConfirmation(ctx, actor, "batch", 1, "preview-token", "submit-key-auto", confirmationSubmitSession())
 		if err != nil {
@@ -362,7 +364,10 @@ func TestImportAutoApprovePolicyPinsFrozenDecision(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			repo := &confirmationFreezeRepository{setting: testCase.setting}
 			service := &Service{Repo: repo, ContractImportAutoApproveHistorical: testCase.capability}
-			b := contract.ImportBatch{ID: "batch", TenantID: provisionTestTenant, Confirmation: testCase.confirmation}
+			b := confirmationSubmitBatch(t, contract.ImportArchiveOnly)
+			b.Items[0].Item.Metadata.CRMCustomerID = 0
+			b.Confirmation = testCase.confirmation
+			_ = service.ConfigureCRMProvision(true, completeProvisionClients())
 
 			policy, err := service.importAutoApprovePolicy(ctx, b)
 			if err != nil {
@@ -430,6 +435,10 @@ func TestControlImportResumeHonorsPinnedPolicy(t *testing.T) {
 			batch.Version = 1
 			repo := &confirmationFreezeRepository{batch: batch}
 			service := &Service{Repo: repo, ContractImportConfirmationRoles: []string{"ROLE_IMPORT_APPROVER"}}
+			if testCase.name == "auto-approved-resumable" {
+				repo.batch.Items[0].Item.Metadata.CRMCustomerID = 0
+				_ = service.ConfigureCRMProvision(true, completeProvisionClients())
+			}
 
 			err := service.ControlImport(ctx, provisionImportActor(), "batch", 1, true, session)
 			if testCase.wantConflict {
@@ -446,6 +455,61 @@ func TestControlImportResumeHonorsPinnedPolicy(t *testing.T) {
 			}
 			if repo.batch.State != "QUEUED" {
 				t.Fatalf("state=%s, want QUEUED", repo.batch.State)
+			}
+		})
+	}
+}
+
+// TestHistoricalAutoRejectsIneligibleBatches 验证开关开启仍须整批满足历史开立条件。
+// 参数：t为测试上下文。
+// 返回值：接续履约、已有引用或混合批次跳过人工时失败。
+func TestHistoricalAutoRejectsIneligibleBatches(t *testing.T) {
+	for _, name := range []string{"continue-live", "existing-customer", "mixed"} {
+		t.Run(name, func(t *testing.T) {
+			b := confirmationSubmitBatch(t, contract.ImportArchiveOnly)
+			b.Items[0].Item.Metadata.CRMCustomerID = 0
+			switch name {
+			case "continue-live":
+				b.Items[0].Item.Mode = contract.ImportContinueLive
+				b.Items[0].Item.Metadata.CRMCustomerID = 42
+				b.Items[0].Item.HistoryEvidence.HistoricalStatus = "active"
+				b.Items[0].Item.Policy.ResponsibilityMode = "ACTIVATE_ON_RELEASE"
+				b.Items[0].Item.Policy.ProjectMode = "CREATE_NEW"
+				b.Items[0].Item.Policy.FinanceMode = "FULL_REPLAY"
+				b.Items[0].Item.HistoryEvidence.Relationship = "PRIMARY"
+				facts := []contract.ImportFact{}
+				b.Items[0].Item.HistoryEvidence.ExpectedFacts = &facts
+				b.Items[0].Item.Metadata.PaymentTerms = []contract.PaymentTerm{{InstallmentNo: 1, DueDate: "2024-03-05", Amount: "1234.56"}}
+			case "existing-customer":
+				b.Items[0].Item.Metadata.CRMCustomerID = 42
+			case "mixed":
+				other := b.Items[0]
+				other.ID = "item-other"
+				other.Item.Metadata.CRMCustomerID = 42
+				b.Items = append(b.Items, other)
+			}
+			repo := &confirmationFreezeRepository{batch: b, setting: contract.ImportAutoApproveSetting{Enabled: true, Version: 1}}
+			service := confirmationSubmitService(repo, nil)
+			clients := completeProvisionClients()
+			_ = service.ConfigureCRMProvision(true, clients)
+			_, err := service.SubmitImportConfirmation(context.Background(), provisionImportActor(), "batch", 1, "preview-token", "submit-ineligible", confirmationSubmitSession())
+			if !errors.Is(err, ErrImportUnsupported) || repo.batch.Confirmation != nil {
+				t.Fatalf("非自动资格批次跳过人工: err=%v confirmation=%+v", err, repo.batch.Confirmation)
+			}
+			if err := contract.ValidateHistoryEvidence(b.Items[0].Item); err != nil {
+				t.Fatalf("非法测试清单: %v", err)
+			}
+			temporal := temporalmocks.NewClient(t)
+			run := temporalmocks.NewWorkflowRun(t)
+			temporal.On("ExecuteWorkflow", mock.Anything, mock.Anything, workflows.ImportConfirmationWorkflowName, mock.Anything).Return(run, nil)
+			service.Temporal = temporal
+			accepted, submitErr := service.SubmitImportConfirmation(context.Background(), provisionImportActor(), "batch", 1, "preview-token", "submit-manual-valid", confirmationSubmitSession())
+			if submitErr != nil || accepted.Confirmation == nil || accepted.Confirmation.PolicyDecision != contract.ImportPolicyDecisionManual || accepted.Confirmation.State != "STARTING" {
+				t.Fatalf("非自动资格未冻结人工: b=%+v err=%v", accepted, submitErr)
+			}
+			b.Confirmation = &contract.ImportConfirmation{State: "APPROVED", PolicyDecision: contract.ImportPolicyDecisionAuto}
+			if _, err = service.importAutoApprovePolicy(context.Background(), b); !errors.Is(err, ErrImportConflict) {
+				t.Fatalf("旧AUTO恢复未被阻断: %v", err)
 			}
 		})
 	}

@@ -89,8 +89,9 @@ func (p *statusAuthorizationPersonnel) ListEligibleUsers(context.Context, Princi
 	return []UserReference{{UserID: "admin-1", Roles: []string{"admin"}}}, nil
 }
 
-// 解析审批人或启动 Temporal 前必须校验归属；
-// 已授权的转换仍须走审批，不能直接写入。
+// TestChangeStatusEnforcesSalesOwnershipBeforeApproval 验证归属校验先于审批人解析与工作流启动。
+// 参数：t为测试上下文，覆盖本人、他人及跨租户场景。
+// 返回值：无；越权启动或合法审批输入缺失时失败。
 func TestChangeStatusEnforcesSalesOwnershipBeforeApproval(t *testing.T) {
 	for _, tc := range []struct {
 		name, tenant, owner string
@@ -128,7 +129,7 @@ func TestChangeStatusEnforcesSalesOwnershipBeforeApproval(t *testing.T) {
 			call := temporal.Calls[0]
 			options := call.Arguments.Get(1).(client.StartWorkflowOptions)
 			input := call.Arguments.Get(3).(workflows.StatusChangeInput)
-			if options.ID != "status-change:tenant-1:contract-1:v3" || input.TenantID != "tenant-1" || input.ContractID != "contract-1" || input.ContractVersion != 3 || input.ApplicantUserID != "sales-1" || input.FromStatus != contract.StatusInProgress || input.TargetStatus != contract.StatusPendingPay || len(input.AdminUserIDs) != 1 || input.AdminUserIDs[0] != "admin-1" {
+			if options.ID != "status-change:tenant-1:contract-1:v3:"+input.ApprovalID || input.TenantID != "tenant-1" || input.ContractID != "contract-1" || input.ContractVersion != 3 || input.ApplicantUserID != "sales-1" || input.FromStatus != contract.StatusInProgress || input.TargetStatus != contract.StatusPendingPay || len(input.AdminUserIDs) != 1 || input.AdminUserIDs[0] != "admin-1" {
 				t.Fatalf("incorrect approval request: options=%+v input=%+v", options, input)
 			}
 		})
