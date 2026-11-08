@@ -55,9 +55,9 @@ func (historicalProvisionOpportunity) CreateOpportunity(_ context.Context, _, _ 
 }
 
 // SignOpportunity 返回已签约商机。
-// 参数：ctx/actor/key/opportunityID/contractRef 为推进身份。
+// 参数：ctx/actor/key/opportunityID/contractRef为推进身份，expectedVersion为签约并发版本。
 // 返回值：已签约商机。
-func (historicalProvisionOpportunity) SignOpportunity(_ context.Context, _, _ string, opportunityID uint64, _ string) (application.CRMProvisionOpportunity, error) {
+func (historicalProvisionOpportunity) SignOpportunity(_ context.Context, _, _ string, opportunityID uint64, _ string, _ uint64) (application.CRMProvisionOpportunity, error) {
 	return application.CRMProvisionOpportunity{ID: opportunityID, Status: "SIGNED", Stage: "CLOSED"}, nil
 }
 
@@ -312,13 +312,9 @@ func decodeAuditPayload(t *testing.T, row auditRow) map[string]any {
 	return decoded
 }
 
-// TestHistoricalImportAutoApproveEndToEnd 覆盖 P0 修复的真实生产链路：
-// HTTP 建批次 → 上传原件 → 历史清单 → 预检 → 提交确认（AUTO）→ 调度开立 → 自动归档。
-// 断言重点是「提交冻结的 AUTO 台账真的被执行期认可」：合同到 version=2 且按声明归档、
-// 批次进入 TARGETS_PENDING（不是 CONFIRMATION_PENDING）、审计同时具备策略来源，
-// 以及运行开关在提交后关闭也不影响已固化批次（pin）。
+// TestHistoricalImportAutoApproveEndToEnd 验证历史导入自动归档、策略固化及人工确认护栏。
 // 参数：t 为测试上下文；仅 CONTRACT_TEST_DSN 指向隔离库时运行。
-// 返回值：受理状态、策略字段、合同终态、批次状态、审计或幂等性不符时失败。
+// 返回值：自动策略、归档、编号预留、人工确认门禁、审计或幂等性不符时失败。
 func TestHistoricalImportAutoApproveEndToEnd(t *testing.T) {
 	db := networkImportDatabase(t)
 	t.Setenv("PLATFORM_AUDIT_REQUIRED", "false")
@@ -366,7 +362,8 @@ func TestHistoricalImportAutoApproveEndToEnd(t *testing.T) {
 		}
 		contractID := final.Items[0].ContractID
 		var row historicalContractRow
-		if err := db.Raw("SELECT version,status,contract_number,import_confirmed_at FROM con_contract WHERE tenant_id=? AND id=?",
+		if err := db.Raw("SELECT version,status,contract_number,import_confirmed_at "+
+			"FROM con_contract WHERE tenant_id=? AND id=?",
 			tenant, contractID).Scan(&row).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -476,16 +473,18 @@ func TestHistoricalImportAutoApproveEndToEnd(t *testing.T) {
 		if final.State != "CONFIRMATION_PENDING" {
 			t.Fatalf("批次状态=%s, want CONFIRMATION_PENDING", final.State)
 		}
-		if final.Items[0].Confirmed {
-			t.Fatalf("人工会签在途时被自动确认: %+v", final.Items[0])
+		if final.Items[0].Confirmed || len(final.Items[0].Targets) != 0 {
+			t.Fatalf("人工会签在途时被确认或放行下游: %+v", final.Items[0])
 		}
 		var row historicalContractRow
-		if err := db.Raw("SELECT version,status,contract_number FROM con_contract WHERE tenant_id=? AND id=?",
+		if err := db.Raw("SELECT version,status,contract_number,import_confirmed_at FROM con_contract WHERE tenant_id=? AND id=?",
 			tenant, final.Items[0].ContractID).Scan(&row).Error; err != nil {
 			t.Fatal(err)
 		}
-		if row.Version != 1 || row.Status != string(contract.StatusDraft) || strings.TrimSpace(row.ContractNumber) != "" {
-			t.Fatalf("人工路径不得归档: %+v", row)
+		// CRM 签约验真需要系统号，预留编号不能代替人工确认或推进合同版本。
+		if row.Version != 1 || row.Status != string(contract.StatusDraft) ||
+			strings.TrimSpace(row.ContractNumber) == "" || row.ImportConfirmedAt != nil {
+			t.Fatalf("人工路径须预留编号并保持未确认草稿: %+v", row)
 		}
 	})
 }

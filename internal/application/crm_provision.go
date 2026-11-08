@@ -16,11 +16,19 @@ type CRMProvisionCustomerCandidate struct {
 // CRMProvisionCustomerInput 是创建客户的白名单输入；类型/行业/地区允许为空，
 // 由 CRM 侧按 IMPORT_PROVISION 通道补默认值。
 type CRMProvisionCustomerInput struct {
-	Name            string `json:"name"`
-	CustomerType    string `json:"customer_type"`
-	Industry        string `json:"industry"`
-	Region          string `json:"region"`
-	OwnerIdentityID string `json:"owner_identity_id"`
+	Name            string                        `json:"name"`
+	CustomerType    string                        `json:"customer_type"`
+	Industry        string                        `json:"industry"`
+	Region          string                        `json:"region"`
+	OwnerIdentityID string                        `json:"owner_identity_id"`
+	Contacts        []CRMProvisionCustomerContact `json:"contacts"`
+}
+
+// CRMProvisionCustomerContact 是清单中真实客户登记联系人。
+type CRMProvisionCustomerContact struct {
+	Name           string `json:"name"`
+	Phone          string `json:"phone"`
+	IsRegistration bool   `json:"is_registration"`
 }
 
 // CRMProvisionCustomer 是创建客户的结果投影。
@@ -34,11 +42,12 @@ type CRMProvisionCustomer struct {
 // CRMProvisionOpportunityInput 是创建商机的白名单输入；Amount 为十进制字符串，
 // ExpectedSignDate 为 YYYY-MM-DD，历史合同允许过去日期（仅本通道放开）。
 type CRMProvisionOpportunityInput struct {
-	CustomerID       uint64 `json:"customer_id"`
-	OwnerIdentityID  string `json:"owner_identity_id"`
-	Name             string `json:"name"`
-	Amount           string `json:"amount"`
-	ExpectedSignDate string `json:"expected_sign_date"`
+	CustomerID         uint64 `json:"customer_id"`
+	OwnerIdentityID    string `json:"owner_identity_id"`
+	Name               string `json:"name"`
+	Amount             string `json:"expected_amount"`
+	RequirementSummary string `json:"requirement_summary"`
+	ExpectedSignDate   string `json:"expected_sign_date"`
 }
 
 // CRMProvisionOpportunity 是创建/推进商机的结果投影。
@@ -46,8 +55,9 @@ type CRMProvisionOpportunity struct {
 	ID         uint64 `json:"id"`
 	Name       string `json:"name"`
 	CustomerID uint64 `json:"customer_id"`
-	Status     string `json:"status"`
-	Stage      string `json:"stage,omitempty"`
+	Status     string `json:"opp_status"`
+	Stage      string `json:"current_stage,omitempty"`
+	Version    uint64 `json:"version"`
 }
 
 // OwnerDirectoryCandidate 是平台负责人目录返回的最小人员候选。
@@ -69,7 +79,10 @@ type CRMProvisionCustomerClient interface {
 // 先创建再推进签约，两步都以幂等键重放。
 type CRMProvisionOpportunityClient interface {
 	CreateOpportunity(context.Context, string, string, CRMProvisionOpportunityInput) (CRMProvisionOpportunity, error)
-	SignOpportunity(context.Context, string, string, uint64, string) (CRMProvisionOpportunity, error)
+	// SignOpportunity 按实际CRM版本幂等签约，并保留合同归属验真。
+	// 参数：上下文、操作者身份、幂等键、商机ID、合同引用及CRM返回的预期版本。
+	// 返回值：签约后的商机；版本、验真或依赖失败时返回错误。
+	SignOpportunity(context.Context, string, string, uint64, string, uint64) (CRMProvisionOpportunity, error)
 }
 
 // CRMProvisionOwnerDirectory 把 Excel 中的销售姓名解析成平台唯一身份；

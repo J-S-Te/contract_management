@@ -9,7 +9,9 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// StatusChangeWorkflow 为关键生命周期目标实现 APP-002。
+// StatusChangeWorkflow 驱动已授权的合同状态审批并保持旧输入初始化兼容。
+// 参数：ctx为工作流上下文，input为冻结的审批身份与业务申请。
+// 返回值：最终运行状态；初始化或关键持久化失败返回工作流错误。
 func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (ApprovalState, error) {
 	if err := validateStatusChange(input); err != nil {
 		return ApprovalState{}, err
@@ -27,7 +29,7 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 
 	info := workflow.GetInfo(ctx)
 	actx, cctx := activityContext(ctx), criticalActivityContext(ctx)
-	start := StartApprovalActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindStatusChange, FromStatus: input.FromStatus, TargetStatus: input.TargetStatus, Reason: input.Reason, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: []approval.Node{node}, Audit: input.Audit}
+	start := StartApprovalActivityInput{RequireExisting: input.RequireExisting, ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, ExpectedVersion: input.ContractVersion, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Kind: approval.KindStatusChange, FromStatus: input.FromStatus, TargetStatus: input.TargetStatus, Reason: input.Reason, WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Nodes: []approval.Node{node}, Audit: input.Audit}
 	if err := executeLicensedActivity(ctx, cctx, ActivityStartApproval, start, nil); err != nil {
 		return state, err
 	}
@@ -55,10 +57,37 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 			}
 			break
 		}
-		if !gotCommand || validateCommonCommand(command) != nil {
+		if !gotCommand || validateCommonCommand(command) != nil ||
+			contains(state.ProcessedCommandIDs, command.CommandID) || validateCommandOrigin(state, command) != nil {
+			continue
+		}
+		if command.Action == ActionTransfer {
+			// 历史状态审批曾忽略转派；仅新入口明确绑定来源的命令可产生转派活动。
+			// 避免回放旧信号时插入历史中不存在的RecordCommand活动。
+			if command.OriginNodeID == "" || command.OriginNodeRevision == nil {
+				continue
+			}
+			changed, _, err := applyContractCommand(&state, command)
+			if err != nil || !changed {
+				continue
+			}
+			state.UpdatedAt = workflow.Now(ctx)
+			if command.OriginNodeID != "" {
+				state.ProcessedCommandIDs = append(state.ProcessedCommandIDs, command.CommandID)
+			}
+			record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.ID, Command: command, State: state}
+			if err := executeLicensedActivity(ctx, cctx, ActivityRecordCommand, record, nil); err != nil {
+				return state, err
+			}
+			if err := notifyAssignedUsers(ctx, actx, input.TenantID, state, command, command.TargetUserIDs); err != nil {
+				return state, err
+			}
 			continue
 		}
 		if command.Action == ActionUrge || command.Action == ActionComment {
+			if command.OriginNodeID != "" {
+				state.ProcessedCommandIDs = append(state.ProcessedCommandIDs, command.CommandID)
+			}
 			record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.ID, Command: command, State: state}
 			if err := executeLicensedActivity(ctx, cctx, ActivityRecordCommand, record, nil); err != nil {
 				return state, err
@@ -76,12 +105,15 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		// BIZ-CONTRACT-03 分离职责：申请人不得批准自己发起的状态变更审批，
 		// 即使其同时是当前节点审批人。application 层已做预检，这里是防御性
 		// 第二道：被忽略的命令不改变状态，也不写入审批记录。
-		case contains(node.AssigneeIDs, command.ActorUserID) && command.Action == ActionApprove && command.ActorUserID != input.ApplicantUserID:
+		case contains(state.Nodes[0].Node.AssigneeIDs, command.ActorUserID) && command.Action == ActionApprove && command.ActorUserID != input.ApplicantUserID:
 			state.Status, state.Nodes[0].Status = approval.StatusApproved, approval.NodeApproved
-		case contains(node.AssigneeIDs, command.ActorUserID) && command.Action == ActionReject:
+		case contains(state.Nodes[0].Node.AssigneeIDs, command.ActorUserID) && command.Action == ActionReject:
 			state.Status, state.Nodes[0].Status, state.FailureReason = approval.StatusRejected, approval.NodeRejected, command.Comment
 		default:
 			continue
+		}
+		if command.OriginNodeID != "" {
+			state.ProcessedCommandIDs = append(state.ProcessedCommandIDs, command.CommandID)
 		}
 		state.CompletedAt, state.UpdatedAt = workflow.Now(ctx), workflow.Now(ctx)
 		record := RecordCommandActivityInput{ApprovalID: input.ApprovalID, TenantID: input.TenantID, ContractID: input.ContractID, NodeID: node.ID, Command: command, State: state}

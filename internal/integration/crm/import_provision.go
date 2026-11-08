@@ -213,16 +213,14 @@ func (c *ImportProvisionClient) CreateCustomer(ctx context.Context, actor, idemp
 	if input.Name == "" || strings.TrimSpace(input.OwnerIdentityID) == "" {
 		return ProvisionCustomer{}, errors.New("CRM import provision customer requires name and owner identity")
 	}
-	var data struct {
-		Customer ProvisionCustomer `json:"customer"`
-	}
+	var data ProvisionCustomer
 	if err := c.do(ctx, http.MethodPost, importProvisionPathCustomers, actor, idempotencyKey, input, &data); err != nil {
 		return ProvisionCustomer{}, err
 	}
-	if data.Customer.ID == 0 {
+	if data.ID == 0 {
 		return ProvisionCustomer{}, fmt.Errorf("%w: CRM returned customer without id", ErrImportProvisionUnavailable)
 	}
-	return data.Customer, nil
+	return data, nil
 }
 
 // CreateOpportunity 在 IMPORT_PROVISION 通道创建 CRM 商机。
@@ -234,41 +232,39 @@ func (c *ImportProvisionClient) CreateOpportunity(ctx context.Context, actor, id
 		strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Amount) == "" {
 		return ProvisionOpportunity{}, errors.New("CRM import provision opportunity requires customer, owner, name and amount")
 	}
-	var data struct {
-		Opportunity ProvisionOpportunity `json:"opportunity"`
-	}
+	var data ProvisionOpportunity
 	if err := c.do(ctx, http.MethodPost, importProvisionPathOpportunities, actor, idempotencyKey, input, &data); err != nil {
 		return ProvisionOpportunity{}, err
 	}
-	if data.Opportunity.ID == 0 {
+	if data.ID == 0 || data.Version == 0 {
 		return ProvisionOpportunity{}, fmt.Errorf("%w: CRM returned opportunity without id", ErrImportProvisionUnavailable)
 	}
-	return data.Opportunity, nil
+	return data, nil
 }
 
 // SignOpportunity 把商机推进到「已签约 + CLOSED」，由 CRM 侧校验 contract_ref 与合同验真。
 // 参数：ctx 限定请求，actor 为真实操作者身份，idempotencyKey 为推进幂等键，
-// opportunityID 为已创建商机，contractRef 为已入库合同引用。
+// opportunityID 为已创建商机，contractRef 为已有编号的合同引用，expectedVersion为CRM返回版本。
 // 返回值：推进后的商机；验真失败等业务拒绝返回 *ProvisionRejectedError。
-func (c *ImportProvisionClient) SignOpportunity(ctx context.Context, actor, idempotencyKey string, opportunityID uint64, contractRef string) (ProvisionOpportunity, error) {
+func (c *ImportProvisionClient) SignOpportunity(ctx context.Context, actor, idempotencyKey string, opportunityID uint64, contractRef string, expectedVersion uint64) (ProvisionOpportunity, error) {
 	contractRef = strings.TrimSpace(contractRef)
-	if opportunityID == 0 || contractRef == "" {
+	if opportunityID == 0 || contractRef == "" || expectedVersion == 0 {
 		return ProvisionOpportunity{}, errors.New("CRM import provision sign requires opportunity id and contract ref")
 	}
-	var data struct {
-		Opportunity ProvisionOpportunity `json:"opportunity"`
-	}
+	var data ProvisionOpportunity
 	path := importProvisionPathOpportunities + "/" + strconv.FormatUint(opportunityID, 10) + "/sign"
 	payload := struct {
-		ContractRef string `json:"contract_ref"`
-	}{ContractRef: contractRef}
+		ContractRef     string `json:"contract_ref"`
+		ExpectedVersion uint64 `json:"expected_version"`
+		Reason          string `json:"reason"`
+	}{ContractRef: contractRef, ExpectedVersion: expectedVersion, Reason: "历史合同导入确认签约"}
 	if err := c.do(ctx, http.MethodPost, path, actor, idempotencyKey, payload, &data); err != nil {
 		return ProvisionOpportunity{}, err
 	}
-	if data.Opportunity.ID == 0 {
-		return ProvisionOpportunity{}, fmt.Errorf("%w: CRM returned opportunity without id", ErrImportProvisionUnavailable)
+	if data.ID != opportunityID || data.Version == 0 || data.Status != "CLOSED" || data.Stage != "已签约" {
+		return ProvisionOpportunity{}, fmt.Errorf("%w: CRM did not confirm the requested signed opportunity", ErrImportProvisionUnavailable)
 	}
-	return data.Opportunity, nil
+	return data, nil
 }
 
 // do 发送一次带机器令牌与重放防护头的 JSON 请求，并统一分类失败。

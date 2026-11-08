@@ -84,6 +84,9 @@ func (s *Service) DispatchImportOnce(ctx context.Context) error {
 	if err == nil {
 		err = s.checkBusinessLicense(run)
 	}
+	if err == nil && b.Confirmation != nil && b.Confirmation.AutoApproved() && !s.importAutoApproveBatchEligible(b) {
+		err = ErrImportConflict
+	}
 	if err == nil && index >= 0 {
 		err = s.executeImportItem(run, actor, b, b.Items[index])
 	}

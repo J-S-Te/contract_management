@@ -41,6 +41,20 @@ func (r *Repository) AutoConfirmHistoricalImportItem(ctx context.Context, tenant
 		if err != nil {
 			return err
 		}
+		if !policy.Auto || policy.ExpectedRevision == 0 || policy.ExpectedEpoch == 0 || b.State != "RUNNING" ||
+			b.Revision != policy.ExpectedRevision || b.Epoch != policy.ExpectedEpoch {
+			return application.ErrImportConflict
+		}
+		for _, entry := range b.Items {
+			metadata := entry.Item.Metadata
+			if (entry.Item.Mode != contract.ImportArchiveOnly && entry.Item.Mode != contract.ImportHistoricalClosed) ||
+				metadata.CRMCustomerID != 0 || metadata.OpportunityID != "" || metadata.OpportunityName != "" || metadata.CounterpartySource == contract.CounterpartyLocal {
+				return application.ErrImportConflict
+			}
+		}
+		if b.Confirmation != nil && b.Confirmation.PolicyPinned() && !b.Confirmation.AutoApproved() {
+			return application.ErrImportConflict
+		}
 		index := -1
 		for i := range b.Items {
 			if b.Items[i].ID == itemID {
