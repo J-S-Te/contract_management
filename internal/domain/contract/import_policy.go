@@ -45,7 +45,7 @@ func ValidateImportPolicy(mode ImportMode, policy *ImportPolicy) error {
 			policy.FinanceMode == "FULL_REPLAY" && policy.ResponsibilityMode == "ACTIVATE_ON_RELEASE"
 	case ImportHistoricalClosed:
 		valid = policy.ProjectMode == "NONE" && policy.ResponsibilityMode == "INACTIVE" &&
-			(policy.FinanceMode == "EVIDENCE_ONLY" || policy.FinanceMode == "FULL_REPLAY")
+			(policy.FinanceMode == "NONE" || policy.FinanceMode == "EVIDENCE_ONLY" || policy.FinanceMode == "FULL_REPLAY")
 	}
 	if !valid {
 		return ErrImportPolicy

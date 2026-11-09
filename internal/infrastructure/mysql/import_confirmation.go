@@ -228,25 +228,7 @@ func confirmHistoricalItem(tx *gorm.DB, b *contract.ImportBatch, item *contract.
 			apperrors.ErrStateConflict, c.ID, updated.RowsAffected)
 	}
 	item.Confirmed = true
-	item.Targets = []contract.ImportTarget{}
-	for _, target := range []string{"PROJECT", "FINANCE", "REPORT"} {
-		state := "WAITING_RELEASE"
-		if (target == "PROJECT" && item.Item.Policy.ProjectMode == "NONE") || (target == "FINANCE" && item.Item.Policy.FinanceMode != "FULL_REPLAY") {
-			state = "NOT_APPLICABLE"
-		}
-		// 当前接收方要求活动责任；结清模式责任必须INACTIVE，不能伪造。
-		if target == "FINANCE" && item.Item.Mode == contract.ImportHistoricalClosed && item.Item.Policy.FinanceMode == "FULL_REPLAY" {
-			state = "BLOCKED"
-		}
-		code := ""
-		if target == "FINANCE" && item.Item.Policy.FinanceMode == "EVIDENCE_ONLY" {
-			code = "IMPORT_FINANCIAL_LEDGER_NOT_REBUILT"
-		}
-		if state == "BLOCKED" {
-			code = "IMPORT_INACTIVE_RESPONSIBILITY_UNSUPPORTED"
-		}
-		item.Targets = append(item.Targets, contract.ImportTarget{Target: target, State: state, Version: 1, ReleaseVersion: 1, ErrorCode: code})
-	}
+	item.Targets = initialImportTargets(item.Item)
 	payload, err := confirmationAuditPayload(item.Item, write)
 	if err != nil {
 		return err
@@ -325,4 +307,30 @@ func (r *Repository) ListStartingImportConfirmations(ctx context.Context) ([]con
 		result = append(result, b)
 	}
 	return result, e
+}
+
+// initialImportTargets 按冻结策略建立独立目标，不参与财务的档案不生成可执行财务任务。
+// 参数：item为已核验的冻结历史项。
+// 返回值：项目、财务和报表目标；旧策略保持原状态及恢复标记。
+func initialImportTargets(item contract.ImportItem) []contract.ImportTarget {
+	targets := []contract.ImportTarget{}
+	for _, target := range []string{"PROJECT", "FINANCE", "REPORT"} {
+		state := "WAITING_RELEASE"
+		if (target == "PROJECT" && item.Policy.ProjectMode == "NONE") || (target == "FINANCE" && item.Policy.FinanceMode != "FULL_REPLAY") {
+			state = "NOT_APPLICABLE"
+		}
+		// 当前接收方要求活动责任；结清模式责任必须INACTIVE，不能伪造。
+		if target == "FINANCE" && item.Mode == contract.ImportHistoricalClosed && item.Policy.FinanceMode == "FULL_REPLAY" {
+			state = "BLOCKED"
+		}
+		code := ""
+		if target == "FINANCE" && item.Policy.FinanceMode == "EVIDENCE_ONLY" {
+			code = "IMPORT_FINANCIAL_LEDGER_NOT_REBUILT"
+		}
+		if state == "BLOCKED" {
+			code = "IMPORT_INACTIVE_RESPONSIBILITY_UNSUPPORTED"
+		}
+		targets = append(targets, contract.ImportTarget{Target: target, State: state, Version: 1, ReleaseVersion: 1, ErrorCode: code})
+	}
+	return targets
 }

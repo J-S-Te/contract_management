@@ -158,6 +158,45 @@ func (c *PersonnelDirectoryClient) ResolveOwner(ctx context.Context, tenantID, u
 	return application.UserReference{UserID: item.UserID, DisplayName: item.DisplayName}, nil
 }
 
+// ResolveOwnerByName 分页精确匹配当前负责人姓名，不把模糊命中或销售身份当作用户账号。
+// 参数：ctx为请求上下文，tenantID为可信租户，name为Excel填写的姓名。
+// 返回值：唯一有效用户；未找到、重名或依赖故障分别返回稳定分类错误。
+func (c *PersonnelDirectoryClient) ResolveOwnerByName(ctx context.Context, tenantID, name string) (application.UserReference, error) {
+	name = strings.TrimSpace(name)
+	if c == nil || tenantID == "" || name == "" || len([]rune(name)) > 128 {
+		return application.UserReference{}, application.ErrProvisionOwnerNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	directory := &localCatalogTargetDirectory{client: c, tenant: tenantID}
+	matches := map[string]application.UserReference{}
+	for page := 1; page <= 100; page++ {
+		users, total, err := directory.query(ctx, application.Principal{TenantID: tenantID},
+			url.Values{"keyword": {name}, "page": {fmt.Sprint(page)}, "page_size": {"50"}})
+		if err != nil {
+			return application.UserReference{}, application.ErrProvisionOwnerDirectoryUnavailable
+		}
+		for _, user := range users {
+			if strings.TrimSpace(user.Name) == name {
+				matches[user.ID] = application.UserReference{UserID: user.ID, DisplayName: user.Name}
+			}
+		}
+		if len(matches) > 1 {
+			return application.UserReference{}, application.ErrProvisionOwnerAmbiguous
+		}
+		if int64(page*50) >= total {
+			for _, owner := range matches {
+				return owner, nil
+			}
+			return application.UserReference{}, application.ErrProvisionOwnerNotFound
+		}
+		if len(users) == 0 {
+			break
+		}
+	}
+	return application.UserReference{}, application.ErrProvisionOwnerDirectoryUnavailable
+}
+
 func (c *PersonnelDirectoryClient) accessToken(ctx context.Context) (string, error) {
 	form := url.Values{"grant_type": {"client_credentials"}, "scope": {"owner_directory.read"}}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/oauth2/token", strings.NewReader(form.Encode()))
