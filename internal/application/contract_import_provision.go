@@ -13,7 +13,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
-// 历史导入自动开立 CRM 的五个逐项错误码（设计定稿 3.3）。
+// 历史导入自动开立 CRM 的逐项错误码（包含可恢复依赖故障分类）。
 // 它们只写进既有 Issue 机制（ImportItemState.Issues），不改变 HTTP 错误码契约。
 const (
 	// CodeImportCRMProvisionDisabled 表示批次按开立通道预检，但执行时开关已关闭。
@@ -22,8 +22,10 @@ const (
 	CodeImportProvisionOwnerUnresolved = "IMPORT_PROVISION_OWNER_UNRESOLVED"
 	// CodeImportProvisionCustomerAmbiguous 表示客户名称多命中或命中已停用客户。
 	CodeImportProvisionCustomerAmbiguous = "IMPORT_PROVISION_CUSTOMER_AMBIGUOUS"
-	// CodeImportProvisionCRMRejected 表示 CRM 拒绝本次开立（4xx/5xx/网络）。
+	// CodeImportProvisionCRMRejected 表示 CRM 明确拒绝本次开立（业务 4xx）。
 	CodeImportProvisionCRMRejected = "IMPORT_PROVISION_CRM_REJECTED"
+	// CodeImportProvisionCRMUnavailable 表示依赖故障，不能引导用户修改正确的业务数据。
+	CodeImportProvisionCRMUnavailable = "IMPORT_PROVISION_CRM_UNAVAILABLE"
 	// CodeImportProvisionContractNotVerified 表示 CRM 侧合同验真未通过，需要配置凭据。
 	CodeImportProvisionContractNotVerified = "IMPORT_PROVISION_CONTRACT_NOT_VERIFIED"
 	// codeImportValidationFailed 复用既有预检失败码，用于清单声明本身不合法但
@@ -330,7 +332,7 @@ func (s *Service) resolveImportProvisionSales(ctx context.Context, salesName str
 
 // classifyImportProvisionCRMError 把 CRM 客户端错误分类为逐项失败投影。
 // 参数：err 为客户端返回的错误。
-// 返回值：合同验真未通过映射为专用错误码；其余按依赖故障判定可重试。
+// 返回值：合同验真、依赖故障与业务拒绝分别映射；依赖恢复后允许从原批次续做。
 func classifyImportProvisionCRMError(err error) *importProvisionFailure {
 	if err == nil {
 		return nil
@@ -347,12 +349,13 @@ func classifyImportProvisionCRMError(err error) *importProvisionFailure {
 				"CRM sign rejected by contract verification: "+err.Error())
 		}
 	}
-	retryable := errors.Is(err, ErrCRMProvisionUnavailable)
-	message := "CRM 拒绝了本次开立，请核对客户与商机数据"
-	if retryable {
-		message = "CRM 暂不可用，请稍后重试"
+	if errors.Is(err, ErrCRMProvisionUnavailable) {
+		return newProvisionFailure("metadata", CodeImportProvisionCRMUnavailable, true,
+			"CRM 自动开立服务暂不可用，已保留处理进度；服务恢复后请从原批次恢复执行",
+			err.Error())
 	}
-	return newProvisionFailure("metadata", CodeImportProvisionCRMRejected, retryable, message, err.Error())
+	return newProvisionFailure("metadata", CodeImportProvisionCRMRejected, false,
+		"CRM 拒绝了本次开立，请核对客户与商机数据", err.Error())
 }
 
 // failImportProvision 把失败记成 BLOCKED 并返回可落 Issue 的失败错误。
