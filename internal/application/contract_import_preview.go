@@ -270,9 +270,9 @@ func (s *Service) SetImportManifest(ctx context.Context, actor Principal, id str
 	if !s.ContractImportEnabled {
 		return ErrImportUnsupported
 	}
-	max := s.ContractImportMaxItems
-	if max == 0 {
-		max = 100
+	max := s.ImportBatchItemLimit()
+	if len(m.Items) > max {
+		return &ImportBatchItemLimitError{Limit: max, Count: len(m.Items)}
 	}
 	if e := m.Validate(max); e != nil {
 		if errors.Is(e, contract.ErrImportMixedLifecycle) {

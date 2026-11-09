@@ -2157,7 +2157,11 @@ func writeData(c *gin.Context, status int, data any) {
 func writeError(c *gin.Context, err error) {
 	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
 	var sourceRejected *application.ImportSourceRejectedError
+	var batchItemLimit *application.ImportBatchItemLimitError
 	switch {
+	case errors.As(err, &batchItemLimit):
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_BATCH_ITEM_LIMIT", batchItemLimit.Error(),
+			gin.H{"field_path": "items", "max_items": batchItemLimit.Limit, "actual_items": batchItemLimit.Count})
 	case errors.Is(err, application.ErrImportSourceStorageUnavailable):
 		slog.ErrorContext(c.Request.Context(), "contract import storage unavailable",
 			"request_id", requestIDFrom(c.Request.Context()), "error", err)

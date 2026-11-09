@@ -7,6 +7,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 	"github.com/j-s-te/contract-management/internal/testfixture"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,6 +15,18 @@ import (
 type importPreviewRepository struct {
 	recordingRepository
 	batch contract.ImportBatch
+}
+
+// TestImportManifestReportsConfiguredLimit 验证四份清单超过服务端三份上限时明确说明数量。
+// 参数：t为隔离应用测试上下文。
+// 返回值：无；仍返回无法定位的通用错误时失败。
+func TestImportManifestReportsConfiguredLimit(t *testing.T) {
+	service := &Service{ContractImportEnabled: true, ContractImportMaxItems: 3}
+	err := service.SetImportManifest(context.Background(), Principal{}, "batch", 1,
+		contract.ImportManifest{SchemaVersion: 1, SourceSystem: "legacy", Items: make([]contract.ImportItem, 4)})
+	if err == nil || !strings.Contains(err.Error(), "每批最多 3 份") || !strings.Contains(err.Error(), "4 份") {
+		t.Fatalf("数量上限未明确返回: %v", err)
+	}
 }
 
 // CreateImportBatch 保存测试台账。
