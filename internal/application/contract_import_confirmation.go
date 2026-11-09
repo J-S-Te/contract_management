@@ -111,7 +111,7 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 	if e != nil {
 		return b, e
 	}
-	if s.Temporal == nil && !liveAuto {
+	if s.Temporal == nil && !(liveAuto && s.importAutoApproveBatchEligible(b)) {
 		return b, ErrImportUnsupported
 	}
 	if b.Revision != revision || b.State != "PREVIEWED" || b.PreviewToken != token || token == "" || !b.PreviewExpiresAt.After(time.Now()) {
@@ -155,7 +155,7 @@ func (s *Service) SubmitImportConfirmation(ctx context.Context, actor Principal,
 			return ErrImportConflict
 		}
 		// 判定与确认写入同一事务：这里的 auto 就是本批次执行期的唯一口径。
-		auto := s.ContractImportAutoApproveHistorical && setting.Enabled
+		auto := s.ContractImportAutoApproveHistorical && setting.Enabled && s.importAutoApproveBatchEligible(*current)
 		confirmation := &contract.ImportConfirmation{
 			Revision:      revision,
 			Digest:        digest,
@@ -220,6 +220,9 @@ func (s *Service) startImportConfirmation(ctx context.Context, b contract.Import
 		return ErrApprovalWorkflowUnavailable
 	}
 	if b.Confirmation.AutoApproved() {
+		if !s.importAutoApproveBatchEligible(b) {
+			return ErrImportConflict
+		}
 		return nil
 	}
 	if s.Temporal == nil {

@@ -39,7 +39,7 @@ func autoApproveHistoryFixture(t *testing.T, r *Repository, tenant string) contr
 	date, _ := time.Parse("2006-01-02", "2020-01-01")
 	item := contract.ImportItem{Key: "one", ExternalRecordID: batchID, Mode: contract.ImportArchiveOnly,
 		SourceFileRef: "source", Policy: policy, HistoryEvidence: evidence,
-		Metadata: contract.ImportMetadata{Title: "自动审批历史合同", ContractType: "直签", CRMCustomerID: 42,
+		Metadata: contract.ImportMetadata{Title: "自动审批历史合同", ContractType: "直签",
 			CustomerName: "当前权威客户", AmountMinor: 10000, Currency: "CNY", StartDate: &date,
 			PaymentTerms: []contract.PaymentTerm{{InstallmentNo: 1, DueDate: "2020-01-01", Amount: "100.00"}}}}
 	b := contract.ImportBatch{ID: batchID, TenantID: tenant, ActorID: actor, Version: 1, Revision: 1,
@@ -101,7 +101,7 @@ func TestAutoConfirmHistoricalImportItemArchivesDeclaredState(t *testing.T) {
 	itemID, contractID := b.Items[0].ID, b.Items[0].ContractID
 	roles := []string{"admin", "finance_director"}
 
-	if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(1)); err != nil {
+	if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(b, 1)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -160,7 +160,7 @@ func TestAutoConfirmHistoricalImportItemArchivesDeclaredState(t *testing.T) {
 	}
 
 	// 幂等：重复调用不重复取号、不重复写审计、不改动合同版本。
-	if err = r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(1)); err != nil {
+	if err = r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(b, 1)); err != nil {
 		t.Fatal(err)
 	}
 	repeated, err := r.GetImportBatch(ctx, tenant, b.ID)
@@ -231,8 +231,8 @@ func countAuditOutbox(r *Repository, tenant, action, resourceID string) (int64, 
 // contractAutoPolicy 构造租户开关版本对应的自动审批策略快照。
 // 参数：version 为设置版本。
 // 返回值：Auto=true 的策略。
-func contractAutoPolicy(version uint64) application.ImportAutoApprovePolicy {
-	return application.ImportAutoApprovePolicy{Auto: true, Version: version}
+func contractAutoPolicy(b contract.ImportBatch, version uint64) application.ImportAutoApprovePolicy {
+	return application.ImportAutoApprovePolicy{Auto: true, Version: version, ExpectedRevision: b.Revision, ExpectedEpoch: b.Epoch}
 }
 
 // pinAutoApproveConfirmation 在已认领批次上写入一份指定形状的确认台账。
@@ -296,7 +296,7 @@ func TestAutoConfirmHistoricalImportItemRequiresApprovedPinnedConfirmation(t *te
 			SubmittedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(72 * time.Hour),
 			PolicyDecision: contract.ImportPolicyDecisionAuto, PolicyVersion: 1})
 
-		if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(1)); err != nil {
+		if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(b, 1)); err != nil {
 			t.Fatalf("auto confirm error: %v", err)
 		}
 
@@ -408,7 +408,7 @@ func TestAutoConfirmHistoricalImportItemUpgradesLegacyConfirmation(t *testing.T)
 			Commands: []contract.ImportConfirmationCommand{}, SubmittedAt: time.Now().UTC(),
 			ExpiresAt: time.Now().Add(72 * time.Hour)})
 
-		policy := application.ImportAutoApprovePolicy{Auto: true, Version: 3, AllowLegacyUpgrade: true}
+		policy := application.ImportAutoApprovePolicy{Auto: true, Version: 3, AllowLegacyUpgrade: true, ExpectedRevision: b.Revision, ExpectedEpoch: b.Epoch}
 		if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, policy); err != nil {
 			t.Fatalf("legacy upgrade error: %v", err)
 		}
@@ -447,7 +447,7 @@ func TestAutoConfirmHistoricalImportItemUpgradesLegacyConfirmation(t *testing.T)
 				Action: "APPROVE", Roles: roles, At: time.Now().UTC()}},
 			SubmittedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(72 * time.Hour)})
 
-		policy := application.ImportAutoApprovePolicy{Auto: true, Version: 3, AllowLegacyUpgrade: true}
+		policy := application.ImportAutoApprovePolicy{Auto: true, Version: 3, AllowLegacyUpgrade: true, ExpectedRevision: b.Revision, ExpectedEpoch: b.Epoch}
 		err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, policy)
 		if !errors.Is(err, application.ErrImportConflict) {
 			t.Fatalf("error=%v, want ErrImportConflict", err)
@@ -515,7 +515,7 @@ func TestAutoConfirmHistoricalImportItemWritesStableAuditEventIDs(t *testing.T) 
 	b := autoApproveHistoryFixture(t, r, tenant)
 	itemID, contractID := b.Items[0].ID, b.Items[0].ContractID
 	roles := []string{"admin"}
-	if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(2)); err != nil {
+	if err := r.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(b, 2)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -537,7 +537,7 @@ func TestAutoConfirmHistoricalImportItemWritesStableAuditEventIDs(t *testing.T) 
 
 	// 重启后的重放：新仓储实例、同一业务键，不得写出第二条 outbox。
 	restarted := NewRepository(r.db)
-	if err := restarted.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(2)); err != nil {
+	if err := restarted.AutoConfirmHistoricalImportItem(ctx, tenant, b.ID, itemID, roles, contractAutoPolicy(b, 2)); err != nil {
 		t.Fatalf("重放失败: %v", err)
 	}
 	for action := range want {

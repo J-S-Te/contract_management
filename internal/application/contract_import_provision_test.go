@@ -78,6 +78,7 @@ type provisionOpportunityStub struct {
 	createKeys []string
 	signWith   []provisionSignCall
 	signKeys   []string
+	signHook   func()
 }
 
 // provisionSignCall 记录一次推进签约请求。
@@ -93,14 +94,21 @@ func (stub *provisionOpportunityStub) CreateOpportunity(_ context.Context, _, ke
 	stub.calls.createOpportunity++
 	stub.createWith = append(stub.createWith, input)
 	stub.createKeys = append(stub.createKeys, key)
-	return stub.created, stub.createErr
+	result := stub.created
+	if result.Version == 0 {
+		result.Version = 1
+	}
+	return result, stub.createErr
 }
 
 // SignOpportunity 记录推进请求并计数。
 // 参数：ctx 为上下文，actor/key 为契约字段，opportunityID/contractRef 为推进目标。
 // 返回值：已签约商机与错误。
-func (stub *provisionOpportunityStub) SignOpportunity(_ context.Context, _, key string, opportunityID uint64, contractRef string) (CRMProvisionOpportunity, error) {
+func (stub *provisionOpportunityStub) SignOpportunity(_ context.Context, _, key string, opportunityID uint64, contractRef string, _ uint64) (CRMProvisionOpportunity, error) {
 	stub.calls.sign++
+	if stub.signHook != nil {
+		stub.signHook()
+	}
 	stub.signWith = append(stub.signWith, provisionSignCall{OpportunityID: opportunityID, ContractRef: contractRef})
 	stub.signKeys = append(stub.signKeys, key)
 	return CRMProvisionOpportunity{ID: opportunityID, Status: "SIGNED", Stage: "CLOSED"}, stub.signErr
@@ -327,7 +335,7 @@ func provisionHistoryItem(key, external, source, customer, sales string, amountM
 			ReportMode: "ARCHIVE_SEPARATE", ResponsibilityMode: "INACTIVE", SigningMode: "DECLARED_ONLY"},
 		Metadata: contract.ImportMetadata{
 			Title: "历史合同-" + key, ContractType: "直签", ServiceType: "软件测试",
-			CustomerName: customer, SalesName: sales, AmountMinor: amountMinor, Currency: "CNY",
+			CustomerName: customer, CustomerContact: "张三", CustomerPhone: "13800138000", SalesName: sales, AmountMinor: amountMinor, Currency: "CNY",
 			StartDate: &start,
 			ServiceItems: []contract.ServiceItem{{
 				ServiceType: "软件测试", Site: "北京", Batch: "第一批", Category: "软件测试", TestMode: "STANDARD",
@@ -852,8 +860,8 @@ func TestImportProvisionExecutionIsIdempotent(t *testing.T) {
 
 		dispatchUntilSettled(t, service)
 
-		if calls.createCustomer != 0 || calls.createOpportunity != 0 {
-			t.Fatalf("rerun duplicated CRM writes: %+v", calls)
+		if calls.createCustomer != 0 || calls.createOpportunity != 1 || len(opportunity.createKeys) != 1 || opportunity.createKeys[0] != importProvisionIdempotencyKey("opportunity", key) {
+			t.Fatalf("重试未通过原创建幂等键取得版本: calls=%+v keys=%v", calls, opportunity.createKeys)
 		}
 		if calls.sign != 1 || opportunity.signWith[0].OpportunityID != 901 {
 			t.Fatalf("rerun sign=%+v item=%+v ledger=%+v", opportunity.signWith, repo.batch.Items[0], repo.records[key])
@@ -1167,5 +1175,109 @@ func TestImportProvisionCustomerProfileLengthBoundary(t *testing.T) {
 	}
 	if failure.Message == "" || failure.issue().Field != "metadata.industry" || failure.issue().Code != codeImportFieldTooLong {
 		t.Fatalf("failure lacks a locatable issue: %+v", failure)
+	}
+}
+
+// PrepareImportContractNumber 模拟仅预留编号，不改变确认或目标状态。
+// 参数：ctx/tenant/batch/revision/epoch为执行围栏，item/id为单项与合同。
+// 返回值：测试合同编号。
+func (r *provisionImportRepository) PrepareImportContractNumber(_ context.Context, _, _ string, _, _ uint64, _, id string) (string, error) {
+	if r.contract.Number == "" {
+		r.contract.Number = "IMPORT-" + id
+	}
+	return r.contract.Number, nil
+}
+
+// TestImportProvisionPreviewEnforcesCRMRequiredFields 验证新建契约在发生CRM写入前按清单字段阻断。
+// 参数：t为测试上下文。
+// 返回值：缺日期、超长名称或缺真实联系人仍可开立时失败。
+func TestImportProvisionPreviewEnforcesCRMRequiredFields(t *testing.T) {
+	for _, field := range []string{"start_date", "title", "customer_name", "customer_contact", "customer_phone", "boundary", "existing-customer-long-contact"} {
+		t.Run(field, func(t *testing.T) {
+			pdf := testfixture.PDF("CRM required fields")
+			item := provisionHistoryItem("one", "old-1", "source-one", "历史客户", "张三", 10000)
+			switch field {
+			case "start_date":
+				item.Metadata.StartDate = nil
+			case "title":
+				item.Metadata.Title = strings.Repeat("标", 201)
+			case "customer_name":
+				item.Metadata.CustomerName = strings.Repeat("客", 201)
+			case "customer_contact":
+				item.Metadata.CustomerContact = ""
+			case "customer_phone":
+				item.Metadata.CustomerPhone = ""
+			case "existing-customer-long-contact":
+				item.Metadata.CustomerContact = strings.Repeat("联", 128)
+				item.Metadata.CustomerPhone = strings.Repeat("1", 64)
+			case "boundary":
+				item.Metadata.Title = strings.Repeat("标", 200)
+				item.Metadata.CustomerName = strings.Repeat("客", 200)
+			}
+			calls, customer, opportunity, owners := newProvisionStubs()
+			if field == "existing-customer-long-contact" {
+				customer.candidates = []CRMProvisionCustomerCandidate{{ID: 501, Name: "历史客户", Status: "ACTIVE"}}
+			}
+			repo := newProvisionImportRepository(provisionImportBatch([]contract.ImportItem{item}, provisionTestSource("one", pdf)))
+			service := provisionTestService(repo, pdf, customer, opportunity, owners)
+			b, err := service.PreviewImport(context.Background(), provisionImportActor(), "batch", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issues := b.Items[0].Issues
+			if field == "boundary" || field == "existing-customer-long-contact" {
+				if b.State != "PREVIEWED" || len(issues) != 0 {
+					t.Fatalf("合法200字边界被拒绝: state=%s issues=%+v", b.State, issues)
+				}
+				return
+			}
+			found := false
+			for _, issue := range issues {
+				if issue.Field == "metadata."+field {
+					found = true
+				}
+			}
+			if !found || b.State != "BLOCKED" {
+				t.Fatalf("字段%s未按真实CRM契约阻断: state=%s issues=%+v", field, b.State, issues)
+			}
+			if calls.createCustomer+calls.createOpportunity+calls.sign != 0 {
+				t.Fatal("预检写入CRM")
+			}
+		})
+	}
+}
+
+// TestImportProvisionSigningFailureKeepsConfirmationClosed 验证签约失败后不提前归档且重试复用编号。
+// 参数：t为测试上下文。
+// 返回值：签约前缺编号、失败后已确认、出现目标或重试取号不一致时失败。
+func TestImportProvisionSigningFailureKeepsConfirmationClosed(t *testing.T) {
+	pdf := testfixture.PDF("historical signing failure")
+	calls, customer, opportunity, owners := newProvisionStubs()
+	item := provisionHistoryItem("one", "old-1", "source-one", "历史客户", "张三", 10000)
+	repo := newProvisionImportRepository(provisionImportBatch([]contract.ImportItem{item}, provisionTestSource("one", pdf)))
+	repo.autoApproveSetting = contract.ImportAutoApproveSetting{Enabled: true, Version: 1}
+	service := provisionTestService(repo, pdf, customer, opportunity, owners)
+	service.ContractImportAutoApproveHistorical = true
+	previewProvisionBatch(t, service, repo, provisionImportActor())
+	var number string
+	opportunity.signHook = func() {
+		if repo.contract.Number == "" || repo.batch.Items[0].Confirmed || len(repo.batch.Items[0].Targets) != 0 {
+			t.Fatalf("签约前基线错误: c=%+v item=%+v", repo.contract, repo.batch.Items[0])
+		}
+		if number != "" && number != repo.contract.Number {
+			t.Fatal("签约重试改变编号")
+		}
+		number = repo.contract.Number
+	}
+	opportunity.signErr = ErrCRMProvisionUnavailable
+	dispatchUntilSettled(t, service)
+	if repo.batch.State != "PARTIAL" || repo.contract.Status != contract.StatusDraft || repo.contract.Version != 1 || repo.batch.Items[0].Confirmed || len(repo.batch.Items[0].Targets) != 0 {
+		t.Fatalf("失败提前确认: state=%s c=%+v item=%+v", repo.batch.State, repo.contract, repo.batch.Items[0])
+	}
+	opportunity.signErr = nil
+	repo.batch.State = "QUEUED"
+	dispatchUntilSettled(t, service)
+	if calls.sign != 2 || !repo.batch.Items[0].Confirmed || repo.batch.State != "TARGETS_PENDING" {
+		t.Fatalf("重试未闭环: calls=%+v batch=%+v", calls, repo.batch)
 	}
 }

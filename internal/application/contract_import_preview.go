@@ -499,6 +499,9 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 		issues := importFieldIssues(item.Item)
 		if provision {
 			issues = withoutProvisionCustomerRequirement(issues)
+			if requiredIssue := importProvisionRequiredFieldIssue(item.Item.Metadata, false); requiredIssue != nil {
+				issues = append(issues, *requiredIssue)
+			}
 			// 客户类型/行业/地区只在开立通道透传给 CRM，超长必须在预览期按字段定位，
 			// 否则用户填了也会被静默忽略或到执行期才失败。
 			if profileIssue := importProvisionCustomerProfileIssue(item.Item.Metadata); profileIssue != nil {

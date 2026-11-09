@@ -101,12 +101,15 @@ func (s *Service) importAutoApproveLive(ctx context.Context, tenantID string) (b
 // ImportAutoApprovePolicy 是自动确认执行期的策略快照。
 //
 // Auto 决定是否执行自动确认；Version 是要写进合成确认台账的设置版本；
+// ExpectedRevision/ExpectedEpoch 是本次执行围栏，由确认调用方绑定，拒绝暂停后的迟到回调。
 // AllowLegacyUpgrade 只在「确认台账存在但尚未固化策略」的旧数据上为真，
 // 用于把提交时已自动批准、缺少新字段的历史批次就地升级，而不放宽其他状态。
 type ImportAutoApprovePolicy struct {
 	Auto               bool
 	Version            uint64
 	AllowLegacyUpgrade bool
+	ExpectedRevision   uint64
+	ExpectedEpoch      uint64
 }
 
 // importAutoApprovePolicy 解析本批次执行期应使用的策略。
@@ -119,6 +122,13 @@ type ImportAutoApprovePolicy struct {
 // 参数：ctx 为执行上下文，b 为已认领批次。
 // 返回值：策略快照或读取/能力错误（由调度器按可重试依赖故障处理）。
 func (s *Service) importAutoApprovePolicy(ctx context.Context, b contract.ImportBatch) (ImportAutoApprovePolicy, error) {
+	if !s.importAutoApproveBatchEligible(b) {
+		if b.Confirmation != nil && b.Confirmation.AutoApproved() {
+			return ImportAutoApprovePolicy{}, ErrImportConflict
+		}
+		return ImportAutoApprovePolicy{}, nil
+	}
+
 	if b.Confirmation != nil && b.Confirmation.PolicyPinned() {
 		return ImportAutoApprovePolicy{Auto: b.Confirmation.AutoApproved(), Version: b.Confirmation.PolicyVersion}, nil
 	}
@@ -159,5 +169,24 @@ func (s *Service) autoConfirmHistoricalImportItem(ctx context.Context, b contrac
 	if !ok {
 		return ErrImportUnsupported
 	}
+	if !policy.Auto || !s.importAutoApproveBatchEligible(b) {
+		return ErrImportConflict
+	}
+	policy.ExpectedRevision, policy.ExpectedEpoch = b.Revision, b.Epoch
 	return store.AutoConfirmHistoricalImportItem(ctx, b.TenantID, b.ID, itemID, s.ContractImportConfirmationRoles, policy)
+}
+
+// importAutoApproveBatchEligible 限定整批均由历史CRM开立完成链执行自动确认。
+// 参数：b为提交或恢复时的冻结批次。
+// 返回值：非空批次且每项为无既有CRM引用的历史归档开立时为true。
+func (s *Service) importAutoApproveBatchEligible(b contract.ImportBatch) bool {
+	if len(b.Items) == 0 {
+		return false
+	}
+	for _, item := range b.Items {
+		if !s.importProvisionItemApplies(item.Item) {
+			return false
+		}
+	}
+	return true
 }

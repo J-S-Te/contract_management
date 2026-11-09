@@ -68,17 +68,17 @@ func TestImportProvisionClientUsesContractHeadersOnAllEndpoints(t *testing.T) {
 			if payload["owner_identity_id"] != "identity-1" || payload["customer_type"] != "企业" {
 				t.Errorf("customer payload=%v", payload)
 			}
-			_, _ = io.WriteString(response, `{"code":"OK","data":{"customer":{"id":7,"name":"客户A","status":"ACTIVE","origin":"IMPORT_PROVISION"}}}`)
+			_, _ = io.WriteString(response, `{"code":"OK","data":{"id":7,"name":"客户A","status":"ACTIVE","origin":"IMPORT_PROVISION"}}`)
 		case "/api/v1/internal/import-provision/opportunities":
 			if payload["customer_id"] != float64(7) || payload["expected_sign_date"] != "2020-01-02" {
 				t.Errorf("opportunity payload=%v", payload)
 			}
-			_, _ = io.WriteString(response, `{"code":"OK","data":{"opportunity":{"id":9,"name":"商机A","customer_id":7,"status":"FOLLOWING"}}}`)
+			_, _ = io.WriteString(response, `{"code":"OK","data":{"id":9,"name":"商机A","customer_id":7,"opp_status":"FOLLOWING","version":1}}`)
 		case "/api/v1/internal/import-provision/opportunities/9/sign":
 			if payload["contract_ref"] != "CM-2020-001" {
 				t.Errorf("sign payload=%v", payload)
 			}
-			_, _ = io.WriteString(response, `{"code":"OK","data":{"opportunity":{"id":9,"name":"商机A","customer_id":7,"status":"SIGNED","stage":"CLOSED"}}}`)
+			_, _ = io.WriteString(response, `{"code":"OK","data":{"id":9,"name":"商机A","customer_id":7,"opp_status":"CLOSED","current_stage":"已签约","version":2}}`)
 		default:
 			t.Errorf("unexpected path=%s", request.URL.Path)
 			response.WriteHeader(http.StatusNotFound)
@@ -104,8 +104,8 @@ func TestImportProvisionClientUsesContractHeadersOnAllEndpoints(t *testing.T) {
 	if err != nil || opportunity.ID != 9 {
 		t.Fatalf("opportunity=%+v err=%v", opportunity, err)
 	}
-	signed, err := client.SignOpportunity(ctx, "identity-1", "attempt-1", 9, "CM-2020-001")
-	if err != nil || signed.Status != "SIGNED" || signed.Stage != "CLOSED" {
+	signed, err := client.SignOpportunity(ctx, "identity-1", "attempt-1", 9, "CM-2020-001", 1)
+	if err != nil || signed.Status != "CLOSED" || signed.Stage != "已签约" {
 		t.Fatalf("signed=%+v err=%v", signed, err)
 	}
 	for _, path := range []string{
@@ -224,10 +224,10 @@ func TestImportProvisionClientFailsClosedWithoutRequiredInputs(t *testing.T) {
 	if _, err := client.CreateOpportunity(ctx, "identity-1", "attempt-1", ProvisionOpportunityInput{CustomerID: 7, OwnerIdentityID: "identity-1", Name: "商机A"}); err == nil {
 		t.Fatal("missing amount accepted")
 	}
-	if _, err := client.SignOpportunity(ctx, "identity-1", "attempt-1", 0, "CM-1"); err == nil {
+	if _, err := client.SignOpportunity(ctx, "identity-1", "attempt-1", 0, "CM-1", 1); err == nil {
 		t.Fatal("missing opportunity id accepted")
 	}
-	if _, err := client.SignOpportunity(ctx, "identity-1", "attempt-1", 9, " "); err == nil {
+	if _, err := client.SignOpportunity(ctx, "identity-1", "attempt-1", 9, " ", 1); err == nil {
 		t.Fatal("missing contract ref accepted")
 	}
 	if _, err := (&ImportProvisionClient{}).LookupCustomer(ctx, "identity-1", "attempt-1", "客户A"); err == nil {

@@ -28,7 +28,11 @@ func (h *Handler) contractSourceCapabilities(c *gin.Context) {
 		categorySource = h.service.ContractSources.CategorySource
 	}
 	_, canManageCatalog := actor.Scope("contract.catalog.manage")
-	writeData(c, http.StatusOK, map[string]any{"counterparty_source": counterpartySource, "category_source": categorySource, "local_catalog_manage": canManageCatalog, "pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
+	// 本地目录只在当前来源确实需要它时才可维护：CRM/项目来源生效时 LOCAL 合同会被
+	// 建单校验拒绝，暴露入口只会让管理员维护一份不参与业务的目录。来源字段与
+	// 建单分支同源，因此这里按「任一来源为 local」收窄能力，而不是只看权限。
+	localSource := counterpartySource == "local" || categorySource == "local"
+	writeData(c, http.StatusOK, map[string]any{"counterparty_source": counterpartySource, "category_source": categorySource, "local_catalog_manage": canManageCatalog && localSource, "pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
 		"batch_enabled": h.service != nil && h.service.ContractImportEnabled, "supported_modes": h.service.AvailableImportModes(),
 		"max_docx_bytes": 10 << 20, "max_pdf_bytes": contractdocument.MaxPDFSize})
 }

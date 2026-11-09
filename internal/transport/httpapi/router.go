@@ -485,6 +485,9 @@ type opportunityIntakeRequest struct {
 	ReviewReason        string     `json:"review_reason"`
 }
 
+// acceptOpportunityIntake 接收机器转交事件并返回不随人工审核变化的受理回执。
+// 参数：c为已验签且绑定租户的HTTP请求上下文。
+// 返回值：无；写入202受理身份与独立业务状态，失败写标准错误信封。
 func (h *Handler) acceptOpportunityIntake(c *gin.Context) {
 	if !principal(c).Has("opportunity_intake.receive") {
 		writeError(c, application.ErrForbidden)
@@ -524,7 +527,10 @@ func (h *Handler) acceptOpportunityIntake(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusAccepted, map[string]any{"intake_id": result.IntakeID, "event_id": result.EventID, "status": result.Status})
+	writeData(c, http.StatusAccepted, map[string]any{
+		"intake_id": result.IntakeID, "event_id": result.EventID,
+		"status": application.OpportunityIntakeAccepted, "business_status": result.Status,
+	})
 }
 
 func (h *Handler) listOpportunityIntakes(c *gin.Context) {
@@ -1994,12 +2000,17 @@ func (h *Handler) previewApprovalContract(c *gin.Context) {
 }
 
 type commandRequest struct {
-	Comment       string                   `json:"comment"`
-	TargetUserIDs []string                 `json:"target_user_ids"`
-	Countersign   approval.CountersignMode `json:"countersign"`
-	TargetNodeID  string                   `json:"target_node_id"`
+	OriginNodeID       string                   `json:"origin_node_id"`
+	OriginNodeRevision *uint64                  `json:"origin_node_revision"`
+	Comment            string                   `json:"comment"`
+	TargetUserIDs      []string                 `json:"target_user_ids"`
+	Countersign        approval.CountersignMode `json:"countersign"`
+	TargetNodeID       string                   `json:"target_node_id"`
 }
 
+// command 将审批操作路径与原任务身份映射到应用命令。
+// 参数：pathAction为受支持的审批操作路径。
+// 返回值：验证并受理审批命令的HTTP处理函数。
 func (h *Handler) command(pathAction string) gin.HandlerFunc {
 	actions := map[string]workflows.CommandAction{"approve": workflows.ActionApprove, "reject": workflows.ActionReject, "sign": workflows.ActionAddSign, "transfer": workflows.ActionTransfer, "return": workflows.ActionReturn, "withdraw": workflows.ActionWithdraw, "urge": workflows.ActionUrge, "comments": workflows.ActionComment}
 	return func(c *gin.Context) {
@@ -2007,7 +2018,7 @@ func (h *Handler) command(pathAction string) gin.HandlerFunc {
 		if !decode(c, &body) {
 			return
 		}
-		command := workflows.ApprovalCommand{Action: actions[pathAction], Comment: strings.TrimSpace(body.Comment), TargetUserIDs: body.TargetUserIDs, Countersign: body.Countersign, TargetNodeID: body.TargetNodeID}
+		command := workflows.ApprovalCommand{OriginNodeID: body.OriginNodeID, OriginNodeRevision: body.OriginNodeRevision, Action: actions[pathAction], Comment: strings.TrimSpace(body.Comment), TargetUserIDs: body.TargetUserIDs, Countersign: body.Countersign, TargetNodeID: body.TargetNodeID}
 		commandID, err := h.service.Command(c.Request.Context(), principal(c), c.Param("approvalID"), command)
 		if err != nil {
 			writeError(c, err)

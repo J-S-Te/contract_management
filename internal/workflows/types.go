@@ -66,6 +66,7 @@ type ContractApprovalInput struct {
 }
 
 type StatusChangeInput struct {
+	RequireExisting      bool            `json:"require_existing,omitempty"`
 	ApprovalID           string          `json:"approval_id"`
 	Audit                AuditMeta       `json:"audit,omitempty"`
 	TenantID             string          `json:"tenant_id"`
@@ -81,19 +82,22 @@ type StatusChangeInput struct {
 }
 
 type ApprovalCommand struct {
-	CommandID        string                   `json:"command_id"`
-	Action           CommandAction            `json:"action"`
-	ActorUserID      string                   `json:"actor_user_id"`
-	ActorDisplayName string                   `json:"actor_display_name"`
-	RoleNodeOrSign   bool                     `json:"role_node_or_sign,omitempty"`
-	Comment          string                   `json:"comment,omitempty"`
-	TargetUserIDs    []string                 `json:"target_user_ids,omitempty"`
-	Countersign      approval.CountersignMode `json:"countersign,omitempty"`
-	TargetNodeID     string                   `json:"target_node_id,omitempty"`
-	OccurredAt       time.Time                `json:"occurred_at"`
+	OriginNodeID       string                   `json:"origin_node_id,omitempty"`
+	OriginNodeRevision *uint64                  `json:"origin_node_revision,omitempty"`
+	CommandID          string                   `json:"command_id"`
+	Action             CommandAction            `json:"action"`
+	ActorUserID        string                   `json:"actor_user_id"`
+	ActorDisplayName   string                   `json:"actor_display_name"`
+	RoleNodeOrSign     bool                     `json:"role_node_or_sign,omitempty"`
+	Comment            string                   `json:"comment,omitempty"`
+	TargetUserIDs      []string                 `json:"target_user_ids,omitempty"`
+	Countersign        approval.CountersignMode `json:"countersign,omitempty"`
+	TargetNodeID       string                   `json:"target_node_id,omitempty"`
+	OccurredAt         time.Time                `json:"occurred_at"`
 }
 
 type RuntimeNode struct {
+	Revision       uint64              `json:"revision,omitempty"`
 	Node           approval.Node       `json:"node"`
 	Status         approval.NodeStatus `json:"status"`
 	ApprovedBy     map[string]bool     `json:"approved_by"`
@@ -120,6 +124,7 @@ type ApprovalState struct {
 }
 
 type StartApprovalActivityInput struct {
+	RequireExisting                                                         bool `json:"require_existing,omitempty"`
 	ApprovalID, TenantID, ContractID, ApplicantUserID, ApplicantDisplayName string
 	ExpectedVersion                                                         uint64
 	Kind                                                                    approval.Kind

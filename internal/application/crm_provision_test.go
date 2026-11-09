@@ -36,7 +36,7 @@ func (stubProvisionOpportunityClient) CreateOpportunity(context.Context, string,
 // SignOpportunity 返回固定已签约商机。
 // 参数：ctx 为上下文，actor/idempotencyKey 为契约字段，opportunityID/contractRef 为推进目标。
 // 返回值：固定商机与 nil 错误。
-func (stubProvisionOpportunityClient) SignOpportunity(context.Context, string, string, uint64, string) (CRMProvisionOpportunity, error) {
+func (stubProvisionOpportunityClient) SignOpportunity(context.Context, string, string, uint64, string, uint64) (CRMProvisionOpportunity, error) {
 	return CRMProvisionOpportunity{ID: 2, CustomerID: 1, Status: "SIGNED", Stage: "CLOSED"}, nil
 }
 
@@ -132,7 +132,7 @@ func TestConfigureCRMProvisionInjectsClientsWhenEnabled(t *testing.T) {
 		CRMProvisionCustomerInput{Name: "客户A", OwnerIdentityID: "identity-1"}); err != nil {
 		t.Fatalf("injected customer client unusable: %v", err)
 	}
-	if _, err := service.CRMProvisionOpportunityClient.SignOpportunity(context.Background(), "identity-1", "key-1", 2, "CM-1"); err != nil {
+	if _, err := service.CRMProvisionOpportunityClient.SignOpportunity(context.Background(), "identity-1", "key-1", 2, "CM-1", 1); err != nil {
 		t.Fatalf("injected opportunity client unusable: %v", err)
 	}
 	if _, err := service.CRMProvisionOwnerDirectory.ResolveOwnerByName(context.Background(), "张三"); err != nil {

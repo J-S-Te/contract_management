@@ -55,9 +55,9 @@ func (historicalProvisionOpportunity) CreateOpportunity(_ context.Context, _, _ 
 }
 
 // SignOpportunity 返回已签约商机。
-// 参数：ctx/actor/key/opportunityID/contractRef 为推进身份。
+// 参数：ctx/actor/key/opportunityID/contractRef为推进身份，expectedVersion为签约并发版本。
 // 返回值：已签约商机。
-func (historicalProvisionOpportunity) SignOpportunity(_ context.Context, _, _ string, opportunityID uint64, _ string) (application.CRMProvisionOpportunity, error) {
+func (historicalProvisionOpportunity) SignOpportunity(_ context.Context, _, _ string, opportunityID uint64, _ string, _ uint64) (application.CRMProvisionOpportunity, error) {
 	return application.CRMProvisionOpportunity{ID: opportunityID, Status: "SIGNED", Stage: "CLOSED"}, nil
 }
 

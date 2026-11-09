@@ -766,9 +766,12 @@ func TestGetApprovalDetailPrefersImmutableSubmissionSnapshot(t *testing.T) {
 	}
 }
 
+// TestCommandReturnsTheSignalCommandIDForDurableConfirmation 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	encoded := temporalmocks.NewEncodedValue(t)
 	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
 		target := arguments.Get(0).(*workflows.ApprovalState)
@@ -794,7 +797,7 @@ func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 		PermissionScopes: allowAllScope("contract.read"),
 	}
 
-	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionApprove})
 	if err != nil {
 		t.Fatalf("Command() error = %v", err)
 	}
@@ -805,8 +808,11 @@ func TestCommandReturnsTheSignalCommandIDForDurableConfirmation(t *testing.T) {
 
 // BIZ-CONTRACT-03 分离职责：申请人在 application 层预检就被拒绝，不能把注定
 // 会被工作流丢弃的自批信号当成成功返回 commandID（假成功）。
+// TestCommandRejectsApplicantSelfApprove 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandRejectsApplicantSelfApprove(t *testing.T) {
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	temporal := temporalmocks.NewClient(t)
 	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
 		Return(encodedApprovalState(t, state), nil)
@@ -825,7 +831,7 @@ func TestCommandRejectsApplicantSelfApprove(t *testing.T) {
 		PermissionScopes: allowAllScope("contract.read"),
 	}
 
-	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionApprove})
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("Command(self-approve) error = %v, want ErrForbidden", err)
 	}
@@ -836,8 +842,11 @@ func TestCommandRejectsApplicantSelfApprove(t *testing.T) {
 }
 
 // 非申请人且持有 approval.process 的审批人仍正常拿到 commandID 并发出信号。
+// TestCommandAllowsNonApplicantApprove 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandAllowsNonApplicantApprove(t *testing.T) {
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	temporal := temporalmocks.NewClient(t)
 	temporal.On("QueryWorkflow", mock.Anything, "workflow-1", "run-1", workflows.StateQueryName).
 		Return(encodedApprovalState(t, state), nil)
@@ -859,7 +868,7 @@ func TestCommandAllowsNonApplicantApprove(t *testing.T) {
 		PermissionScopes: allowAllScope("contract.read"),
 	}
 
-	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionApprove})
 	if err != nil {
 		t.Fatalf("Command(approve) error = %v", err)
 	}
@@ -885,9 +894,12 @@ func TestGetApprovalDetailClassifiesTemporalQueryFailure(t *testing.T) {
 	}
 }
 
+// TestCommandClassifiesTemporalSignalFailure 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandClassifiesTemporalSignalFailure(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	encoded := temporalmocks.NewEncodedValue(t)
 	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
 		target := arguments.Get(0).(*workflows.ApprovalState)
@@ -902,15 +914,18 @@ func TestCommandClassifiesTemporalSignalFailure(t *testing.T) {
 	service := &Service{Repo: repository, Temporal: temporal}
 	actor := Principal{TenantID: "tenant-1", UserID: "approver-1", Permissions: map[string]bool{"approval.process": true, "contract.read": true}, PermissionScopes: allowAllScope("contract.read")}
 
-	_, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionApprove})
+	_, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionApprove})
 	if !errors.Is(err, ErrApprovalWorkflowUnavailable) {
 		t.Fatalf("Command() error = %v, want ErrApprovalWorkflowUnavailable", err)
 	}
 }
 
+// TestCommandRejectsAddSignTargetWithoutApprovalProcessRole 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	encoded := temporalmocks.NewEncodedValue(t)
 	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
 		target := arguments.Get(0).(*workflows.ApprovalState)
@@ -934,15 +949,18 @@ func TestCommandRejectsAddSignTargetWithoutApprovalProcessRole(t *testing.T) {
 	}
 
 	for _, target := range []string{"sales-1", "specialist-1", "unknown-user"} {
-		if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{target}}); !errors.Is(err, ErrApprovalTargetForbidden) {
+		if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionAddSign, TargetUserIDs: []string{target}}); !errors.Is(err, ErrApprovalTargetForbidden) {
 			t.Fatalf("Command(add-sign %q) error = %v, want ErrApprovalTargetForbidden", target, err)
 		}
 	}
 }
 
+// TestCommandAllowsAddSignTargetWithApprovalProcessRole 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandAllowsAddSignTargetWithApprovalProcessRole(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	encoded := temporalmocks.NewEncodedValue(t)
 	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
 		target := arguments.Get(0).(*workflows.ApprovalState)
@@ -965,7 +983,7 @@ func TestCommandAllowsAddSignTargetWithApprovalProcessRole(t *testing.T) {
 		PermissionScopes: allowAllScope("contract.read"),
 	}
 
-	if commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: []string{"finance-1"}}); err != nil || commandID == "" {
+	if commandID, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionAddSign, TargetUserIDs: []string{"finance-1"}}); err != nil || commandID == "" {
 		t.Fatalf("Command(add-sign) commandID=%q error=%v", commandID, err)
 	}
 }
@@ -1044,9 +1062,12 @@ func TestGetApprovalDetailDoesNotInventSnapshotWhenWorkflowAndSnapshotMissing(t 
 // 超过 20 个或单个标识超过 64 字符都返回校验错误，不会进入工作流。
 // 参数：t为测试上下文。
 // 返回值：无；超限命令被受理或被误判为权限错误时失败。
+// TestCommandRejectsOversizedTargetUserIDs 验证审批命令在真实任务身份下的原有契约。
+// 参数：t为测试上下文。
+// 返回值：无。
 func TestCommandRejectsOversizedTargetUserIDs(t *testing.T) {
 	temporal := temporalmocks.NewClient(t)
-	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning}
+	state := workflows.ApprovalState{ApprovalID: "approval-1", ContractID: "contract-1", Status: approval.StatusRunning, Nodes: []workflows.RuntimeNode{{Node: approval.Node{ID: "node", AssigneeIDs: []string{"approver-1"}}, Status: approval.NodeActive}}}
 	encoded := temporalmocks.NewEncodedValue(t)
 	encoded.On("Get", mock.Anything).Run(func(arguments mock.Arguments) {
 		target := arguments.Get(0).(*workflows.ApprovalState)
@@ -1069,11 +1090,11 @@ func TestCommandRejectsOversizedTargetUserIDs(t *testing.T) {
 	for index := 0; index <= maxApprovalCommandTargets; index++ {
 		tooMany = append(tooMany, fmt.Sprintf("user-%d", index))
 	}
-	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: tooMany}); !errors.Is(err, ErrValidation) {
+	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionAddSign, TargetUserIDs: tooMany}); !errors.Is(err, ErrValidation) {
 		t.Fatalf("Command(%d targets) error = %v, want ErrValidation", len(tooMany), err)
 	}
 	tooLong := []string{strings.Repeat("u", maxApprovalCommandTargetLength+1)}
-	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{Action: workflows.ActionAddSign, TargetUserIDs: tooLong}); !errors.Is(err, ErrValidation) {
+	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionAddSign, TargetUserIDs: tooLong}); !errors.Is(err, ErrValidation) {
 		t.Fatalf("Command(overlong target) error = %v, want ErrValidation", err)
 	}
 }

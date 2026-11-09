@@ -39,7 +39,8 @@ func (r *autoApproveImportRepository) AutoConfirmHistoricalImportItem(_ context.
 func TestAutoConfirmHistoricalImportItemPassesBatchIdentityAndRoles(t *testing.T) {
 	repo := &autoApproveImportRepository{}
 	service := &Service{Repo: repo, ContractImportConfirmationRoles: []string{"admin", "finance_director"}}
-	b := contract.ImportBatch{ID: "batch-1", TenantID: "tenant-1", Items: []contract.ImportItemState{{ID: "item-1"}}}
+	b := contract.ImportBatch{ID: "batch-1", TenantID: "tenant-1", Items: []contract.ImportItemState{{ID: "item-1", Item: provisionHistoryItem("one", "old-1", "source-one", "客户", "销售", 10000)}}}
+	_ = service.ConfigureCRMProvision(true, completeProvisionClients())
 
 	policy := ImportAutoApprovePolicy{Auto: true, Version: 7}
 	if err := service.autoConfirmHistoricalImportItem(context.Background(), b, "item-1", policy); err != nil {
