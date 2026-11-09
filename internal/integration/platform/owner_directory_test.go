@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// ownerDirectoryTestServer 启动假平台：令牌端点固定返回 owner_directory.read，
-// 目录端点按 items 返回响应并校验查询参数。
+// ownerDirectoryTestServer 启动固定专有scope的假平台并校验目录查询参数。
 // 参数：t 为测试上下文，status 为目录端点状态码，body 为目录端点响应体。
 // 返回值：平台 origin（可直接作为 BaseURL）。
 func ownerDirectoryTestServer(t *testing.T, status int, body string) *httptest.Server {
@@ -59,14 +58,14 @@ func TestResolveOwnerByNameDistinguishesZeroAndMultipleMatches(t *testing.T) {
 		t.Fatalf("zero match error=%v", err)
 	}
 
-	single := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"identity_id":"identity-1","display_name":"张三","employee_no":"E001","primary_org_id":"org-9"}],"total":1}}`)
+	single := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"user_id":"identity-1","display_name":"张三","organizations":[{"organization_id":"org-9","organization_name":"销售部","is_primary":true}]}],"total":1,"page":1,"page_size":20}}`)
 	candidate, err := ownerDirectoryTestClient(single).ResolveOwnerByName(context.Background(), "张三")
 	if err != nil || candidate.IdentityID != "identity-1" || candidate.DisplayName != "张三" ||
-		candidate.EmployeeNo != "E001" || candidate.PrimaryOrgID != "org-9" {
+		candidate.EmployeeNo != "" || candidate.PrimaryOrgID != "" {
 		t.Fatalf("candidate=%+v err=%v", candidate, err)
 	}
 
-	multiple := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"identity_id":"identity-1","display_name":"张三"},{"identity_id":"identity-2","display_name":"张三"}],"total":2}}`)
+	multiple := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"user_id":"identity-1","display_name":"张三","organizations":[]},{"user_id":"identity-2","display_name":"张三","organizations":[]}],"total":2,"page":1,"page_size":20}}`)
 	_, err = ownerDirectoryTestClient(multiple).ResolveOwnerByName(context.Background(), "张三")
 	if !errors.Is(err, ErrOwnerAmbiguous) {
 		t.Fatalf("multiple match error=%v", err)
@@ -77,12 +76,11 @@ func TestResolveOwnerByNameDistinguishesZeroAndMultipleMatches(t *testing.T) {
 	}
 }
 
-// TestSearchOwnerDirectoryDeduplicatesAndFailsClosed 验证同身份重复返回不会误判多命中，
-// 而协议异常、依赖故障与非法关键字失败关闭。
+// TestSearchOwnerDirectoryDeduplicatesAndFailsClosed 验证身份去重及协议故障关闭。
 // 参数：t 为测试上下文。
 // 返回值：无；去重或失败分类不符时失败。
 func TestSearchOwnerDirectoryDeduplicatesAndFailsClosed(t *testing.T) {
-	duplicated := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"identity_id":"identity-1","display_name":"张三"},{"identity_id":"identity-1","display_name":"张三"}],"total":2}}`)
+	duplicated := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"user_id":"identity-1","display_name":"张三","organizations":[]},{"user_id":"identity-1","display_name":"张三","organizations":[]}],"total":2,"page":1,"page_size":20}}`)
 	candidates, err := ownerDirectoryTestClient(duplicated).Search(context.Background(), "张三")
 	if err != nil || len(candidates) != 1 || candidates[0].IdentityID != "identity-1" {
 		t.Fatalf("dedupe candidates=%+v err=%v", candidates, err)
@@ -93,7 +91,7 @@ func TestSearchOwnerDirectoryDeduplicatesAndFailsClosed(t *testing.T) {
 		t.Fatalf("5xx error=%v", err)
 	}
 
-	incomplete := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"identity_id":"","display_name":"张三"}],"total":1}}`)
+	incomplete := ownerDirectoryTestServer(t, http.StatusOK, `{"data":{"items":[{"user_id":"","display_name":"张三","organizations":[]}],"total":1,"page":1,"page_size":20}}`)
 	if _, err := ownerDirectoryTestClient(incomplete).Search(context.Background(), "张三"); !errors.Is(err, ErrOwnerDirectoryUnavailable) {
 		t.Fatalf("incomplete candidate error=%v", err)
 	}
