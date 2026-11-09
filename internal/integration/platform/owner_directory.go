@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,9 +24,10 @@ const (
 	ownerDirectoryTimeout = 10 * time.Second
 	// ownerDirectoryMaxResponseBytes 是响应体上限，超过即按依赖故障失败。
 	ownerDirectoryMaxResponseBytes = 1 << 20
-	// ownerDirectoryPageSize 固定为 20：历史导入按姓名解析销售只需要候选集，
-	// 超过一页本身就说明重名，应判为多命中而不是翻页取全量。
-	ownerDirectoryPageSize = "20"
+	// ownerDirectoryPageSize 保留平台默认页长，完整读取后再按精确姓名消歧。
+	ownerDirectoryPageSize = 20
+	// ownerDirectoryMaxCandidates 限制模糊查询总量；超限失败关闭，不能以首分页推断唯一。
+	ownerDirectoryMaxCandidates = 1000
 	// ownerDirectoryPath 是平台真实路由（router.go 中 group("/api/v1") + "/internal/owner-directory"）。
 	// BaseURL 只填平台 origin，/api/v1 前缀由客户端补全，与既有 personnel 目录客户端一致。
 	ownerDirectoryPath = "/api/v1/internal/owner-directory"
@@ -129,94 +131,165 @@ func NewOwnerDirectoryClient(baseURL, tokenURL, clientID, clientSecret string) *
 	return &OwnerDirectoryClient{BaseURL: baseURL, TokenSource: source}
 }
 
-// Search 按姓名关键字查询负责人目录候选（固定 page=1、page_size=20）。
-// 参数：ctx 限定请求，keyword 为销售姓名（调用方应已归一化）。
-// 返回值：去重后的候选列表（可能为空）；依赖不可用或协议异常返回可重试错误。
+// ownerDirectoryWireUser 是平台的用户契约；user_id才是可传给CRM复核的身份。
+type ownerDirectoryWireUser struct {
+	UserID        string `json:"user_id"`
+	DisplayName   string `json:"display_name"`
+	Organizations []struct {
+		ID        string `json:"organization_id"`
+		Name      string `json:"organization_name"`
+		IsPrimary bool   `json:"is_primary"`
+	} `json:"organizations"`
+}
+
+// ownerDirectoryWirePage 保留必需字段是否存在，缺失不能伪装成空目录。
+type ownerDirectoryWirePage struct {
+	Items    *[]ownerDirectoryWireUser `json:"items"`
+	Total    *int64                    `json:"total"`
+	Page     int                       `json:"page"`
+	PageSize int                       `json:"page_size"`
+}
+
+// Search 有界读取平台模糊姓名目录的完整分页候选。
+// 参数：ctx限定整次查询，keyword为不超过100个Unicode字符的姓名关键字。
+// 返回值：按权威user_id去重的候选；目录故障、超限或分页不完整时失败关闭。
 func (c *OwnerDirectoryClient) Search(ctx context.Context, keyword string) ([]OwnerCandidate, error) {
 	if c == nil || strings.TrimSpace(c.BaseURL) == "" || c.TokenSource == nil {
 		return nil, errors.New("owner directory integration is not configured")
 	}
 	keyword = strings.TrimSpace(keyword)
-	if keyword == "" || len(keyword) > 128 {
-		return nil, errors.New("owner directory keyword must be 1..128 characters")
+	if keyword == "" || len([]rune(keyword)) > 100 {
+		return nil, errors.New("owner directory keyword must be 1..100 characters")
 	}
+	ctx, cancel := context.WithTimeout(ctx, ownerDirectoryTimeout)
+	defer cancel()
 	token, err := c.TokenSource(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: obtain owner directory token: %v", ErrOwnerDirectoryUnavailable, err)
 	}
-	query := url.Values{"keyword": {keyword}, "page": {"1"}, "page_size": {ownerDirectoryPageSize}}
+	client := http.Client{Timeout: ownerDirectoryTimeout}
+	if c.Client != nil {
+		client = *c.Client
+	}
+	client.CheckRedirect = rejectOwnerRedirect
+	seen, total := map[string]string{}, int64(-1)
+	result := []OwnerCandidate{}
+	for page := 1; page <= ownerDirectoryMaxCandidates/ownerDirectoryPageSize; page++ {
+		data, err := c.fetchOwnerPage(ctx, &client, token, keyword, page)
+		if err != nil {
+			return nil, fmt.Errorf("%w: query owner directory: %v", ErrOwnerDirectoryUnavailable, err)
+		}
+		if total >= 0 && total != *data.Total {
+			return nil, fmt.Errorf("%w: owner directory total changed", ErrOwnerDirectoryUnavailable)
+		}
+		total = *data.Total
+		owners, err := normalizeOwnerDirectoryUsers(*data.Items, seen)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrOwnerDirectoryUnavailable, err)
+		}
+		result = append(result, owners...)
+		if int64(page*ownerDirectoryPageSize) >= total {
+			return result, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: owner directory exceeds page limit", ErrOwnerDirectoryUnavailable)
+}
+
+// fetchOwnerPage 请求单页并校验平台分页元数据及实际行数。
+// 参数：ctx为整次查询上下文，client为禁重定向客户端，token为专有令牌，keyword和page为查询。
+// 返回值：完整的单页；HTTP、体积、协议或分页边界异常返回错误。
+func (c *OwnerDirectoryClient) fetchOwnerPage(ctx context.Context, client *http.Client,
+	token, keyword string, page int) (ownerDirectoryWirePage, error) {
+	query := url.Values{"keyword": {keyword}, "page": {strconv.Itoa(page)},
+		"page_size": {strconv.Itoa(ownerDirectoryPageSize)}}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		strings.TrimRight(c.BaseURL, "/")+ownerDirectoryPath+"?"+query.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return ownerDirectoryWirePage{}, err
 	}
 	request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
 	request.Header.Set("Accept", "application/json")
-	client := c.Client
-	if client == nil {
-		client = &http.Client{Timeout: ownerDirectoryTimeout, CheckRedirect: rejectOwnerRedirect}
-	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: query owner directory: %v", ErrOwnerDirectoryUnavailable, err)
+		return ownerDirectoryWirePage{}, err
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, ownerDirectoryMaxResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: read owner directory response: %v", ErrOwnerDirectoryUnavailable, err)
+		return ownerDirectoryWirePage{}, err
 	}
-	if len(raw) > ownerDirectoryMaxResponseBytes {
-		return nil, fmt.Errorf("%w: owner directory response exceeds 1 MiB", ErrOwnerDirectoryUnavailable)
+	if len(raw) > ownerDirectoryMaxResponseBytes || response.StatusCode != http.StatusOK {
+		return ownerDirectoryWirePage{}, fmt.Errorf("owner directory response rejected (status %d)", response.StatusCode)
 	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: owner directory returned status %d", ErrOwnerDirectoryUnavailable, response.StatusCode)
-	}
+	return decodeOwnerDirectoryPage(raw, page)
+}
+
+// decodeOwnerDirectoryPage 校验缺字段、总数、页码及页长，拒绝截断或空中间页。
+// 参数：raw为有界响应字节，page为本次实际请求页码。
+// 返回值：可信单页；不完整或错误形状返回协议错误。
+func decodeOwnerDirectoryPage(raw []byte, page int) (ownerDirectoryWirePage, error) {
 	var envelope struct {
-		Data *struct {
-			Items []OwnerCandidate `json:"items"`
-			Total int64            `json:"total"`
-		} `json:"data"`
+		Data *ownerDirectoryWirePage `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, fmt.Errorf("%w: decode owner directory: %v", ErrOwnerDirectoryUnavailable, err)
+		return ownerDirectoryWirePage{}, err
 	}
-	if envelope.Data == nil || envelope.Data.Total < int64(len(envelope.Data.Items)) {
-		return nil, fmt.Errorf("%w: owner directory response is incomplete", ErrOwnerDirectoryUnavailable)
+	data := envelope.Data
+	if data == nil || data.Items == nil || data.Total == nil || *data.Total < 0 ||
+		*data.Total > ownerDirectoryMaxCandidates || data.Page != page || data.PageSize != ownerDirectoryPageSize {
+		return ownerDirectoryWirePage{}, errors.New("owner directory pagination is incomplete or exceeds limit")
 	}
-	seen := map[string]bool{}
-	result := make([]OwnerCandidate, 0, len(envelope.Data.Items))
-	for _, item := range envelope.Data.Items {
-		item.IdentityID = strings.TrimSpace(item.IdentityID)
-		item.DisplayName = strings.TrimSpace(item.DisplayName)
-		if item.IdentityID == "" || len(item.IdentityID) > 128 || len(item.DisplayName) > 255 {
-			return nil, fmt.Errorf("%w: owner directory returned an invalid candidate", ErrOwnerDirectoryUnavailable)
+	remaining := *data.Total - int64((page-1)*ownerDirectoryPageSize)
+	if remaining < 0 || int64(len(*data.Items)) != min(int64(ownerDirectoryPageSize), remaining) {
+		return ownerDirectoryWirePage{}, errors.New("owner directory page is incomplete")
+	}
+	return *data, nil
+}
+
+// normalizeOwnerDirectoryUsers 将平台user_id显式映射为合同候选并跨页去重。
+// 参数：users为当前原始页，seen为已读取身份及姓名，用于拒绝身份姓名冲突。
+// 返回值：新身份候选；缺身份、缺姓名或冲突返回错误，未提供的员工号和主组织保持空。
+func normalizeOwnerDirectoryUsers(users []ownerDirectoryWireUser, seen map[string]string) ([]OwnerCandidate, error) {
+	result := make([]OwnerCandidate, 0, len(users))
+	for _, user := range users {
+		id, name := strings.TrimSpace(user.UserID), strings.TrimSpace(user.DisplayName)
+		if id == "" || len(id) > 128 || name == "" || len(name) > 255 {
+			return nil, errors.New("owner directory returned an invalid candidate")
 		}
-		// 同一身份重复返回不算多命中；不同身份同名才算。
-		if seen[item.IdentityID] {
+		if previous, ok := seen[id]; ok {
+			if previous != name {
+				return nil, errors.New("owner directory returned conflicting names for one identity")
+			}
 			continue
 		}
-		seen[item.IdentityID] = true
-		result = append(result, item)
+		seen[id] = name
+		result = append(result, OwnerCandidate{IdentityID: id, DisplayName: name})
 	}
 	return result, nil
 }
 
-// ResolveOwnerByName 把「销售姓名」解析成唯一 identity_id。
-// 参数：ctx 限定请求，displayName 为 Excel 中的销售姓名。
-// 返回值：唯一候选；0 命中返回包装 ErrOwnerNotFound 的错误，
-// 多命中返回 *OwnerAmbiguousError（可用 errors.Is 判定 ErrOwnerAmbiguous）。
+// ResolveOwnerByName 按完整精确姓名从完整候选集中解析唯一平台身份。
+// 参数：ctx限定请求，displayName为Excel中的销售姓名，仅归一化首尾空格。
+// 返回值：唯一候选；零精确命中返回ErrOwnerNotFound，不同身份同名返回ErrOwnerAmbiguous。
 func (c *OwnerDirectoryClient) ResolveOwnerByName(ctx context.Context, displayName string) (OwnerCandidate, error) {
+	displayName = strings.TrimSpace(displayName)
 	candidates, err := c.Search(ctx, displayName)
 	if err != nil {
 		return OwnerCandidate{}, err
 	}
-	switch len(candidates) {
+	matches := []OwnerCandidate{}
+	for _, candidate := range candidates {
+		if candidate.DisplayName == displayName {
+			matches = append(matches, candidate)
+		}
+	}
+	switch len(matches) {
 	case 0:
-		return OwnerCandidate{}, fmt.Errorf("%w: %s", ErrOwnerNotFound, strings.TrimSpace(displayName))
+		return OwnerCandidate{}, fmt.Errorf("%w: %s", ErrOwnerNotFound, displayName)
 	case 1:
-		return candidates[0], nil
+		return matches[0], nil
 	default:
-		return OwnerCandidate{}, &OwnerAmbiguousError{Keyword: strings.TrimSpace(displayName), Candidates: candidates}
+		return OwnerCandidate{}, &OwnerAmbiguousError{Keyword: displayName, Candidates: matches}
 	}
 }
 
