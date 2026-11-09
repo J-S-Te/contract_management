@@ -177,6 +177,7 @@ func (s *Service) UploadImportSource(ctx context.Context, actor Principal, batch
 	if e != nil {
 		return source, e
 	}
+	reused, epoch := false, uint64(0)
 	e = r.UpdateImportBatch(ctx, actor.TenantID, batch, func(b *contract.ImportBatch) error {
 		if e := importAccess(actor, *b, "contract.import.preview"); e != nil {
 			return e
@@ -190,8 +191,10 @@ func (s *Service) UploadImportSource(ctx context.Context, actor Principal, batch
 			}
 		}
 		for _, old := range b.Sources {
-			if old.ItemKey == key && old.SHA256 == validated.SHA256 && old.Filename == validated.Filename {
+			if old.ItemKey == key && old.SHA256 == validated.SHA256 && old.Filename == validated.Filename &&
+				(old.State == "READY" || old.State == "UPLOADING") {
 				source = old
+				reused, epoch = true, b.Epoch
 				return nil
 			}
 		}
@@ -214,13 +217,22 @@ func (s *Service) UploadImportSource(ctx context.Context, actor Principal, batch
 	if source.State == "READY" {
 		return source, nil
 	}
-	fileID, e := s.StampedFileGateway.Upload(ctx, "contract-import-"+source.ID, s.StampedFileApplicationID,
-		"CONTRACT_IMPORT_SOURCE", source.Filename, source.MediaType, bytes.NewReader(body))
-	if e != nil {
-		return source, e
+	if reused {
+		source, e = s.recoverImportSource(ctx, actor, batch, epoch, source)
+		if e != nil {
+			return source, e
+		}
+	}
+	fileID := source.GatewayID
+	if fileID == "" {
+		fileID, e = s.StampedFileGateway.Upload(ctx, "contract-import-"+source.ID, s.StampedFileApplicationID,
+			"CONTRACT_IMPORT_SOURCE", source.Filename, source.MediaType, bytes.NewReader(body))
+		if e != nil {
+			return source, fmt.Errorf("%w: %v", ErrImportSourceStorageUnavailable, e)
+		}
 	}
 	if e = s.StampedFileGateway.Bind(ctx, s.StampedFileApplicationID, fileID, "contract_import_item", source.ID, "IMPORT_SOURCE", source.Filename); e != nil {
-		return source, e
+		return source, fmt.Errorf("%w: %v", ErrImportSourceStorageUnavailable, e)
 	}
 	source.GatewayID, source.State = fileID, "READY"
 	e = r.UpdateImportBatch(ctx, actor.TenantID, batch, func(b *contract.ImportBatch) error {
