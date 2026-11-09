@@ -165,7 +165,8 @@ func TestOwnerDirectoryRejectsIncompletePages(t *testing.T) {
 		`{"data":{"items":[],"total":0,"page":1,"page_size":50}}`,
 		`{"data":{"total":0,"page":1,"page_size":20}}`,
 		ownerWirePage(t, first, 1, 1001),
-		strings.Repeat("x", (1<<20)+1),
+		fmt.Sprintf(`{"padding":%q,"data":{"items":[],"total":0,"page":1,"page_size":20}}`,
+			strings.Repeat("x", 1<<20)),
 	} {
 		client := pagedOwnerClient(t, func(int) (int, string) { return 200, body })
 		if _, err := client.Search(context.Background(), "张三"); !errors.Is(err, ErrOwnerDirectoryUnavailable) {
