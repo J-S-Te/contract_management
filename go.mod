@@ -9,12 +9,12 @@ go 1.26.10
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/pdfcpu/pdfcpu v0.16.4
 	github.com/stretchr/testify v1.12.1
-	go.temporal.io/api v1.64.0
+	go.temporal.io/api v1.64.1
 	go.temporal.io/sdk v1.50.0
 	golang.org/x/oauth2 v0.37.0
 	gopkg.in/yaml.v3 v3.0.1
