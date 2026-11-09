@@ -8,9 +8,54 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
+
+// TestImportCapabilitiesExposesConfiguredBatchLimit 验证页面读取的上限与服务实际配置一致。
+// 参数：t为无需业务库的HTTP测试上下文。
+// 返回值：无；三份上限丢失或误报时失败。
+func TestImportCapabilitiesExposesConfiguredBatchLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	actor := application.Principal{TenantID: "tenant", UserID: "user", Permissions: map[string]bool{"contract.read": true}}
+	router := NewRouter(&application.Service{ContractImportEnabled: true, ContractImportMaxItems: 3},
+		identityFunc(func(context.Context, *http.Request) (application.Principal, error) { return actor, nil }), nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/contract-source-capabilities", nil))
+	var result struct {
+		Data struct {
+			Max int `json:"max_batch_items"`
+		} `json:"data"`
+	}
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Data.Max != 3 {
+		t.Fatalf("能力未返回真实批次上限: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// TestImportBatchLimitResponse 验证超限响应携带实际数量和服务端上限。
+// 参数：t为轻量HTTP错误响应测试上下文。
+// 返回值：无；仍为通用422或数量错误时失败。
+func TestImportBatchLimitResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/contract-import-batches/batch/manifest", nil)
+	writeError(c, &application.ImportBatchItemLimitError{Limit: 3, Count: 4})
+	var result struct {
+		Code    string `json:"code"`
+		Details struct {
+			Max   int    `json:"max_items"`
+			Count int    `json:"actual_items"`
+			Field string `json:"field_path"`
+		} `json:"details"`
+	}
+	if json.Unmarshal(response.Body.Bytes(), &result) != nil || response.Code != 422 ||
+		result.Code != "IMPORT_BATCH_ITEM_LIMIT" || result.Details.Max != 3 ||
+		result.Details.Count != 4 || result.Details.Field != "items" {
+		t.Fatalf("批次数量错误响应不符: %d %s", response.Code, response.Body.String())
+	}
+}
 
 // TestImportOnlyPrincipalReadsCapabilitiesWithoutOrdinaryAccess 验证导入专用主体可查能力且不获得普通合同读取权。
 // 参数：t为测试上下文，身份为显式测试主体，不替代真实SSO。
