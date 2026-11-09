@@ -11,7 +11,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
-// contractSourceCapabilities 提供会话可读取的源文件接入能力。
+// contractSourceCapabilities 按当前来源及权限提供会话可读取的接入能力。
 // 参数：c为已认证请求，需合同创建、读取或可用导入操作权限。
 // 返回值：无；公开接入开关、文件体积和批次上限，不公开敏感配置或凭据。
 func (h *Handler) contractSourceCapabilities(c *gin.Context) {
@@ -28,7 +28,9 @@ func (h *Handler) contractSourceCapabilities(c *gin.Context) {
 		categorySource = h.service.ContractSources.CategorySource
 	}
 	_, canManageCatalog := actor.Scope("contract.catalog.manage")
-	writeData(c, http.StatusOK, map[string]any{"counterparty_source": counterpartySource, "category_source": categorySource, "local_catalog_manage": canManageCatalog, "pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
+	// 外部来源生效时，本地目录不参与建单，因此仅在任一来源为本地时开放维护入口。
+	localSource := counterpartySource == "local" || categorySource == "local"
+	writeData(c, http.StatusOK, map[string]any{"counterparty_source": counterpartySource, "category_source": categorySource, "local_catalog_manage": canManageCatalog && localSource, "pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
 		"batch_enabled": h.service != nil && h.service.ContractImportEnabled, "supported_modes": h.service.AvailableImportModes(),
 		"max_batch_items": h.service.ImportBatchItemLimit(),
 		"max_docx_bytes":  10 << 20, "max_pdf_bytes": contractdocument.MaxPDFSize})
