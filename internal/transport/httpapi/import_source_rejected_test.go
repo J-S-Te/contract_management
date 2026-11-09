@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,31 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/j-s-te/contract-management/internal/application"
 )
+
+// TestImportStorageFailureResponse 保留容量依赖与在途上传的诊断语义且不泄漏底层错误。
+// 参数：t为不访问业务库的HTTP信封测试上下文。
+// 返回值：无；状态码、稳定错误码或错误脱敏不符时失败。
+func TestImportStorageFailureResponse(t *testing.T) {
+	for _, input := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{fmt.Errorf("%w: private-storage-path", application.ErrImportSourceStorageUnavailable), 503, "IMPORT_SOURCE_STORAGE_UNAVAILABLE"},
+		{application.ErrImportSourceUploadPending, 409, "IMPORT_SOURCE_UPLOAD_PENDING"},
+	} {
+		t.Run(input.code, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(response)
+			context.Request = httptest.NewRequest(http.MethodPost, "/api/v1/contract-import-batches/batch/files", nil)
+			writeError(context, input.err)
+			body := response.Body.String()
+			if response.Code != input.status || !strings.Contains(body, input.code) || strings.Contains(body, "private-storage-path") {
+				t.Fatalf("存储错误信封不符: status=%d body=%s", response.Code, body)
+			}
+		})
+	}
+}
 
 // TestImportSourceRejectedErrorIsDiagnosable 验证原件准入拒绝带出原因码而非通用校验文案。
 // 参数：t为轻量gin+httptest测试上下文，不依赖数据库。
