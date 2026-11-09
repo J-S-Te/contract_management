@@ -299,6 +299,9 @@ func (s *Service) SetImportManifest(ctx context.Context, actor Principal, id str
 				return ErrValidation
 			}
 			old, exists := previous[item.Key]
+			if e := validateImportFinanceWrite(item, old.Item, exists); e != nil {
+				return e
+			}
 			if exists && old.ContractID != "" {
 				oldHash, _ := contract.ImportDigest(old.Item)
 				newHash, _ := contract.ImportDigest(item)
@@ -338,6 +341,38 @@ func (s *Service) SetImportManifest(ctx context.Context, actor Principal, id str
 	}
 	if correctionRequired {
 		return ErrImportCorrectionRequired
+	}
+	return nil
+}
+
+// validateImportFinanceWrite 限制新历史项不接续财务，同时保留旧项冻结策略。
+// 参数：item为待写项，old为原项，exists表示相同单项键是否已保存。
+// 返回值：新财务策略、伪装旧业务身份或夹带新财务事实时返回校验错误。
+func validateImportFinanceWrite(item, old contract.ImportItem, exists bool) error {
+	if item.Mode != contract.ImportArchiveOnly && item.Mode != contract.ImportHistoricalClosed {
+		return nil
+	}
+	if item.Policy == nil {
+		return ErrValidation
+	}
+	if item.Policy.FinanceMode == "NONE" {
+		if item.HistoryEvidence == nil || item.HistoryEvidence.ExpectedFacts == nil || len(*item.HistoryEvidence.ExpectedFacts) == 0 {
+			return nil
+		}
+		oldDigest, _ := contract.ImportDigest(old)
+		newDigest, _ := contract.ImportDigest(item)
+		if exists && oldDigest == newDigest {
+			return nil
+		}
+		return ErrValidation
+	}
+	if !exists || old.Mode != item.Mode || old.ExternalRecordID != item.ExternalRecordID || old.Policy == nil {
+		return ErrValidation
+	}
+	oldPolicy, _ := contract.ImportDigest(old.Policy)
+	newPolicy, _ := contract.ImportDigest(item.Policy)
+	if oldPolicy != newPolicy {
+		return ErrValidation
 	}
 	return nil
 }
@@ -493,6 +528,15 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 			item.Issues = []contract.ImportIssue{{Field: "mode", Code: "IMPORT_MIXED_LIFECYCLE"}}
 			continue
 		}
+		if item.Item.HistoryEvidence != nil && strings.TrimSpace(item.Item.HistoryEvidence.TargetOwnerName) != "" {
+			owner, ownerErr := s.importHistoryOwner(ctx, actor, item.Item)
+			if ownerErr != nil {
+				ready = false
+				item.State, item.Issues = "BLOCKED", []contract.ImportIssue{importCurrentOwnerIssue(ownerErr)}
+				continue
+			}
+			item.Item.HistoryEvidence.TargetOwnerUserID = owner.UserID
+		}
 		// 历史开立通道：该行凭清单名称自动开立客户/商机，因此不再要求清单声明
 		// crm_customer_id（其余字段规则完全不变），预检状态改为 NEEDS_PROVISION。
 		provision := s.importProvisionItemApplies(item.Item)
@@ -568,6 +612,23 @@ func (s *Service) PreviewImport(ctx context.Context, actor Principal, id string,
 		return b, e
 	}
 	return s.GetImportBatch(ctx, actor, id)
+}
+
+// importCurrentOwnerIssue 把姓名解析失败转换为逐行可操作错误，不泄漏目录响应。
+// 参数：err为负责人查找、范围或交接校验错误。
+// 返回值：当前负责人字段问题，依赖故障保留可重试标记。
+func importCurrentOwnerIssue(err error) contract.ImportIssue {
+	issue := contract.ImportIssue{Field: "history_evidence.target_owner_name", Code: "IMPORT_CURRENT_OWNER_INVALID",
+		Message: "当前负责人姓名与账号不一致、超出可委派范围或处于交接冻结，请核对后重试"}
+	switch {
+	case errors.Is(err, ErrProvisionOwnerNotFound):
+		issue.Code, issue.Message = "IMPORT_CURRENT_OWNER_NOT_FOUND", "当前负责人姓名未匹配有效账号，请核对Excel当前负责人"
+	case errors.Is(err, ErrProvisionOwnerAmbiguous):
+		issue.Code, issue.Message = "IMPORT_CURRENT_OWNER_AMBIGUOUS", "当前负责人存在重名，请明确选择账号后重新预检"
+	case errors.Is(err, ErrProvisionOwnerDirectoryUnavailable):
+		issue.Code, issue.Message, issue.Retryable = "IMPORT_CURRENT_OWNER_UNAVAILABLE", "当前负责人目录暂不可用，请稍后重试", true
+	}
+	return issue
 }
 
 // withoutProvisionCustomerRequirement 去掉「清单必须声明 crm_customer_id」这一条，

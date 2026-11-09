@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,9 +21,29 @@ func (s *Service) importHistoryOwner(ctx context.Context, actor Principal, item 
 	if item.HistoryEvidence == nil || s.ImportOwners == nil {
 		return UserReference{}, ErrImportUnsupported
 	}
-	id := item.HistoryEvidence.TargetOwnerUserID
 	scope, ok := actor.Scope("contract.import.commit")
-	if !ok || (!scope.AllowAll && id != actor.UserID) {
+	if !ok || (!scope.AllowAll && !scope.AllowSelf) {
+		return UserReference{}, ErrForbidden
+	}
+	id := item.HistoryEvidence.TargetOwnerUserID
+	name := strings.TrimSpace(item.HistoryEvidence.TargetOwnerName)
+	if name != "" {
+		directory, ok := s.ImportOwners.(interface {
+			ResolveOwnerByName(context.Context, string, string) (UserReference, error)
+		})
+		if !ok {
+			return UserReference{}, ErrProvisionOwnerDirectoryUnavailable
+		}
+		owner, err := directory.ResolveOwnerByName(ctx, actor.TenantID, name)
+		if err != nil {
+			return UserReference{}, err
+		}
+		if owner.UserID == "" || (id != "" && id != owner.UserID) {
+			return UserReference{}, ErrForbidden
+		}
+		id = owner.UserID
+	}
+	if !scope.AllowAll && (!scope.AllowSelf || id != actor.UserID) {
 		return UserReference{}, ErrForbidden
 	}
 	owner, e := s.ImportOwners.ResolveOwner(ctx, actor.TenantID, id)

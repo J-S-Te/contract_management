@@ -2,6 +2,7 @@ package contract
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type ImportHistoryEvidence struct {
 	HistoricalCustomerName string        `json:"historical_customer_name"`
 	HistoricalOwnerLabel   string        `json:"historical_owner_label"`
 	TargetOwnerUserID      string        `json:"target_owner_user_id"`
+	TargetOwnerName        string        `json:"target_owner_name,omitempty"`
 	ExistingProjectID      string        `json:"existing_project_id,omitempty"`
 	ExpectedProjectVersion uint64        `json:"expected_project_version,omitempty"`
 	Relationship           string        `json:"relationship,omitempty"`
@@ -119,7 +121,11 @@ func ValidateHistoryEvidence(item ImportItem) error {
 		}
 		return nil
 	}
-	if e == nil || ValidateImportPolicy(item.Mode, p) != nil || e.TargetOwnerUserID == "" || len(e.TargetOwnerUserID) > 64 || len([]rune(e.HistoricalCustomerName)) > 255 || len([]rune(e.HistoricalOwnerLabel)) > 128 {
+	if e == nil || ValidateImportPolicy(item.Mode, p) != nil {
+		return ErrImportManifest
+	}
+	if (e.TargetOwnerUserID == "" && strings.TrimSpace(e.TargetOwnerName) == "") || len(e.TargetOwnerUserID) > 64 ||
+		len([]rune(e.TargetOwnerName)) > 128 || len([]rune(e.HistoricalCustomerName)) > 255 || len([]rune(e.HistoricalOwnerLabel)) > 128 {
 		return ErrImportManifest
 	}
 	if e.DeclaredSignedDate != "" {
