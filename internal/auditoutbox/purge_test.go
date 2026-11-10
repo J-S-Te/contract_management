@@ -3,6 +3,8 @@ package auditoutbox
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -41,7 +43,7 @@ func (s *purgeStore) PurgeDelivered(_ context.Context, cutoff time.Time, batchSi
 	return deleted, nil
 }
 
-// 默认保留 30 天；单轮清理必须分批（每批不超过上限）并一直追到返回 0。
+// 保留期显式启用后，单轮清理必须分批（每批不超过上限）并一直追到返回 0。
 func TestPurgeDeliveredBatchesUntilEmpty(t *testing.T) {
 	t.Setenv(deliveredRetentionEnv, "")
 	store := &purgeStore{remaining: 2500}
@@ -83,12 +85,16 @@ func TestPurgeDisabledWhenRetentionNotPositive(t *testing.T) {
 	}
 }
 
-// 缺省与非法取值都退回 30 天，绝不影响启动。
+// 缺省与非法取值都退回 defaultDeliveredRetention=0（关闭清理），绝不影响启动。
 func TestDeliveredRetentionFromEnvDefaults(t *testing.T) {
+	// 缺省口径必须是关闭：删除的是仅本地保存的已投递审计证据，保留期未经批准不得启用。
+	if defaultDeliveredRetention != 0 {
+		t.Fatalf("defaultDeliveredRetention = %s, want 0（缺省必须关闭清理）", defaultDeliveredRetention)
+	}
 	for name, value := range map[string]string{"unset": "", "invalid": "30d", "spaces": "  "} {
 		t.Setenv(deliveredRetentionEnv, value)
 		if retention := DeliveredRetentionFromEnv(); retention != defaultDeliveredRetention {
-			t.Fatalf("%s: retention = %s, want %s", name, retention, defaultDeliveredRetention)
+			t.Fatalf("%s: retention = %s, want %s（缺省/非法值必须关闭清理）", name, retention, defaultDeliveredRetention)
 		}
 	}
 	t.Setenv(deliveredRetentionEnv, "7")
@@ -97,17 +103,44 @@ func TestDeliveredRetentionFromEnvDefaults(t *testing.T) {
 	}
 }
 
-// 保留期与间隔共同决定是否调度清理：默认时长在 1 小时后到期，关闭时永不到期。
+// 缺省不清理：未配置 AUDIT_OUTBOX_DELIVERED_RETENTION_DAYS 时 Run 循环既不查也不删。
+func TestPurgeDisabledByDefault(t *testing.T) {
+	t.Setenv(deliveredRetentionEnv, "")
+	if retention := DeliveredRetentionFromEnv(); retention != 0 {
+		t.Fatalf("retention = %s，缺省必须关闭清理", retention)
+	}
+	// 关闭清理时调度判定必须为 false：这是 Run 循环发起删除的唯一前提。
+	if purgeDue(DeliveredRetentionFromEnv(), time.Time{}, time.Now()) {
+		t.Fatal("缺省保留期下不得调度清理")
+	}
+	// 端到端确认：缺省配置下跑一轮 Run，即使有待清理的已投递行也不得发起删除。
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	store := &purgeStore{remaining: 2500}
+	dispatcher := &Dispatcher{Store: store, WorkerID: "w1", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	dispatcher.Run(ctx)
+	if store.purgeCalls != 0 || store.deletedTotal() != 0 {
+		t.Fatalf("purgeCalls = %d, deleted = %d，缺省关闭时不得删除任何行", store.purgeCalls, store.deletedTotal())
+	}
+}
+
+// 保留期与间隔共同决定是否调度清理：正数保留期在 1 小时后到期，关闭时永不到期。
 func TestPurgeDueHonoursRetentionAndInterval(t *testing.T) {
 	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
-	if !purgeDue(defaultDeliveredRetention, time.Time{}, now) {
+	// 用显式正数保留期验证「首次清理 / 间隔内不重复 / 满间隔再清理」；
+	// 缺省值为 0（关闭），不能再用它验证正向调度。
+	enabledRetention := 30 * 24 * time.Hour
+	if !purgeDue(enabledRetention, time.Time{}, now) {
 		t.Fatal("首次轮次必须清理")
 	}
-	if purgeDue(defaultDeliveredRetention, now.Add(-purgeInterval+time.Second), now) {
+	if purgeDue(enabledRetention, now.Add(-purgeInterval+time.Second), now) {
 		t.Fatal("间隔内不得重复清理")
 	}
-	if !purgeDue(defaultDeliveredRetention, now.Add(-purgeInterval), now) {
+	if !purgeDue(enabledRetention, now.Add(-purgeInterval), now) {
 		t.Fatal("满一个间隔后必须清理")
+	}
+	if purgeDue(defaultDeliveredRetention, time.Time{}, now) {
+		t.Fatalf("defaultDeliveredRetention = %s 必须关闭清理", defaultDeliveredRetention)
 	}
 	for _, retention := range []time.Duration{0, -time.Second} {
 		if purgeDue(retention, time.Time{}, now) {

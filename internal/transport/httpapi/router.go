@@ -2151,16 +2151,25 @@ func writeData(c *gin.Context, status int, data any) {
 	writeJSON(c, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(c.Request.Context()), Data: data})
 }
 
-// writeError 将真实业务错误转换为统一HTTP信封及可定位错误码。
-// 参数：c为HTTP上下文，err为业务或依赖错误。
-// 返回值：无；不泄漏内部凭据，保留权限、版本、来源及恢复冲突语义。
 // writeError 将来源、授权和存储错误映射为稳定安全响应。
 // 参数：c为请求上下文，err为业务或依赖错误。
 // 返回值：无；不输出内部配置或敏感数据。
 func writeError(c *gin.Context, err error) {
 	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
 	var sourceRejected *application.ImportSourceRejectedError
+	var batchItemLimit *application.ImportBatchItemLimitError
 	switch {
+	case errors.As(err, &batchItemLimit):
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_BATCH_ITEM_LIMIT", batchItemLimit.Error(),
+			gin.H{"field_path": "items", "max_items": batchItemLimit.Limit, "actual_items": batchItemLimit.Count})
+	case errors.Is(err, application.ErrImportSourceStorageUnavailable):
+		slog.ErrorContext(c.Request.Context(), "contract import storage unavailable",
+			"request_id", requestIDFrom(c.Request.Context()), "error", err)
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "IMPORT_SOURCE_STORAGE_UNAVAILABLE",
+			"原件存储暂时不可用，请联系管理员检查存储容量或服务状态；先查询批次，待恢复后继续暂存。", nil)
+	case errors.Is(err, application.ErrImportSourceUploadPending):
+		writeEnvelopeError(c, http.StatusConflict, "IMPORT_SOURCE_UPLOAD_PENDING",
+			"原件仍在上传处理中，请先查询批次状态，稍后再继续暂存。", nil)
 	case errors.Is(err, application.ErrImportMixedLifecycle):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_MIXED_LIFECYCLE", "NORMAL与历史合同须分别建立批次", map[string]any{"field_path": "items[].mode"})
 	case errors.Is(err, application.ErrImportCorrectionRequired):

@@ -18,7 +18,7 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
-	if len(items) != 44 ||
+	if len(items) != 45 ||
 		items[0].version != 1 || items[0].name != "contract_workflow" ||
 		items[1].version != 2 || items[1].name != "single_active_status_change" ||
 		items[2].version != 3 || items[2].name != "username_snapshots" ||
@@ -62,7 +62,8 @@ func TestEmbeddedMigrationsAreContiguous(t *testing.T) {
 		items[40].version != 41 || items[40].name != "contract_local_catalog" ||
 		items[41].version != 42 || items[41].name != "contract_local_catalog_grants" ||
 		items[42].version != 43 || items[42].name != "contract_import_crm_provision" ||
-		items[43].version != 44 || items[43].name != "contract_import_auto_approve_setting" {
+		items[43].version != 44 || items[43].name != "contract_import_auto_approve_setting" ||
+		items[44].version != 45 || items[44].name != "con_audit_outbox_delivered_index" {
 		t.Fatalf("items = %#v", items)
 	}
 }
@@ -134,6 +135,42 @@ func TestAuditOutboxResourceIndexMigrationIsGuarded(t *testing.T) {
 	for _, forbidden := range []string{"DROP TABLE", "UPDATE con_audit_outbox", "DELETE FROM", "DROP COLUMN", "DROP INDEX"} {
 		if strings.Contains(statement, forbidden) {
 			t.Fatalf("000040 迁移不得删除结构或改写数据: %q", forbidden)
+		}
+	}
+}
+
+// TestAuditOutboxDeliveredIndexMigrationIsGuarded 固定 000045 的守卫式幂等语义：
+// 用 information_schema.statistics 判存在性与列序，只加键、不改数据、不删任何结构。
+// 参数：t 为测试上下文。
+// 返回值：无。
+func TestAuditOutboxDeliveredIndexMigrationIsGuarded(t *testing.T) {
+	items, err := load(migrations.Files)
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	var statement string
+	for _, item := range items {
+		if item.version == 45 {
+			statement = item.sql
+			break
+		}
+	}
+	if statement == "" {
+		t.Fatal("000045 con_audit_outbox_delivered_index 迁移不存在")
+	}
+	for _, fragment := range []string{
+		"information_schema.statistics",
+		"index_name = 'idx_con_audit_outbox_delivered'",
+		"ADD KEY idx_con_audit_outbox_delivered (delivery_status, delivered_at)",
+		"IF index_count = 0 THEN",
+	} {
+		if !strings.Contains(statement, fragment) {
+			t.Fatalf("000045 迁移缺少 %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{"DROP TABLE", "UPDATE con_audit_outbox", "DELETE FROM", "DROP COLUMN", "DROP INDEX"} {
+		if strings.Contains(statement, forbidden) {
+			t.Fatalf("000045 迁移不得删除结构或改写数据: %q", forbidden)
 		}
 	}
 }

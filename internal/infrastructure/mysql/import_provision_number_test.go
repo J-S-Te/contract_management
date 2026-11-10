@@ -68,7 +68,7 @@ func TestPrepareImportContractNumberReservesWithoutConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, err = r.GetContract(ctx, tenant, item.ContractID)
-	if err != nil || c.Number != number || c.Version != 2 {
+	if err != nil || c.Number != number || c.Version != 2 || c.Status != contract.StatusArchived {
 		t.Fatalf("确认未复用编号: c=%+v err=%v", c, err)
 	}
 }

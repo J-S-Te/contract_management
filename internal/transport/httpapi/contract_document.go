@@ -11,9 +11,9 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
-// contractSourceCapabilities 提供会话可读取的源文件接入能力。
+// contractSourceCapabilities 分别按来源及权限提供目录维护与历史负责人能力。
 // 参数：c为已认证请求，需合同创建、读取或可用导入操作权限。
-// 返回值：无；仅公开开关及固定体积，不公开运行配置或凭据。
+// 返回值：无；公开接入开关、文件体积和批次上限，不公开敏感配置或凭据。
 func (h *Handler) contractSourceCapabilities(c *gin.Context) {
 	actor := principal(c)
 	_, canCreate := actor.Scope("contract.create")
@@ -28,13 +28,13 @@ func (h *Handler) contractSourceCapabilities(c *gin.Context) {
 		categorySource = h.service.ContractSources.CategorySource
 	}
 	_, canManageCatalog := actor.Scope("contract.catalog.manage")
-	// 本地目录只在当前来源确实需要它时才可维护：CRM/项目来源生效时 LOCAL 合同会被
-	// 建单校验拒绝，暴露入口只会让管理员维护一份不参与业务的目录。来源字段与
-	// 建单分支同源，因此这里按「任一来源为 local」收窄能力，而不是只看权限。
+	// 外部来源生效时，本地目录不参与建单，因此仅在任一来源为本地时开放维护入口。
 	localSource := counterpartySource == "local" || categorySource == "local"
 	writeData(c, http.StatusOK, map[string]any{"counterparty_source": counterpartySource, "category_source": categorySource, "local_catalog_manage": canManageCatalog && localSource, "pdf_enabled": h.service != nil && h.service.ExternalPDFEnabled,
-		"batch_enabled": h.service != nil && h.service.ContractImportEnabled, "supported_modes": h.service.AvailableImportModes(),
-		"max_docx_bytes": 10 << 20, "max_pdf_bytes": contractdocument.MaxPDFSize})
+		"history_owner_directory": canManageCatalog,
+		"batch_enabled":           h.service != nil && h.service.ContractImportEnabled, "supported_modes": h.service.AvailableImportModes(),
+		"max_batch_items": h.service.ImportBatchItemLimit(),
+		"max_docx_bytes":  10 << 20, "max_pdf_bytes": contractdocument.MaxPDFSize})
 }
 
 // storedDocumentFormat 决定文档输出类型，保留旧DOCX原件下载兼容。

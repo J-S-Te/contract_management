@@ -11,11 +11,9 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
-// TestContractSourceCapabilitiesLocalCatalogOnlyWhenLocalSource 验证本地目录入口
-// 只在当前来源确实需要本地目录时开放：CRM/项目来源下即便有目录管理权限也返回 false，
-// 避免管理员维护一份建单时会被拒绝的目录。
-// 参数：t 为测试上下文。
-// 返回值：能力字段与来源/权限组合不一致时失败。
+// TestContractSourceCapabilitiesLocalCatalogOnlyWhenLocalSource 验证本地维护和历史负责人目录能力各自匹配来源及权限。
+// 参数：t为测试上下文，覆盖本地、混合、外部来源及无管理权限的组合。
+// 返回值：无；能力与当前来源或负责人目录权限不符时测试失败。
 func TestContractSourceCapabilitiesLocalCatalogOnlyWhenLocalSource(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -23,12 +21,13 @@ func TestContractSourceCapabilitiesLocalCatalogOnlyWhenLocalSource(t *testing.T)
 		category     string
 		canManage    bool
 		wantManage   bool
+		wantHistory  bool
 	}{
-		{name: "local-both", counterparty: "local", category: "local", canManage: true, wantManage: true},
-		{name: "local-counterparty", counterparty: "local", category: "project", canManage: true, wantManage: true},
-		{name: "local-category", counterparty: "crm", category: "local", canManage: true, wantManage: true},
-		{name: "external-both", counterparty: "crm", category: "project", canManage: true, wantManage: false},
-		{name: "no-permission", counterparty: "local", category: "local", canManage: false, wantManage: false},
+		{name: "local-both", counterparty: "local", category: "local", canManage: true, wantManage: true, wantHistory: true},
+		{name: "local-counterparty", counterparty: "local", category: "project", canManage: true, wantManage: true, wantHistory: true},
+		{name: "local-category", counterparty: "crm", category: "local", canManage: true, wantManage: true, wantHistory: true},
+		{name: "external-both", counterparty: "crm", category: "project", canManage: true, wantManage: false, wantHistory: true},
+		{name: "no-permission", counterparty: "local", category: "local", canManage: false, wantManage: false, wantHistory: false},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -57,6 +56,10 @@ func TestContractSourceCapabilitiesLocalCatalogOnlyWhenLocalSource(t *testing.T)
 			got, ok := envelope.Data["local_catalog_manage"].(bool)
 			if !ok || got != testCase.wantManage {
 				t.Fatalf("local_catalog_manage=%v want %v data=%v", envelope.Data["local_catalog_manage"], testCase.wantManage, envelope.Data)
+			}
+			history, ok := envelope.Data["history_owner_directory"].(bool)
+			if !ok || history != testCase.wantHistory {
+				t.Fatalf("history_owner_directory=%v want %v", envelope.Data["history_owner_directory"], testCase.wantHistory)
 			}
 		})
 	}

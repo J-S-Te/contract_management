@@ -113,10 +113,10 @@ func approveHistoryFixture(t *testing.T, r *Repository, b contract.ImportBatch) 
 	return b
 }
 
-// TestArchiveImportExcludedEveryPath 验证真实数据库内历史归档不会被普通派生或统计重新激活。
+// TestArchiveImportRemainsIsolatedFromOrdinaryDerivations 验证历史归档可计数且不激活普通派生。
 // 参数：t为专用回环测试库上下文。
 // 返回值：无；任一来源门禁、幂等确认或PDF不变性丢失时失败。
-func TestArchiveImportExcludedEveryPath(t *testing.T) {
+func TestArchiveImportRemainsIsolatedFromOrdinaryDerivations(t *testing.T) {
 	r, tenant := draftE2ERepository(t)
 	ctx := context.Background()
 	b, pdf := historyMySQLFixture(t, r, tenant, contract.ImportArchiveOnly)
@@ -125,6 +125,10 @@ func TestArchiveImportExcludedEveryPath(t *testing.T) {
 	c, e := r.GetContract(ctx, tenant, id)
 	if e != nil || c.Status != contract.StatusArchived || c.Version != 2 || c.Number == "" || !bytes.Equal(pdf, c.Document) || c.SourceSHA256 != draftE2EHash(string(pdf)) {
 		t.Fatalf("history source changed: %v", e)
+	}
+	if e = r.db.Model(&contractRecord{}).Where("tenant_id=? AND id=?", tenant, id).
+		Update("opportunity_id", "42").Error; e != nil {
+		t.Fatal(e)
 	}
 	if e = r.db.Transaction(func(tx *gorm.DB) error {
 		if e := enqueueProjectActivation(tx, tenant, id); e != nil {
@@ -162,8 +166,8 @@ func TestArchiveImportExcludedEveryPath(t *testing.T) {
 		t.Fatal("approved leaked", e)
 	}
 	counts, e := r.CountSignedContractsByOpportunityIDs(ctx, tenant, []string{"42"})
-	if e != nil || counts["42"] != 0 {
-		t.Fatal("CRM count leaked", e)
+	if e != nil || counts["42"] != 1 {
+		t.Fatal("confirmed historical contract missing from CRM display count", e)
 	}
 	dashboard, e := r.ContractDashboard(ctx, tenant, "", time.Now(), 50)
 	if e != nil || dashboard.TotalContracts != 0 {

@@ -579,7 +579,7 @@ func TestImportProvisionPreviewClassifiesBlockingCauses(t *testing.T) {
 			setup: func(customer *provisionCustomerStub, _ *provisionOwnerStub) {
 				customer.lookupErrByName = map[string]error{"历史客户": ErrCRMProvisionRejected}
 			}},
-		{name: "crm-unavailable", wantCode: CodeImportProvisionCRMRejected, retryable: true,
+		{name: "crm-unavailable", wantCode: CodeImportProvisionCRMUnavailable, retryable: true,
 			setup: func(customer *provisionCustomerStub, _ *provisionOwnerStub) {
 				customer.lookupErrByName = map[string]error{"历史客户": ErrCRMProvisionUnavailable}
 			}},
@@ -765,7 +765,7 @@ func TestImportProvisionExecutionBlocksRowAndKeepsOtherRows(t *testing.T) {
 		{name: "crm-4xx-rejected", createErr: ErrCRMProvisionRejected,
 			wantCode: CodeImportProvisionCRMRejected, retryable: false, wantLedger: contract.ImportCRMProvisionBlocked},
 		{name: "crm-5xx-unavailable", createErr: ErrCRMProvisionUnavailable,
-			wantCode: CodeImportProvisionCRMRejected, retryable: true, wantLedger: contract.ImportCRMProvisionBlocked},
+			wantCode: CodeImportProvisionCRMUnavailable, retryable: true, wantLedger: contract.ImportCRMProvisionBlocked},
 		{name: "contract-not-verified", createErr: provisionNotVerifiedError{},
 			wantCode: CodeImportProvisionContractNotVerified, retryable: false, wantLedger: contract.ImportCRMProvisionBlocked},
 	}
@@ -947,7 +947,7 @@ func TestImportProvisionExecutionRetriesAfterBlockedRow(t *testing.T) {
 
 	dispatchUntilSettled(t, service)
 	key := contract.ImportCRMProvisionKey{TenantID: provisionTestTenant, SourceSystem: "legacy", ExternalRecordID: "old-1"}
-	if record := repo.records[key]; record.State != contract.ImportCRMProvisionBlocked || record.LastErrorCode != CodeImportProvisionCRMRejected {
+	if record := repo.records[key]; record.State != contract.ImportCRMProvisionBlocked || record.LastErrorCode != CodeImportProvisionCRMUnavailable {
 		t.Fatalf("first attempt ledger=%+v", record)
 	}
 	first := repo.batch.Items[0]
