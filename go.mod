@@ -4,7 +4,7 @@ replace github.com/J-S-Te/license-core => ./third_party/license-core
 
 require github.com/J-S-Te/license-core v0.0.0
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
