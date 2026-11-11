@@ -27,7 +27,7 @@ func contractLicenseOperation(method, path string) core.Operation {
 	}
 	if method == http.MethodGet {
 		switch path {
-		case "/api/v1/contract-import-batches/:id/items/:itemID/document-descriptor", "/api/v1/contract-import-batches/:id/items/:itemID/source", "/internal/v1/contract-imports/report-source", "/api/v1/contract-import-batches", "/api/v1/contract-import-batches/:id", "/internal/v1/dashboard", "/internal/v1/settlement/completed-contracts", "/internal/v1/project/approved-contracts", "/internal/v1/project/approved-contract-references", "/internal/v1/project/approved-contracts/:contractID", "/internal/v1/project/approved-contracts/:contractID/service-items", "/internal/contract-summary", "/api/v1/integration-outbox/failed":
+		case "/api/v1/contract-import-batches/:id/items/:itemID/document-descriptor", "/api/v1/contract-import-batches/:id/items/:itemID/source", "/internal/v1/contract-imports/report-source", "/api/v1/contract-import-batches", "/api/v1/contract-import-batches/:id", "/internal/v1/dashboard", "/internal/v1/dashboard/metrics", "/internal/v1/settlement/completed-contracts", "/internal/v1/project/approved-contracts", "/internal/v1/project/approved-contract-references", "/internal/v1/project/approved-contracts/:contractID", "/internal/v1/project/approved-contracts/:contractID/service-items", "/internal/contract-summary", "/api/v1/integration-outbox/failed":
 			return core.READ_HISTORY
 		case "/api/v1/auth/me", "/api/v1/audit-outbox/failed":
 			return core.ESSENTIAL_SERVICE
@@ -36,7 +36,7 @@ func contractLicenseOperation(method, path string) core.Operation {
 		case "/api/v1/contracts/:contractID/export", "/api/v1/contracts/:contractID/source", "/api/v1/approvals/:approvalID/contract-source", "/api/v1/approved-contracts/:contractID/docx", "/api/v1/approved-contracts/:contractID/pdf", "/api/v1/approved-contracts/:contractID/stamped-pdf":
 			// 全部为只读历史原件/导出下载：与 /export 同一许可口径，不要求变更权限。
 			return core.EXPORT_HISTORY
-		case "/api/v1/dashboard", "/api/v1/opportunity-intakes", "/api/v1/opportunity-intakes/:intakeID", "/api/v1/detection-categories", "/api/v1/contracts", "/api/v1/approved-contracts", "/api/v1/signing-records", "/api/v1/signing-records/:contractID", "/api/v1/contracts/:contractID", "/api/v1/contracts/:contractID/lifecycle", "/api/v1/contracts/:contractID/preview", "/api/v1/contract-templates", "/api/v1/contract-number-rule", "/api/v1/approvals", "/api/v1/approvals/tasks", "/api/v1/approvals/:approvalID", "/api/v1/approvals/:approvalID/contract-preview", "/api/v1/approval-rules":
+		case "/api/v1/standard-prices", "/api/v1/dashboard", "/api/v1/opportunity-intakes", "/api/v1/opportunity-intakes/:intakeID", "/api/v1/detection-categories", "/api/v1/contracts", "/api/v1/approved-contracts", "/api/v1/signing-records", "/api/v1/signing-records/:contractID", "/api/v1/contracts/:contractID", "/api/v1/contracts/:contractID/lifecycle", "/api/v1/contracts/:contractID/preview", "/api/v1/contract-templates", "/api/v1/contract-number-rule", "/api/v1/approvals", "/api/v1/approvals/tasks", "/api/v1/approvals/:approvalID", "/api/v1/approvals/:approvalID/contract-preview", "/api/v1/approval-rules":
 			return core.READ_HISTORY
 		}
 	}

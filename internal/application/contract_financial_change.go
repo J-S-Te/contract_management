@@ -48,6 +48,7 @@ const MaxFinancialChangeReasonRunes = 500
 // ContractFinancialChange 是一次合同财务变更的输入。
 // 金额使用分（与合同存储一致），付款计划金额使用十进制字符串（与结算契约一致）。
 type ContractFinancialChange struct {
+	Pricing         *contract.Pricing `json:"pricing,omitempty"`
 	ContractID      string
 	ExpectedVersion uint64
 	AmountMinor     int64
@@ -147,6 +148,23 @@ func (s *Service) ChangeContractFinancialTerms(ctx context.Context, actor Princi
 		// 仓储不支持受控财务变更时失败关闭：不能退化为“只改合同不改事件”。
 		return current, apperrors.ErrStateConflict
 	}
+	if current.Pricing == nil && change.Pricing != nil {
+		return current, fmt.Errorf("%w: 首次建立基准须独立修订审批", ErrValidation)
+	}
+	candidate := current
+	candidate.AmountMinor = change.AmountMinor
+	candidate.Pricing = change.Pricing
+	if candidate.Pricing == nil {
+		candidate.Pricing = preservePricingAmounts(current.Pricing, change.AmountMinor, current.AmountMinor)
+	}
+	if candidate.Pricing != nil && candidate.Pricing.Reselect {
+		return current, fmt.Errorf("%w: 重选须使用定价修订审批入口", ErrValidation)
+	}
+	candidate, err = s.preparePricing(ctx, actor, candidate, current.Pricing)
+	if err != nil {
+		return current, err
+	}
+	change.Pricing = candidate.Pricing
 	change.ContractID = current.ID
 	change.Currency = strings.ToUpper(strings.TrimSpace(current.Currency))
 	change.PaymentTerms = terms

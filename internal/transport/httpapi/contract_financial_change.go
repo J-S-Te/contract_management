@@ -8,14 +8,12 @@ import (
 	"github.com/j-s-te/contract-management/internal/domain/contract"
 )
 
-// changeContractFinancialTerms 是受控“合同财务变更”入口（BIZ-XEVT2-05 合同侧）。
-//
-// 该路由只把请求转成应用层用例；全部门禁都在应用层与仓储事务内：
-// 开关 CONTRACT_FINANCIAL_CHANGE_ENABLED、contract.edit 权限与数据范围、
-// 合同已审批且无在途审批、失败关闭的计划/金额校验、审计与按版本财务事件。
-// 这里刻意不复制门禁逻辑，避免出现“HTTP 层放行、事务层才拒绝”的分叉。
+// changeContractFinancialTerms 接收保留冻结标准基准的受控金额变更。
+// 参数：c为可信请求，包含并发版本、金额、计划及原因。
+// 返回值：无；成功返回当前有效版本，错误写入统一包络。
 func (h *Handler) changeContractFinancialTerms(c *gin.Context) {
 	var body struct {
+		Pricing      *contract.Pricing      `json:"pricing,omitempty"`
 		Version      uint64                 `json:"version"`
 		AmountMinor  int64                  `json:"amount_minor"`
 		Currency     string                 `json:"currency"`
@@ -27,6 +25,7 @@ func (h *Handler) changeContractFinancialTerms(c *gin.Context) {
 	}
 	updated, err := h.service.ChangeContractFinancialTerms(c.Request.Context(), principal(c), c.Param("contractID"), application.ContractFinancialChange{
 		ExpectedVersion: body.Version,
+		Pricing:         body.Pricing,
 		AmountMinor:     body.AmountMinor,
 		Currency:        body.Currency,
 		PaymentTerms:    body.PaymentTerms,
@@ -38,6 +37,7 @@ func (h *Handler) changeContractFinancialTerms(c *gin.Context) {
 	}
 	writeData(c, http.StatusOK, map[string]any{
 		"contract_id":     updated.ID,
+		"pricing":         updated.Pricing,
 		"contract_number": updated.Number,
 		"status":          updated.Status,
 		"version":         updated.Version,

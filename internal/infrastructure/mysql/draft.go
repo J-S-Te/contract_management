@@ -16,6 +16,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// UpdateContractDraft 在原子草稿版本跃迁中保存服务项与冻结定价。
+// 参数：ctx为请求，c为已校验草稿，expectedVersion为旧版本，actorUserID为操作者。
+// 返回值：版本、状态、财务完整性或存储错误；失败不保留部分写入。
 func (r *Repository) UpdateContractDraft(ctx context.Context, c contract.Contract, expectedVersion uint64, actorUserID string) error {
 	values, err := json.Marshal(c.TemplateValues)
 	if err != nil {
@@ -65,7 +68,7 @@ func (r *Repository) UpdateContractDraft(ctx context.Context, c contract.Contrac
 			"counterparty_source": stringPtr(c.CounterpartySource), "local_counterparty_id": stringPtr(c.LocalCounterpartyID), "counterparty_version": uintPtr(c.CounterpartyVersion), "category_source": stringPtr(c.CategorySource), "integration_policy": stringPtr(c.IntegrationPolicy),
 			"opportunity_id": stringPtr(c.OpportunityID), "opportunity_name": stringPtr(c.OpportunityName), "crm_customer_id": uintPtr(c.CRMCustomerID),
 			"customer_name": stringPtr(c.CustomerName), "customer_address": stringPtr(c.CustomerAddress), "customer_contact": stringPtr(c.CustomerContact), "customer_phone": stringPtr(c.CustomerPhone),
-			"systems_json": systems, "service_items_json": items, "amount_minor": c.AmountMinor, "currency": c.Currency,
+			"pricing_json": pricingJSON(c.Pricing), "systems_json": systems, "service_items_json": items, "amount_minor": c.AmountMinor, "currency": c.Currency,
 			"content": c.Content, "template_values_json": values, "rendered_document": c.Document, "content_hash": c.ContentHash,
 			"start_date": c.StartDate, "end_date": c.EndDate, "version": expectedVersion + 1, "updated_at": now, "updated_by": actorUserID,
 		})

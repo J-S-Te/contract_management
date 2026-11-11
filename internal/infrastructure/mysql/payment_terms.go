@@ -524,11 +524,15 @@ func (r *Repository) ApplyContractFinancialChange(ctx context.Context, tenantID 
 		if normalizeErr != nil {
 			return fmt.Errorf("%w: %v", application.ErrValidation, normalizeErr)
 		}
+
+		if err := validateFrozenFinancialPricing(row, change); err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		result := tx.Model(&contractRecord{}).
 			Where("tenant_id = ? AND id = ? AND version = ? AND status = ?", tenantID, row.ID, change.ExpectedVersion, row.Status).
 			Updates(map[string]any{
-				"amount_minor": change.AmountMinor, "version": gorm.Expr("version + ?", 1),
+				"pricing_json": pricingJSON(change.Pricing), "amount_minor": change.AmountMinor, "version": gorm.Expr("version + ?", 1),
 				"updated_at": now, "updated_by": actorUserID,
 			})
 		if result.Error != nil {
@@ -538,6 +542,7 @@ func (r *Repository) ApplyContractFinancialChange(ctx context.Context, tenantID 
 			return apperrors.ErrVersionConflict
 		}
 		updated := contractFromRecord(row)
+		updated.Pricing = change.Pricing
 		updated.AmountMinor, updated.Currency, updated.PaymentTerms = change.AmountMinor, row.Currency, terms
 		updated.Version, updated.UpdatedAt = change.ExpectedVersion+1, now
 		if err := replaceContractPaymentTerms(tx, updated); err != nil {

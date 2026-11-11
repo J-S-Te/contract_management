@@ -73,6 +73,7 @@ type contractRecord struct {
 	OwnerOrgID                      *string
 	ProjectID                       *string
 	SystemsJSON                     []byte `gorm:"type:json"`
+	PricingJSON                     []byte `gorm:"column:pricing_json;type:json"`
 	ServiceItemsJSON                []byte `gorm:"type:json"`
 	CustomerCreditLevel             *string
 	OwnerUserID                     string

@@ -105,6 +105,7 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 		return current, ErrContractSourceConflict
 	}
 	input.OwnerIdentityID, input.OwnerOrgID, input.ProjectID = current.OwnerIdentityID, current.OwnerOrgID, current.ProjectID
+	input.PricingOrganizationVerified = current.OwnerOrgID != "" && current.OwnerIdentityID == actor.IdentityID
 	// 旧客户端会省略新字段。保留已存储计划，并根据编辑后的
 	// 金额重新校验；显式空数组只能清空草稿中的计划。
 	if input.PaymentTerms == nil {
@@ -132,6 +133,20 @@ func (s *Service) UpdateContractDraft(ctx context.Context, actor Principal, id s
 		}
 	}
 	prepared, err := s.prepareContract(ctx, actor, input, external, "contract.edit")
+	if err != nil {
+		return current, err
+	}
+	// 外部新建规范化会清除来源身份；编辑输入已经过上方所有权校验，只恢复这些可信身份。
+	for i := range prepared.ServiceItems {
+		prepared.ServiceItems[i].SourceID = input.ServiceItems[i].SourceID
+	}
+	if input.Pricing == nil && current.Pricing != nil {
+		prepared.Pricing = preservePricingAmounts(current.Pricing, prepared.AmountMinor, current.AmountMinor)
+	}
+	if err := validatePricingContinuation(current, prepared); err != nil {
+		return current, err
+	}
+	prepared, err = s.preparePricing(ctx, actor, prepared, current.Pricing)
 	if err != nil {
 		return current, err
 	}

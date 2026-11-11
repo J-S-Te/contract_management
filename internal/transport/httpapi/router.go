@@ -241,6 +241,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal := r.Group("/internal/v1")
 		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions), h.licenseOperation())
 		internal.GET("/dashboard", h.dashboard)
+		internal.GET("/dashboard/metrics", h.dashboardMetrics)
 	}
 	if settlementOptions != nil && settlementOptions.Enabled {
 		internal := r.Group("/internal/v1/settlement")
@@ -320,6 +321,11 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.GET("/opportunity-intakes", h.listOpportunityIntakes)
 	api.GET("/opportunity-intakes/:intakeID", h.getOpportunityIntake)
 	api.POST("/opportunity-intakes/:intakeID/reviews", h.reviewOpportunityIntake)
+	api.GET("/standard-prices", h.listStandardPrices)
+	api.POST("/standard-prices", h.saveStandardPrice)
+	api.PUT("/standard-prices/:priceID", h.saveStandardPrice)
+	api.POST("/standard-prices/:priceID/:action", h.saveStandardPrice)
+	api.POST("/contracts/:contractID/pricing-revisions", h.submitPricingRevision)
 	api.POST("/contracts", h.createContract)
 	api.PUT("/contracts/:contractID/draft", h.updateContractDraft)
 	api.POST("/contracts/external", h.createExternalContract)
@@ -1046,6 +1052,7 @@ type createContractRequest struct {
 	CustomerPhone       string                 `json:"customer_phone"`
 	Systems             []contract.SystemInfo  `json:"systems"`
 	ServiceItems        []contract.ServiceItem `json:"service_items"`
+	Pricing             *contract.Pricing      `json:"pricing,omitempty"`
 	CustomerCreditLevel string                 `json:"customer_credit_level"`
 	AmountMinor         int64                  `json:"amount_minor"`
 	Currency            string                 `json:"currency"`
@@ -1074,6 +1081,7 @@ type externalContractMetadata struct {
 	CustomerPhone       string                 `json:"customer_phone"`
 	Systems             []contract.SystemInfo  `json:"systems"`
 	ServiceItems        []contract.ServiceItem `json:"service_items"`
+	Pricing             *contract.Pricing      `json:"pricing,omitempty"`
 	CustomerCreditLevel string                 `json:"customer_credit_level"`
 	AmountMinor         int64                  `json:"amount_minor"`
 	Currency            string                 `json:"currency"`
@@ -1096,7 +1104,7 @@ func (h *Handler) createContract(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CounterpartySource: body.CounterpartySource, LocalCounterpartyID: body.LocalCounterpartyID, CounterpartyVersion: body.CounterpartyVersion, CategorySource: body.CategorySource, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
+	created, err := h.service.CreateContract(c.Request.Context(), principal(c), contract.Contract{Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType, OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CounterpartySource: body.CounterpartySource, LocalCounterpartyID: body.LocalCounterpartyID, CounterpartyVersion: body.CounterpartyVersion, CategorySource: body.CategorySource, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone, Systems: body.Systems, ServiceItems: body.ServiceItems, Pricing: body.Pricing, CustomerCreditLevel: body.CustomerCreditLevel, AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID, TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -1185,7 +1193,7 @@ func (h *Handler) createExternalContract(c *gin.Context) {
 		OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName,
 		CounterpartySource: body.CounterpartySource, LocalCounterpartyID: body.LocalCounterpartyID, CounterpartyVersion: body.CounterpartyVersion, CategorySource: body.CategorySource, CRMCustomerID: body.CRMCustomerID, CustomerName: body.CustomerName,
 		CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
-		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
+		Systems: body.Systems, ServiceItems: body.ServiceItems, Pricing: body.Pricing, CustomerCreditLevel: body.CustomerCreditLevel,
 		AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Document: document,
 		DocumentFormat: source.Format, SourceFilename: source.Filename, SourceMediaType: source.MediaType,
 		StartDate: body.StartDate, EndDate: body.EndDate,
