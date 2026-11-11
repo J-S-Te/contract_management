@@ -797,6 +797,11 @@ func startApprovalInTx(tx *gorm.DB, in workflows.StartApprovalActivityInput) err
 			InstallmentNo: int(term.InstallmentNo), DueDate: term.DueDate.Format("2006-01-02"), Amount: formatAmountMinor(term.AmountMinor),
 		})
 	}
+	if proposed, found, err := pricingProposal(tx, in.TenantID, in.ApprovalID); err != nil {
+		return err
+	} else if found {
+		snapshotContract = proposed
+	}
 	snapshotContract.Document = nil
 	snapshotContract.CanEditDraft = false
 	snapshotJSON, err := json.Marshal(snapshotContract)
@@ -885,7 +890,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var instance approvalInstanceRecord
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "kind", "from_status", "target_status", "content_hash", "completion_applied").
+			Select("id", "kind", "from_status", "target_status", "content_hash", "completion_applied", "applicant_user_id").
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ApprovalID).Take(&instance).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
@@ -898,7 +903,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 		}
 
 		var current contractRecord
-		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "status", "content_hash", "contract_number", "contract_number_format", "rendered_document", "document_format", "content", "template_values_json", "origin_kind", "import_mode", "import_policy_json").
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("tenant_id = ? AND id = ?", in.TenantID, in.ContractID).Take(&current).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.ErrNotFound
@@ -986,7 +991,9 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 					return err
 				}
 			}
-		} else if in.Status == approval.StatusApproved {
+		} else if applied, err := applyPricingRevision(tx, in, current, instance.ApplicantUserID); err != nil {
+			return err
+		} else if !applied && in.Status == approval.StatusApproved {
 			if contract.Status(current.Status) != from || in.TargetStatus != target {
 				return fmt.Errorf("%w: stale status change", apperrors.ErrStateConflict)
 			}
@@ -1128,6 +1135,9 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 func contractFromRecord(record contractRecord) contract.Contract {
 	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CRMCustomerID: uintValueOrZero(record.CRMCustomerID), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerIdentityID: valueOrEmpty(record.OwnerIdentityID), OwnerOrgID: valueOrEmpty(record.OwnerOrgID), ProjectID: valueOrEmpty(record.ProjectID), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, SourceFileID: record.SourceFileID, SourceFileStatus: record.SourceFileStatus, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	result.CreatedBy = record.CreatedBy
+	if len(record.PricingJSON) > 0 {
+		_ = json.Unmarshal(record.PricingJSON, &result.Pricing)
+	}
 	readContractSource(record, &result)
 	if record.CustomerCreditLevel != nil {
 		result.CustomerCreditLevel = *record.CustomerCreditLevel

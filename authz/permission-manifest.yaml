@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 16
+  version: 17
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -22,6 +22,24 @@ semantics:
     - 企业合同仪表盘 GET /api/v1/dashboard 同时要求 admin 角色与 contract.read，并始终限制当前 tenant_id。
 
 permissions:
+  - code: contract.pricing.manage
+    name: 维护合同标准价草稿
+    resource: standard_price
+    action: manage
+    risk_level: HIGH
+    enforced_by:
+      - POST /api/v1/standard-prices
+      - PUT /api/v1/standard-prices/{id}
+      - POST /api/v1/standard-prices/{id}/disable
+    constraints: [可信租户与组织范围, 仅admin草稿维护, 发布后不可覆盖, 停用保留冻结基准]
+  - code: contract.pricing.publish
+    name: 独立发布合同标准价
+    resource: standard_price
+    action: publish
+    risk_level: HIGH
+    enforced_by:
+      - POST /api/v1/standard-prices/{id}/publish
+    constraints: [销售总监或财务总监, 不得发布本人创建或维护版本, 可信租户和范围, 并发版本]
   - code: contract.catalog.manage
     name: 管理合同本地目录
     resource: contract_catalog
@@ -256,6 +274,7 @@ roles:
   - code: admin
     name: 超级管理员
     permissions:
+      - contract.pricing.manage
       - contract.catalog.manage
       - contract.import.approve
       - contract.import.release
@@ -297,6 +316,7 @@ roles:
   - code: sales_director
     name: 销售总监
     permissions:
+      - contract.pricing.publish
       - contract.import.approve
       - contract.read
       - approval.view
@@ -313,6 +333,7 @@ roles:
   - code: finance_director
     name: 财务总监
     permissions:
+      - contract.pricing.publish
       - contract.import.approve
       - contract.import.release
       - contract.read

@@ -20,7 +20,11 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		input.Timeout = 72 * time.Hour
 	}
 	now := workflow.Now(ctx)
-	node := approval.Node{ID: "admin", Name: "管理员审批", RoleCode: "admin", AssigneeIDs: unique(input.AdminUserIDs), Countersign: approval.CountersignAny, Timeout: input.Timeout}
+	nodeName, pendingTitle := "管理员审批", "合同状态变更待审批"
+	if input.PricingRevision {
+		nodeName, pendingTitle = "合同定价修订审批", "合同定价修订待审批"
+	}
+	node := approval.Node{ID: "admin", Name: nodeName, RoleCode: "admin", AssigneeIDs: unique(input.AdminUserIDs), Countersign: approval.CountersignAny, Timeout: input.Timeout}
 	state := ApprovalState{ApprovalID: input.ApprovalID, Kind: approval.KindStatusChange, Status: approval.StatusRunning, ContractID: input.ContractID, ApplicantUserID: input.ApplicantUserID, ApplicantDisplayName: input.ApplicantDisplayName, Nodes: initializeNodes([]approval.Node{node}), StartedAt: now, UpdatedAt: now}
 	state.Nodes[0].Status, state.Nodes[0].StartedAt = approval.NodeActive, now
 	if err := workflow.SetQueryHandler(ctx, StateQueryName, func() (ApprovalState, error) { return state, nil }); err != nil {
@@ -33,7 +37,7 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 	if err := executeLicensedActivity(ctx, cctx, ActivityStartApproval, start, nil); err != nil {
 		return state, err
 	}
-	if err := notifyCurrentNode(ctx, actx, input.TenantID, state, "pending_approval", "合同状态变更待审批", input.Reason); err != nil {
+	if err := notifyCurrentNode(ctx, actx, input.TenantID, state, "pending_approval", pendingTitle, input.Reason); err != nil {
 		return state, err
 	}
 
@@ -131,6 +135,9 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 		typ, title := "rejected", "状态变更申请已拒绝"
 		if state.Status == approval.StatusApproved {
 			typ, title = "status_change", "合同状态已变更"
+			if input.PricingRevision {
+				title = "合同定价修订已批准"
+			}
 		} else if state.Status == approval.StatusWithdrawn {
 			typ, title = "status_change", "状态变更申请已撤回"
 		}
@@ -141,9 +148,18 @@ func StatusChangeWorkflow(ctx workflow.Context, input StatusChangeInput) (Approv
 	return state, nil
 }
 
+// validateStatusChange 校验普通状态变更或同状态定价修订审批输入。
+// 参数：input为已受理的可信工作流输入。
+// 返回值：合法返回空，非法状态或缺少业务原因返回错误。
 func validateStatusChange(input StatusChangeInput) error {
 	if input.ApprovalID == "" || input.ContractID == "" || input.ApplicantUserID == "" || len(input.AdminUserIDs) == 0 {
 		return fmt.Errorf("invalid status change input")
+	}
+	if input.PricingRevision {
+		if input.RequireExisting && input.FromStatus == input.TargetStatus && input.FromStatus.ApprovalPassed() && input.Reason != "" {
+			return nil
+		}
+		return fmt.Errorf("invalid pricing revision")
 	}
 	if err := contract.ValidateTransition(input.FromStatus, input.TargetStatus); err != nil {
 		return err

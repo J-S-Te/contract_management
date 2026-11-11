@@ -21,10 +21,9 @@ type ProjectServiceItem struct {
 	TestMode    string `json:"test_mode"`
 }
 
-// ProjectServiceItems 将涉及多个系统的合同服务展开为
-// 稳定且可独立选择的项目服务项。同一投影
-// 用于自动合同交付及人工建项
-// 选择器，保证两条路径保留相同源标识及默认值。
+// ProjectServiceItems 将合同服务按既有稳定身份展开为项目最小投影。
+// 参数：contractID为权威合同身份，items为保持原顺序的合同服务事实。
+// 返回值：不含价格和客户信息的项目服务；多系统继续追加原系统位置后缀。
 func ProjectServiceItems(contractID string, items []ServiceItem) []ProjectServiceItem {
 	result := make([]ProjectServiceItem, 0, len(items))
 	for itemIndex, item := range items {
@@ -33,10 +32,7 @@ func ProjectServiceItems(contractID string, items []ServiceItem) []ProjectServic
 			systems = []SystemInfo{{}}
 		}
 		for systemIndex, system := range systems {
-			sourceID := strings.TrimSpace(item.SourceID)
-			if sourceID == "" {
-				sourceID = fmt.Sprintf("%s-%02d", strings.TrimSpace(contractID), itemIndex+1)
-			}
+			sourceID := ProjectServiceBaseID(contractID, itemIndex, item)
 			if len(systems) > 1 {
 				sourceID = fmt.Sprintf("%s-%02d", sourceID, systemIndex+1)
 			}
@@ -65,4 +61,14 @@ func firstProjectValue(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ProjectServiceBaseID 返回原项目投影唯一权威的服务基础身份。
+// 参数：contractID为合同身份，itemIndex为原服务零基位置，item为原服务事实。
+// 返回值：已有非空来源身份，或原合同ID与一基位置组成的确定性身份；不含多系统后缀。
+func ProjectServiceBaseID(contractID string, itemIndex int, item ServiceItem) string {
+	if sourceID := strings.TrimSpace(item.SourceID); sourceID != "" {
+		return sourceID
+	}
+	return fmt.Sprintf("%s-%02d", strings.TrimSpace(contractID), itemIndex+1)
 }

@@ -66,6 +66,7 @@ type ContractApprovalInput struct {
 }
 
 type StatusChangeInput struct {
+	PricingRevision      bool            `json:"pricing_revision,omitempty"`
 	RequireExisting      bool            `json:"require_existing,omitempty"`
 	ApprovalID           string          `json:"approval_id"`
 	Audit                AuditMeta       `json:"audit,omitempty"`

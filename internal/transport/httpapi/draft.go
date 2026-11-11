@@ -22,7 +22,7 @@ func (h *Handler) updateContractDraft(c *gin.Context) {
 		Number: body.Number, Title: body.Title, Type: body.ContractType, ServiceType: body.ServiceType,
 		OpportunityID: body.OpportunityID, OpportunityName: body.OpportunityName, CounterpartySource: body.CounterpartySource, LocalCounterpartyID: body.LocalCounterpartyID, CounterpartyVersion: body.CounterpartyVersion, CategorySource: body.CategorySource, CRMCustomerID: body.CRMCustomerID,
 		CustomerName: body.CustomerName, CustomerAddress: body.CustomerAddress, CustomerContact: body.CustomerContact, CustomerPhone: body.CustomerPhone,
-		Systems: body.Systems, ServiceItems: body.ServiceItems, CustomerCreditLevel: body.CustomerCreditLevel,
+		Systems: body.Systems, ServiceItems: body.ServiceItems, Pricing: body.Pricing, CustomerCreditLevel: body.CustomerCreditLevel,
 		AmountMinor: body.AmountMinor, Currency: body.Currency, PaymentTerms: body.PaymentTerms, Content: body.Content, TemplateID: body.TemplateID,
 		TemplateValues: body.TemplateValues, StartDate: body.StartDate, EndDate: body.EndDate,
 	})

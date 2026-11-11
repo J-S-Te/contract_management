@@ -598,11 +598,23 @@ func (s *Service) CreateExternalContract(ctx context.Context, actor Principal, c
 	return s.createContract(ctx, actor, c, true)
 }
 
+// createContract 校验并冻结定价后持久化普通合同草稿。
+// 参数：ctx为请求，actor为可信主体，c为合同输入，external表示外部原件。
+// 返回值：完整新草稿；许可、权限、来源或定价不符返回错误。
 func (s *Service) createContract(ctx context.Context, actor Principal, c contract.Contract, external bool) (contract.Contract, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return contract.Contract{}, err
 	}
-	c, err := s.prepareContract(ctx, actor, c, external, "contract.create")
+	c.PricingOrganizationVerified = false
+	c, err := s.resolveNewPricingOrganization(ctx, actor, c)
+	if err != nil {
+		return c, err
+	}
+	c, err = s.prepareContract(ctx, actor, c, external, "contract.create")
+	if err != nil {
+		return c, err
+	}
+	c, err = s.preparePricing(ctx, actor, c, nil)
 	if err != nil {
 		return c, err
 	}
@@ -666,7 +678,11 @@ func (s *Service) authorizeContractWrite(actor Principal, c contract.Contract, p
 	if !filter.AllowAll && !filter.AllowSelf && !containsString(filter.OrganizationIDs, c.OwnerOrgID) && !containsString(filter.ProjectIDs, c.ProjectID) {
 		return c, ErrForbidden
 	}
-	if c.OwnerOrgID != "" && !filter.AllowAll && !containsString(filter.OrganizationIDs, c.OwnerOrgID) {
+	selfOwnedOrganization := filter.AllowSelf && c.PricingOrganizationVerified &&
+		c.OwnerIdentityID == actor.IdentityID
+	organizationGranted := filter.AllowAll || selfOwnedOrganization ||
+		containsString(filter.OrganizationIDs, c.OwnerOrgID)
+	if c.OwnerOrgID != "" && !organizationGranted {
 		return c, ErrForbidden
 	}
 	if c.ProjectID != "" && !filter.AllowAll && !containsString(filter.ProjectIDs, c.ProjectID) {

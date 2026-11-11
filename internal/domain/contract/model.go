@@ -6,6 +6,7 @@ import (
 )
 
 type Contract struct {
+	Pricing                *Pricing          `json:"pricing,omitempty"`
 	ID                     string            `json:"id"`
 	TenantID               string            `json:"tenant_id"`
 	Number                 string            `json:"contract_number"`
@@ -63,6 +64,9 @@ type Contract struct {
 	CreatedBy              string            `json:"created_by"`
 	CanEditDraft           bool              `json:"can_edit_draft"`
 	UpdatedAt              time.Time         `json:"updated_at"`
+
+	// PricingOrganizationVerified只由服务端平台核验或原合同行赋值，不接收JSON或持久化。
+	PricingOrganizationVerified bool `json:"-"`
 }
 
 // ScopeFilter 是根据平台授权上下文计算的合同
