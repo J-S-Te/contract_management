@@ -130,3 +130,24 @@ func TestValidateRuleEnforcesSizeAndTimeoutCaps(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateRuleRejectsAllCountersign 验证规则入口只接受或签 any，
+// 显式全员会签 all 必须在校验阶段 fail-closed，不能保存后被执行层静默降级。
+// 参数：t 为测试上下文。
+// 返回值：无；all 被接受或 any 被误拒时失败。
+func TestValidateRuleRejectsAllCountersign(t *testing.T) {
+	rule := approval.Rule{
+		Name: "规则",
+		Expression: approval.Expression{Logical: approval.LogicalAnd, Conditions: []approval.Condition{{
+			Field: approval.FieldAmountMinor, Operator: approval.OperatorLTE, Value: int64(100),
+		}}},
+		Nodes: []approval.Node{{ID: "node-1", Name: "审批", RoleCode: "sales_director", Countersign: approval.CountersignAll}},
+	}
+	if err := validateRule(rule); !errors.Is(err, ErrValidation) {
+		t.Fatalf("countersign=all error = %v, want ErrValidation", err)
+	}
+	rule.Nodes[0].Countersign = approval.CountersignAny
+	if err := validateRule(rule); err != nil {
+		t.Fatalf("countersign=any rejected: %v", err)
+	}
+}
