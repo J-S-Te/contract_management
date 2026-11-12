@@ -1779,8 +1779,10 @@ func validateRule(rule approval.Rule) error {
 		if len([]rune(node.ID)) > 64 || len([]rune(node.Name)) > 128 || len([]rune(node.RoleCode)) > 128 {
 			return fmt.Errorf("%w: 审批节点 ID/名称/角色编码超出长度限制", ErrValidation)
 		}
-		if node.Countersign != "" && node.Countersign != approval.CountersignAll && node.Countersign != approval.CountersignAny {
-			return ErrValidation
+		// 当前执行层对规则节点强制或签（any）；为避免“保存成功但运行时降级”，
+		// 规则入口只接受空值或 any，显式 all 直接 fail-closed。
+		if node.Countersign != "" && node.Countersign != approval.CountersignAny {
+			return fmt.Errorf("%w: 当前仅支持 or-sign any，countersign=all 暂不支持", ErrValidation)
 		}
 		// 0 保持“沿用服务默认时限”的既有语义；显式配置必须在一小时到三十天之间。
 		if node.Timeout != 0 && (node.Timeout < approval.MinNodeTimeout || node.Timeout > approval.MaxNodeTimeout) {
@@ -1803,6 +1805,10 @@ func (s *Service) resolveNodes(ctx context.Context, actor Principal, nodes []app
 	}
 	unresolved := make([]string, 0, len(nodes))
 	for i := range nodes {
+		if nodes[i].Countersign == approval.CountersignAll {
+			// 存量 all 规则也 fail-closed，避免执行层静默降级。
+			return fmt.Errorf("%w: 存量审批规则包含 countersign=all，请改为 any 后重新保存", ErrValidation)
+		}
 		// 受理人始终从平台当前有效角色重建。有意忽略持久化的
 		// 规则受理人 ID，避免人员变化后需要
 		// 编辑审批规则。
