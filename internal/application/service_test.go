@@ -612,7 +612,7 @@ func TestDefaultApprovalNodesUseManifestRoleCodes(t *testing.T) {
 	}
 }
 
-func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) {
+func TestResolveNodesUsesAnySignForAllEffectivePlatformRoleHolders(t *testing.T) {
 	directory := []UserReference{
 		{UserID: "director-2", Roles: []string{"sales_director"}},
 		{UserID: "director-1", Roles: []string{"sales_director", "tech_director"}},
@@ -622,7 +622,7 @@ func TestResolveNodesUsesAllEffectivePlatformRoleHoldersAsAnySign(t *testing.T) 
 	actor := Principal{}
 	nodes := []approval.Node{{
 		ID: "sales-director", Name: "销售总监审批", RoleCode: "sales_director",
-		Countersign: approval.CountersignAll, AssigneeIDs: []string{"stale-configured-user"},
+		Countersign: approval.CountersignAny, AssigneeIDs: []string{"stale-configured-user"},
 	}}
 
 	if err := service.resolveNodes(context.Background(), actor, nodes); err != nil {
@@ -1096,5 +1096,16 @@ func TestCommandRejectsOversizedTargetUserIDs(t *testing.T) {
 	tooLong := []string{strings.Repeat("u", maxApprovalCommandTargetLength+1)}
 	if _, err := service.Command(context.Background(), actor, "approval-1", workflows.ApprovalCommand{OriginNodeID: "node", OriginNodeRevision: new(uint64), Action: workflows.ActionAddSign, TargetUserIDs: tooLong}); !errors.Is(err, ErrValidation) {
 		t.Fatalf("Command(overlong target) error = %v, want ErrValidation", err)
+	}
+}
+
+// TestResolveNodesRejectsLegacyAllSign 验证存量 all 规则不会被执行层静默改成 any。
+// 参数：t 为测试上下文。
+// 返回值：无；存量 all 未被拒绝时失败。
+func TestResolveNodesRejectsLegacyAllSign(t *testing.T) {
+	service := &Service{Personnel: personnelStub{users: []UserReference{{UserID: "director", Roles: []string{"sales_director"}}}}}
+	nodes := []approval.Node{{ID: "sales", Name: "销售总监审批", RoleCode: "sales_director", Countersign: approval.CountersignAll}}
+	if err := service.resolveNodes(context.Background(), Principal{}, nodes); !errors.Is(err, ErrValidation) {
+		t.Fatalf("legacy all must fail closed, err=%v", err)
 	}
 }
