@@ -259,18 +259,19 @@ func (s *Service) SaveStampedDocument(ctx context.Context, actor Principal, id, 
 	return s.saveStampedDocument(ctx, actor, id, filename, document, expectedVersion, "")
 }
 
-// ReplaceStampedDocument 是已确认签署合同的正式文件更换入口：必须带原因和
-// 明确的旧版本号，并重新进入人工核验；历史版本及历史确认记录不会被覆盖。
+// ReplaceStampedDocument 用途：以原因和修订号受控更换正式文件并重新人工核验。
+// 参数：ctx 为请求，actor 为主体，id 为合同，filename/document 为新原件，expectedVersion 为当前修订，reason 为更换原因。
+// 返回值：保存的文件版本或权限、修订、原件、业务校验错误。
 func (s *Service) ReplaceStampedDocument(ctx context.Context, actor Principal, id, filename string, document []byte, expectedVersion uint64, reason string) (contract.StampedDocument, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return contract.StampedDocument{}, fmt.Errorf("%w: 正式文件更换必须填写原因", ErrValidation)
+		return contract.StampedDocument{}, validationFeedback("reason", "required", "正式文件更换必须填写原因，请补充后提交。")
 	}
 	if len([]rune(reason)) > 500 {
-		return contract.StampedDocument{}, fmt.Errorf("%w: 正式文件更换原因不能超过 500 个字符", ErrValidation)
+		return contract.StampedDocument{}, validationFeedback("reason", "max", "正式文件更换原因不能超过 500 个字符，请缩短后提交。")
 	}
 	if expectedVersion == 0 {
-		return contract.StampedDocument{}, fmt.Errorf("%w: 正式文件更换必须携带当前修订号", ErrValidation)
+		return contract.StampedDocument{}, validationFeedback("expected_version", "required", "正式文件更换缺少当前修订号，请重新载入详情后提交。")
 	}
 	return s.saveStampedDocument(ctx, actor, id, filename, document, expectedVersion, reason)
 }
@@ -472,9 +473,9 @@ func (s *Service) GetSigningRecord(ctx context.Context, actor Principal, id stri
 	return item, err
 }
 
-// SaveSigningShipment 校验寄送信息与当前签署状态后登记合同寄出。
-// 参数：ctx 为请求上下文，actor 为可信操作者，id 为合同标识，shipment 为寄出信息。
-// 返回值：校验、权限、状态或持久化失败时返回错误。
+// SaveSigningShipment 用途：按现有签署状态和字段长度保存快递寄送信息。
+// 参数：ctx 为请求，actor 为可信主体，id 为合同标识，shipment 为待保存的快递表单。
+// 返回值：成功为空；返回权限、状态、字段校验或存储错误。
 func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id string, shipment contract.SigningShipment) error {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return err
@@ -486,12 +487,12 @@ func (s *Service) SaveSigningShipment(ctx context.Context, actor Principal, id s
 	// 只有 ≤MaxSigningPhonePlaintextLen 个字符的明文才能稳定存入 000016 迁移的
 	// VARCHAR(80)；超长按参数不合法拒绝（422），而不是让 SQL 报"数据过长"。
 	if phone := strings.TrimSpace(shipment.RecipientPhone); phone == "" || len([]rune(phone)) > contract.MaxSigningPhonePlaintextLen {
-		return fmt.Errorf("%w: 收件人手机号必须为 1~%d 个字符", ErrValidation, contract.MaxSigningPhonePlaintextLen)
+		return validationFeedback("recipient_phone", "length", fmt.Sprintf("收件人手机号必须为 1~%d 个字符，请重新填写。", contract.MaxSigningPhonePlaintextLen))
 	}
 	if len([]rune(strings.TrimSpace(shipment.CourierNumber))) > 120 ||
 		len([]rune(strings.TrimSpace(shipment.RecipientName))) > 120 ||
 		len([]rune(strings.TrimSpace(shipment.RecipientAddress))) > 500 {
-		return fmt.Errorf("%w: 快递单号/收件人/地址超出长度限制", ErrValidation)
+		return signingShipmentFeedback(shipment)
 	}
 	// 以下为尽早失败的快速预检，非权威：判定与写入之间仍可能有并发上传/确认。
 	// 权威判定在仓储层的合同行锁内条件更新（status IN pending_shipment/in_return），
@@ -627,7 +628,7 @@ func (s *Service) createContract(ctx context.Context, actor Principal, c contrac
 	return s.persistNewContract(ctx, actor, c, external, filter)
 }
 
-// prepareContract 校验草稿权限、正文、权威来源、服务范围和精确付款计划。
+// prepareContract 用途：校验草稿权限、正文、权威来源、服务范围和精确付款计划。
 // 参数：ctx为请求，actor为可信主体，c为草稿，external区分外部文件，permission限定业务动作。
 // 返回值：规范化且通过校验的合同；任何来源、权限或财务规则不符均返回错误。
 func (s *Service) prepareContract(ctx context.Context, actor Principal, c contract.Contract, external bool, permission string) (contract.Contract, error) {
@@ -644,7 +645,7 @@ func (s *Service) prepareContract(ctx context.Context, actor Principal, c contra
 		c.Document = rendered
 		c.Content, err = docx.PlainText(rendered)
 		if err != nil {
-			return c, fmt.Errorf("%w: %v", ErrValidation, err)
+			return c, validationFeedback("file", "invalid", "合同模板原件无法读取，请重新选择有效模板或联系模板管理员。")
 		}
 		item, err := s.Templates.GetTemplate(ctx, actor.TenantID, c.TemplateID)
 		if err != nil {
@@ -691,7 +692,7 @@ func (s *Service) authorizeContractWrite(actor Principal, c contract.Contract, p
 	return c, nil
 }
 
-// normalizeContractShape 规范化合同文本字段并校验形状（不含来源引用解析）。
+// normalizeContractShape 用途：规范化合同文本字段并校验形状（不含来源引用解析）。
 // 参数：c 为待校验合同，external 区分外部原件入口。
 // 返回值：规范化后的合同；字段缺失、枚举不符或超长返回 ErrValidation。
 func normalizeContractShape(c contract.Contract, external bool) (contract.Contract, error) {
@@ -713,44 +714,44 @@ func normalizeContractShape(c contract.Contract, external bool) (contract.Contra
 	if external {
 		if commonInvalid || c.TemplateID != "" || c.Type != "直签" && c.Type != "三方" ||
 			c.AmountMinor <= 0 || !validExternalServiceItems(c.ServiceItems) {
-			return c, ErrValidation
+			return c, contractShapeFeedback(c, external)
 		}
 		return c, nil
 	}
 	if commonInvalid || c.TemplateID == "" || !validServiceItems(c.ServiceItems) ||
 		c.OpportunityID != "" && c.CRMCustomerID == 0 {
-		return c, ErrValidation
+		return c, contractShapeFeedback(c, external)
 	}
 	return c, nil
 }
 
-// finalizeContractCommercials 由服务项派生合同字段并规范化日期、币种与付款计划。
+// finalizeContractCommercials 用途：由服务项派生合同字段并规范化日期、币种与付款计划。
 // 参数：c 为已通过来源解析的合同。
 // 返回值：完整可持久化的合同；服务项为空、日期倒挂或付款计划不合法返回 ErrValidation。
 func finalizeContractCommercials(c contract.Contract) (contract.Contract, error) {
 	if len(c.ServiceItems) == 0 {
-		return c, ErrValidation
+		return c, validationFeedback("service_items", "required", "请至少添加一个服务项后保存。")
 	}
 	c.ServiceType = c.ServiceItems[0].ServiceType
 	c.Systems = flattenedSystems(c.ServiceItems)
 	if c.StartDate != nil && c.EndDate != nil && c.StartDate.After(*c.EndDate) {
-		return c, ErrValidation
+		return c, validationFeedback("end_date", "date", "结束日期不能早于开始日期，请调整后保存。")
 	}
 	if c.Currency == "" {
 		c.Currency = "CNY"
 	}
 	c.Currency = strings.ToUpper(strings.TrimSpace(c.Currency))
 	if len(c.Currency) != 3 {
-		return c, fmt.Errorf("%w: 币种必须为三位字母代码", ErrValidation)
+		return c, validationFeedback("currency", "format", "币种必须为三位字母代码，请重新填写。")
 	}
 	for _, char := range c.Currency {
 		if char < 'A' || char > 'Z' {
-			return c, fmt.Errorf("%w: 币种必须为三位字母代码", ErrValidation)
+			return c, validationFeedback("currency", "format", "币种必须为三位字母代码，请重新填写。")
 		}
 	}
 	terms, err := contract.NormalizePaymentTerms(c.PaymentTerms, c.AmountMinor, c.Currency)
 	if err != nil {
-		return c, fmt.Errorf("%w: %v", ErrValidation, err)
+		return c, paymentTermsFeedback(err)
 	}
 	c.PaymentTerms = terms
 	if c.NumberFormat == "" {
@@ -759,50 +760,55 @@ func finalizeContractCommercials(c contract.Contract) (contract.Contract, error)
 	return c, nil
 }
 
-// validateContractTextLengths 与前端 maxlength/DB 列宽保持一致，避免绕过页面后
-// 由 MySQL 截断或抛出 500；所有长度按字符数（rune）计算。
+// validateContractTextLengths 用途：按现有列宽校验合同文本并提供具体字段位置。
+// 参数：c 为待持久化合同，所有字符长度继续按 rune 计算。
+// 返回值：无错误或带安全字段、服务项序号的校验错误。
 func validateContractTextLengths(c contract.Contract) error {
 	checks := []struct {
 		value string
 		label string
+		field string
 		max   int
 	}{
-		{c.Title, "合同名称", 255}, {c.Type, "合同类型", 64},
-		{c.OpportunityID, "商机 ID", 64}, {c.OpportunityName, "商机名称", 255},
-		{c.CustomerName, "客户名称", 255}, {c.CustomerAddress, "客户地址", 500},
-		{c.CustomerContact, "客户联系人", 128}, {c.CustomerPhone, "客户联系电话", 64},
-		{c.CustomerCreditLevel, "客户信用等级", 16}, {c.NumberFormat, "合同编号格式", 160},
-		{c.TemplateID, "模板 ID", 26}, {c.ProjectID, "项目 ID", 64}, {c.OwnerOrgID, "组织 ID", 64},
+		{c.Title, "合同名称", "title", 255}, {c.Type, "合同类型", "contract_type", 64},
+		{c.OpportunityID, "关联商机", "opportunity_id", 64}, {c.OpportunityName, "商机名称", "opportunity_name", 255},
+		{c.CustomerName, "客户名称", "customer_name", 255}, {c.CustomerAddress, "客户地址", "customer_address", 500},
+		{c.CustomerContact, "客户联系人", "customer_contact", 128}, {c.CustomerPhone, "客户联系电话", "customer_phone", 64},
+		{c.CustomerCreditLevel, "客户信用等级", "customer_credit_level", 16}, {c.NumberFormat, "合同编号格式", "number_format", 160},
+		{c.TemplateID, "合同模板", "template_id", 26}, {c.ProjectID, "关联项目", "project_id", 64}, {c.OwnerOrgID, "所属组织", "owner_org_id", 64},
 	}
 	for _, check := range checks {
 		if len([]rune(strings.TrimSpace(check.value))) > check.max {
-			return fmt.Errorf("%w: %s不能超过 %d 个字符", ErrValidation, check.label, check.max)
+			return validationFeedback(check.field, "max", fmt.Sprintf("%s不能超过 %d 个字符，请缩短后保存。", check.label, check.max))
 		}
 	}
 	for index, item := range c.ServiceItems {
 		itemChecks := []struct {
 			value string
 			label string
+			field string
 			max   int
 		}{
-			{item.ServiceType, "服务类型", 64}, {item.Name, "服务名称", 255},
-			{item.Site, "实施场所", 255}, {item.Batch, "实施批次", 120},
-			{item.Category, "检测类别", 120}, {item.Requirement, "服务需求", 1000},
+			{item.ServiceType, "服务类型", "service_type", 64}, {item.Name, "服务名称", "name", 255},
+			{item.Site, "实施场所", "site", 255}, {item.Batch, "实施批次", "batch", 120},
+			{item.Category, "检测类别", "category", 120}, {item.Requirement, "服务需求", "requirement", 1000},
 		}
 		for _, check := range itemChecks {
 			if len([]rune(strings.TrimSpace(check.value))) > check.max {
-				return fmt.Errorf("%w: 服务项 %d 的%s不能超过 %d 个字符", ErrValidation, index+1, check.label, check.max)
+				return validationFeedback(fmt.Sprintf("service_items[%d].%s", index, check.field), "max",
+					fmt.Sprintf("服务项 %d 的%s不能超过 %d 个字符，请缩短后保存。", index+1, check.label, check.max))
 			}
 		}
-		for _, system := range item.Systems {
+		for systemIndex, system := range item.Systems {
 			if len([]rune(strings.TrimSpace(system.Name))) > 255 {
-				return fmt.Errorf("%w: 服务项 %d 的系统名称不能超过 255 个字符", ErrValidation, index+1)
+				return validationFeedback(fmt.Sprintf("service_items[%d].systems[%d].name", index, systemIndex), "max",
+					fmt.Sprintf("服务项 %d 的系统名称不能超过 255 个字符，请缩短后保存。", index+1))
 			}
 		}
 	}
-	for name, value := range c.TemplateValues {
+	for _, value := range c.TemplateValues {
 		if len([]rune(value)) > 2000 {
-			return fmt.Errorf("%w: 模板字段“%s”不能超过 2000 个字符", ErrValidation, name)
+			return validationFeedback("template_values", "max", "模板字段内容不能超过 2000 个字符，请缩短后保存。")
 		}
 	}
 	return nil
@@ -1009,7 +1015,7 @@ func (s *Service) SubmitContractVersion(ctx context.Context, actor Principal, co
 // 在应用层拦一次，既有 HTTP 直接变更、也有审批工作流入参，避免超长原因到库层才失败或被截断。
 const MaxStatusChangeReasonRunes = 1000
 
-// ChangeStatus 通过现审批路径变更普通合同状态，拒绝历史基线改写。
+// ChangeStatus 用途：通过现审批路径变更普通合同状态，拒绝历史基线改写。
 // 参数：ctx/actor为上下文与主体，contractID/version为目标及版本，target为状态，reason为业务原因。
 // 返回值：审批启动结果或权限、状态、版本与依赖错误。
 func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID string, version uint64, target contract.Status, reason string) (StartResult, error) {
@@ -1024,7 +1030,7 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 		return StartResult{}, ErrValidation
 	}
 	if utf8.RuneCountInString(reason) > MaxStatusChangeReasonRunes {
-		return StartResult{}, fmt.Errorf("%w: 变更原因不能超过%d个字符", ErrValidation, MaxStatusChangeReasonRunes)
+		return StartResult{}, validationFeedback("reason", "max", fmt.Sprintf("变更原因不能超过%d个字符，请缩短后提交。", MaxStatusChangeReasonRunes))
 	}
 	c, err := s.getContractScoped(ctx, filter, contractID)
 	if err != nil {
@@ -1109,9 +1115,9 @@ func (s *Service) ChangeStatus(ctx context.Context, actor Principal, contractID 
 	return StartResult{ApprovalID: approvalID, WorkflowID: run.GetID(), RunID: run.GetRunID()}, nil
 }
 
-// Command 验证客户端原任务身份并发送可幂等重试的审批命令。
-// 参数：ctx为请求上下文，actor为登录主体，approvalID为审批实例，command为操作及来源快照。
-// 返回值：稳定命令ID或权限、任务冲突及工作流通信错误。
+// Command 用途：校验原审批命令权限、节点状态与输入后向流程发送命令。
+// 参数：ctx 为请求，actor 为可信主体，approvalID 为审批标识，command 为待执行审批动作。
+// 返回值：受理的命令标识或权限、状态、输入校验及流程依赖错误。
 func (s *Service) Command(ctx context.Context, actor Principal, approvalID string, command workflows.ApprovalCommand) (string, error) {
 	if err := s.checkBusinessLicense(ctx); err != nil {
 		return "", err
@@ -1152,7 +1158,7 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 	}
 	if command.Action != workflows.ActionWithdraw && command.Action != workflows.ActionUrge && command.Action != workflows.ActionComment {
 		if command.OriginNodeID == "" || command.OriginNodeRevision == nil {
-			return "", fmt.Errorf("%w: 请刷新审批详情后重试", ErrValidation)
+			return "", validationFeedback("origin_node_id", "missing", "审批详情已不完整，请刷新审批详情后重试。")
 		}
 		command.ActorUserID = actor.UserID
 		commandID := approvalCommandID(actor.TenantID, approvalID, command)
@@ -1174,16 +1180,16 @@ func (s *Service) Command(ctx context.Context, actor Principal, approvalID strin
 		return "", apperrors.ErrStateConflict
 	}
 	if len([]rune(command.Comment)) > 2000 {
-		return "", fmt.Errorf("%w: 审批意见不能超过 2000 个字符", ErrValidation)
+		return "", validationFeedback("comment", "max", "审批意见不能超过 2000 个字符，请缩短后提交。")
 	}
 	// 命令目标用户直接进入工作流的加签/转派节点，必须在发信号前限制规模与单个标识长度，
 	// 避免一次命令把审批链或通知扇出放大到不可控。
 	if len(command.TargetUserIDs) > maxApprovalCommandTargets {
-		return "", fmt.Errorf("%w: 审批命令目标用户不能超过 %d 个", ErrValidation, maxApprovalCommandTargets)
+		return "", validationFeedback("target_user_ids", "max", fmt.Sprintf("审批目标用户不能超过 %d 个，请减少人员后提交。", maxApprovalCommandTargets))
 	}
 	for _, target := range command.TargetUserIDs {
 		if len([]rune(target)) > maxApprovalCommandTargetLength {
-			return "", fmt.Errorf("%w: 审批命令目标用户标识不能超过 %d 个字符", ErrValidation, maxApprovalCommandTargetLength)
+			return "", validationFeedback("target_user_ids", "max", "所选审批人员信息不符合长度要求，请从人员目录重新选择。")
 		}
 	}
 	if command.Action == workflows.ActionAddSign {
@@ -1373,7 +1379,7 @@ func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approv
 	return ApprovalDetail{Meta: meta, State: state, Contract: contractSnapshot, Actions: actions, SnapshotAvailable: snapshotAvailable, StateUnavailable: stateUnavailable}, nil
 }
 
-// RecoverApproval 按持久化终决议收口已明确停止且尚未应用的审批。
+// RecoverApproval 用途：按持久化终决议收口已明确停止且尚未应用的审批。
 // 参数：ctx为请求上下文，actor为恢复管理员，approvalID为本租户审批身份。
 // 返回值：已完成或恢复成功时为空，否则返回权限、执行状态或持久化错误。
 func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approvalID string) error {
@@ -1406,25 +1412,25 @@ func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approval
 		enums.WORKFLOW_EXECUTION_STATUS_CANCELED, enums.WORKFLOW_EXECUTION_STATUS_TERMINATED,
 		enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
 	default:
-		return fmt.Errorf("%w: 工作流未明确停止，不能人工收口；请等待执行或检查 Worker", apperrors.ErrStateConflict)
+		return stateFeedback("WORKFLOW_NOT_STOPPED", "审批流程尚未明确结束，不能人工收口；请等待执行，持续未结束时联系管理员检查审批服务。")
 	}
 	state, found, err := store.GetApprovalRuntimeState(ctx, actor.TenantID, meta.ID)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("%w: 审批没有持久化运行状态，无法安全恢复", apperrors.ErrStateConflict)
+		return stateFeedback("RUNTIME_STATE_MISSING", "审批没有持久化运行状态，无法安全恢复；请联系管理员核对审批运行记录。")
 	}
 	status := state.Status
 	if status == approval.StatusRunning {
 		// 最后一个节点已通过时，工作流会在 CompleteApproval 之前把索引推进到末尾；
 		// 只有这种明确的终态才允许自动判定通过，运行中节点必须人工复核。
 		if len(state.Nodes) == 0 || state.CurrentNodeIndex != len(state.Nodes) {
-			return fmt.Errorf("%w: 工作流停在未完成的审批节点，需人工复核后再处理", apperrors.ErrStateConflict)
+			return stateFeedback("APPROVAL_NODE_UNFINISHED", "审批流程停在未完成的审批节点，不能人工收口；请联系管理员人工复核后再处理。")
 		}
 		for _, node := range state.Nodes {
 			if node.Status != approval.NodeApproved {
-				return fmt.Errorf("%w: 审批节点尚未全部通过，不能人工收口", apperrors.ErrStateConflict)
+				return stateFeedback("APPROVAL_NODES_NOT_APPROVED", "审批节点尚未全部通过，不能人工收口；请先核对各节点处理结果。")
 			}
 		}
 		status = approval.StatusApproved
@@ -1432,7 +1438,7 @@ func (s *Service) RecoverApproval(ctx context.Context, actor Principal, approval
 	switch status {
 	case approval.StatusApproved, approval.StatusRejected, approval.StatusWithdrawn, approval.StatusExpired:
 	default:
-		return fmt.Errorf("%w: 审批运行状态 %s 不能直接收口", apperrors.ErrStateConflict, status)
+		return stateFeedback("RUNTIME_STATE_UNSUPPORTED", "审批当前运行状态不能直接收口，请联系管理员核对审批记录后处理。")
 	}
 	target := contract.StatusDraft
 	if meta.Kind == approval.KindStatusChange {
@@ -1755,21 +1761,24 @@ func (s *Service) DeleteRule(ctx context.Context, actor Principal, id string, ve
 	return s.Repo.DeleteRule(ctx, actor.TenantID, id, version)
 }
 
+// validateRule 用途：执行原审批规则限制并返回安全字段与修正指引。
+// 参数：rule 为待新增或修改的审批规则、条件及节点。
+// 返回值：规则合法时为空；返回保持 ErrValidation 分类的校验错误。
 func validateRule(rule approval.Rule) error {
 	if rule.Name == "" || len(rule.Nodes) == 0 {
 		return ErrValidation
 	}
 	if len([]rune(rule.Name)) > 128 {
-		return fmt.Errorf("%w: 审批规则名称不能超过 128 个字符", ErrValidation)
+		return validationFeedback("name", "max", "审批规则名称不能超过 128 个字符，请缩短后保存。")
 	}
 	if len(rule.Nodes) > approval.MaxRuleNodes {
-		return fmt.Errorf("%w: 审批规则节点不能超过 %d 个", ErrValidation, approval.MaxRuleNodes)
+		return validationFeedback("nodes", "max", fmt.Sprintf("审批规则节点不能超过 %d 个，请减少节点后保存。", approval.MaxRuleNodes))
 	}
 	if err := rule.Expression.ValidateLimits(); err != nil {
-		return fmt.Errorf("%w: %v", ErrValidation, err)
+		return validationFeedback("expression", "invalid", "审批条件不符合要求，请检查条件分组、字段、比较方式及取值后保存。")
 	}
 	if _, err := rule.Expression.Match(approval.Facts{}); err != nil {
-		return fmt.Errorf("%w: %v", ErrValidation, err)
+		return validationFeedback("expression", "invalid", "审批条件不符合要求，请检查条件分组、字段、比较方式及取值后保存。")
 	}
 	seen := map[string]bool{}
 	for _, node := range rule.Nodes {
@@ -1777,23 +1786,25 @@ func validateRule(rule approval.Rule) error {
 			return ErrValidation
 		}
 		if len([]rune(node.ID)) > 64 || len([]rune(node.Name)) > 128 || len([]rune(node.RoleCode)) > 128 {
-			return fmt.Errorf("%w: 审批节点 ID/名称/角色编码超出长度限制", ErrValidation)
+			return validationFeedback("nodes", "max", "审批节点标识、名称或角色编码超出长度限制，请缩短名称并重新选择角色。")
 		}
 		// 当前执行层对规则节点强制或签（any）；为避免“保存成功但运行时降级”，
 		// 规则入口只接受空值或 any，显式 all 直接 fail-closed。
 		if node.Countersign != "" && node.Countersign != approval.CountersignAny {
-			return fmt.Errorf("%w: 当前仅支持 or-sign any，countersign=all 暂不支持", ErrValidation)
+			return validationFeedback("nodes", "enum", "当前审批节点仅支持或签，请将会签方式调整为或签后保存。")
 		}
 		// 0 保持“沿用服务默认时限”的既有语义；显式配置必须在一小时到三十天之间。
 		if node.Timeout != 0 && (node.Timeout < approval.MinNodeTimeout || node.Timeout > approval.MaxNodeTimeout) {
-			return fmt.Errorf("%w: 审批节点处理时限必须在 %s 到 %s 之间", ErrValidation,
-				approval.MinNodeTimeout, approval.MaxNodeTimeout)
+			return validationFeedback("nodes", "range", "审批节点处理时限必须在一小时到三十天之间，请调整后保存。")
 		}
 		seen[node.ID] = true
 	}
 	return nil
 }
 
+// resolveNodes 用途：从权威人员目录解析审批人并保留已有或签限制。
+// 参数：ctx 为请求，actor 为可信主体，nodes 为待解析并更新受理人的审批节点。
+// 返回值：解析成功为空；缺少审批人、规则不符或人员目录故障时返回错误。
 func (s *Service) resolveNodes(ctx context.Context, actor Principal, nodes []approval.Node) error {
 	roleCodes := make([]string, 0, len(nodes))
 	for _, node := range nodes {
@@ -1807,7 +1818,7 @@ func (s *Service) resolveNodes(ctx context.Context, actor Principal, nodes []app
 	for i := range nodes {
 		if nodes[i].Countersign == approval.CountersignAll {
 			// 存量 all 规则也 fail-closed，避免执行层静默降级。
-			return fmt.Errorf("%w: 存量审批规则包含 countersign=all，请改为 any 后重新保存", ErrValidation)
+			return validationFeedback("nodes", "enum", "存量审批规则含不支持的会签方式，请改为或签并重新保存后再提交。")
 		}
 		// 受理人始终从平台当前有效角色重建。有意忽略持久化的
 		// 规则受理人 ID，避免人员变化后需要

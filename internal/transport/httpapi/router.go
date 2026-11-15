@@ -2140,16 +2140,19 @@ type envelope struct {
 	Details   any    `json:"details,omitempty"`
 }
 
+// decode 用途：保持单对象严格解码并只返回安全协议分类。
+// 参数：c 为 HTTP 上下文，target 为现有请求 DTO。
+// 返回值：解码是否成功；失败写入原校验错误码及受控原因。
 func decode(c *gin.Context, target any) bool {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", err.Error())
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求参数不合法", gin.H{"reason": decodeFailureReason(err)})
 		return false
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求只能包含一个 JSON 对象", nil)
+		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR", "请求只能包含一个 JSON 对象", gin.H{"reason": "invalid_json"})
 		return false
 	}
 	return true
@@ -2159,10 +2162,11 @@ func writeData(c *gin.Context, status int, data any) {
 	writeJSON(c, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(c.Request.Context()), Data: data})
 }
 
-// writeError 将来源、授权和存储错误映射为稳定安全响应。
+// writeError 用途：将来源、授权和存储错误映射为稳定安全响应。
 // 参数：c为请求上下文，err为业务或依赖错误。
 // 返回值：无；不输出内部配置或敏感数据。
 func writeError(c *gin.Context, err error) {
+	var feedback *application.BusinessFeedbackError
 	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
 	var sourceRejected *application.ImportSourceRejectedError
 	var batchItemLimit *application.ImportBatchItemLimitError
@@ -2240,6 +2244,19 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusNotFound, "CON_NOT_FOUND", "资源不存在", nil)
 	case errors.Is(err, apperrors.ErrVersionConflict):
 		writeEnvelopeError(c, http.StatusConflict, "CON_VERSION_CONFLICT", "数据版本已变化，请刷新后重试", nil)
+	case errors.As(err, &feedback) && (errors.Is(err, application.ErrValidation) || errors.Is(err, apperrors.ErrStateConflict)):
+		status, code := http.StatusUnprocessableEntity, "CON_VALIDATION_ERROR"
+		if errors.Is(err, apperrors.ErrStateConflict) {
+			status, code = http.StatusConflict, "CON_STATE_CONFLICT"
+		}
+		details := gin.H{}
+		if len(feedback.Issues) > 0 {
+			details["issues"] = feedback.Issues
+		}
+		if feedback.ReasonCode != "" {
+			details["reason_code"] = feedback.ReasonCode
+		}
+		writeEnvelopeError(c, status, code, feedback.PublicMessage(), details)
 	case errors.Is(err, apperrors.ErrStateConflict), errors.Is(err, contract.ErrInvalidTransition):
 		writeEnvelopeError(c, http.StatusConflict, "CON_STATE_CONFLICT", "当前状态不允许该操作", nil)
 	case errors.Is(err, contract.ErrNumberExhausted):

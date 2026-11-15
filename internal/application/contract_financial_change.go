@@ -86,12 +86,9 @@ func FinancialChangeStatusEligible(status contract.Status) bool {
 	return false
 }
 
-// ChangeContractFinancialTerms 是受控合同财务变更用例。
-//
-// 参数：ctx 为请求上下文；actor 为已认证主体；contractID 为目标合同；
-// change 为新金额、币种、付款计划、并发版本与业务原因。
-// 返回值：变更后的合同；开关关闭、权限/数据范围不足、审批前置不满足、
-// 版本冲突、计划不合法或存储失败时返回错误且不保留任何部分写入。
+// ChangeContractFinancialTerms 用途：按现有审批和权限约束执行受控合同财务变更。
+// 参数：ctx 为请求，actor 为主体，contractID 为目标合同，change 为新金额、币种、计划、版本与原因。
+// 返回值：变更后的合同；校验、权限、状态或存储失败返回错误且不保留部分写入。
 func (s *Service) ChangeContractFinancialTerms(ctx context.Context, actor Principal, contractID string, change ContractFinancialChange) (contract.Contract, error) {
 	if !s.ContractFinancialChangeEnabled {
 		// 开关必须在任何读取之前判定：默认关闭时连合同是否存在都不应暴露。
@@ -128,20 +125,20 @@ func (s *Service) ChangeContractFinancialTerms(ctx context.Context, actor Princi
 		return current, ErrFinancialChangeCurrencyLocked
 	}
 	if change.AmountMinor <= 0 {
-		return current, fmt.Errorf("%w: 变更后的合同金额必须大于零", ErrValidation)
+		return current, validationFeedback("amount_minor", "min", "变更后的合同金额必须大于零，请重新填写。")
 	}
 	reason := strings.TrimSpace(change.Reason)
 	if reason == "" || utf8.RuneCountInString(reason) > MaxFinancialChangeReasonRunes {
-		return current, fmt.Errorf("%w: 财务变更原因必填且不超过%d字", ErrValidation, MaxFinancialChangeReasonRunes)
+		return current, validationFeedback("reason", "length", fmt.Sprintf("财务变更原因必填且不超过%d字，请核对后重新填写。", MaxFinancialChangeReasonRunes))
 	}
 	// 付款计划必须完整提供并合计等于新合同金额；空计划会被结算侧拒绝，
 	// 也会让财务事件缺字段，因此这里直接失败关闭。
 	if len(change.PaymentTerms) == 0 {
-		return current, fmt.Errorf("%w: 财务变更必须提供完整付款计划", ErrValidation)
+		return current, validationFeedback("payment_terms", "required", "财务变更必须提供完整付款计划，请补充后提交。")
 	}
 	terms, normalizeErr := contract.NormalizePaymentTerms(change.PaymentTerms, change.AmountMinor, requestedCurrency)
 	if normalizeErr != nil {
-		return current, fmt.Errorf("%w: %v", ErrValidation, normalizeErr)
+		return current, paymentTermsFeedback(normalizeErr)
 	}
 	repository, ok := s.Repo.(ContractFinancialChangeRepository)
 	if !ok {
@@ -149,7 +146,7 @@ func (s *Service) ChangeContractFinancialTerms(ctx context.Context, actor Princi
 		return current, apperrors.ErrStateConflict
 	}
 	if current.Pricing == nil && change.Pricing != nil {
-		return current, fmt.Errorf("%w: 首次建立基准须独立修订审批", ErrValidation)
+		return current, validationFeedback("pricing", "approval", "首次建立定价基准须独立修订审批，请使用定价修订审批入口。")
 	}
 	candidate := current
 	candidate.AmountMinor = change.AmountMinor
@@ -158,7 +155,7 @@ func (s *Service) ChangeContractFinancialTerms(ctx context.Context, actor Princi
 		candidate.Pricing = preservePricingAmounts(current.Pricing, change.AmountMinor, current.AmountMinor)
 	}
 	if candidate.Pricing != nil && candidate.Pricing.Reselect {
-		return current, fmt.Errorf("%w: 重选须使用定价修订审批入口", ErrValidation)
+		return current, validationFeedback("pricing", "approval", "重选定价基准须使用定价修订审批入口，请先完成独立审批。")
 	}
 	candidate, err = s.preparePricing(ctx, actor, candidate, current.Pricing)
 	if err != nil {
