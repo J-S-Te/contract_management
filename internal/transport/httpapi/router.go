@@ -308,7 +308,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	}
 	// SEC-D11：cookie 会话写请求必须通过同源 Origin 校验（失败关闭）；
 	// 放在 auditWrites 之后使跨站拒绝尝试同样进入审计。
-	api := r.Group("/api/v1", h.authenticate(), h.auditWrites(), h.requireSameOriginWrite(), h.licenseOperation())
+	api := r.Group("/api/v1", h.securityFailures(), h.authenticate(), h.auditWrites(), h.requireSameOriginWrite(), h.licenseOperation())
 	api.GET("/auth/me", h.me)
 	// 浏览器显式活动探测：只有该接口推进空闲基准，Cookie 会话与同源写保护沿用 api 组。
 	api.POST("/auth/activity", h.activity)
@@ -2037,6 +2037,38 @@ func (h *Handler) command(pathAction string) gin.HandlerFunc {
 }
 
 const principalKey = "principal"
+
+// securityFailures 记录认证失败的安全事件；已认证的 403 继续由 auditWrites 记录，
+// 避免认证失败被 Abort 后审计链完全看不到。
+func (h *Handler) securityFailures() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		status := c.Writer.Status()
+		if status != http.StatusUnauthorized && status != http.StatusForbidden {
+			return
+		}
+		if _, ok := c.Get(principalKey); ok {
+			return
+		}
+		reporter, ok := h.audit.(platform.SecurityReporter)
+		if !ok {
+			return
+		}
+		requestID := requestIDFrom(c.Request.Context())
+		event := platform.SecurityEvent{
+			EventID: ulid.Make().String(), OccurredAt: time.Now().UTC(),
+			Action: "AUTHENTICATION_DENIED", Method: c.Request.Method, Path: c.Request.URL.Path,
+			ClientIP: requestClientIP(c.Request), UserAgent: c.Request.UserAgent(),
+			RequestID: requestID, Result: "DENIED", ReasonCode: strconv.Itoa(status), RiskLevel: "HIGH",
+			Summary: "contract management authentication failed",
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 2*time.Second)
+		defer cancel()
+		if err := reporter.ReportSecurity(ctx, event); err != nil {
+			slog.ErrorContext(c.Request.Context(), "report security event failed", "error", err, "request_id", requestID, "status", status)
+		}
+	}
+}
 
 func (h *Handler) authenticate() gin.HandlerFunc {
 	return func(c *gin.Context) {
