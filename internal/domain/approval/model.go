@@ -80,6 +80,7 @@ type Meta struct {
 type Task struct {
 	ApprovalID     string     `json:"approval_id"`
 	ContractID     string     `json:"contract_id"`
+	ContractTitle  string     `json:"contract_title"`
 	NodeID         string     `json:"node_id"`
 	NodeName       string     `json:"node_name"`
 	AssigneeUserID string     `json:"assignee_user_id"`
