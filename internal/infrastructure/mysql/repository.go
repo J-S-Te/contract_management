@@ -669,14 +669,20 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 	}
 	type taskRow struct {
 		ApprovalID, ContractID, NodeID, NodeName, AssigneeUserID string
+		ContractTitle                                            string
 		Kind, Status                                             string
 		NodeIndex                                                int
 		CreatedAt                                                time.Time
 	}
 	var rows []taskRow
 	err := r.db.WithContext(ctx).Table("con_approval_task AS t").
-		Select("t.approval_id, i.contract_id, t.node_id, t.node_name, t.assignee_user_id, i.kind, t.status, t.node_index, i.created_at").
+		Select("t.approval_id, i.contract_id, "+approvalContractTitleSQL+
+			" AS contract_title, t.node_id, t.node_name, t.assignee_user_id, "+
+			"i.kind, t.status, t.node_index, i.created_at").
 		Joins("JOIN con_approval_instance AS i ON i.id = t.approval_id").
+		Joins("LEFT JOIN con_contract AS c ON c.id = i.contract_id AND c.tenant_id = i.tenant_id").
+		Joins("LEFT JOIN con_approval_snapshot AS s ON s.approval_id = i.id "+
+			"AND s.tenant_id = i.tenant_id AND s.contract_id = i.contract_id").
 		Where("i.tenant_id = ? AND i.status = ? AND t.assignee_user_id = ? AND t.status IN ?", tenantID, approval.StatusRunning, userID, assignedApprovalTaskStatuses()).
 		Order("CASE WHEN t.status = 'active' THEN 0 ELSE 1 END").
 		Order("i.created_at, t.node_index").Limit(limit).Scan(&rows).Error
@@ -685,7 +691,12 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 	}
 	result := make([]approval.Task, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, approval.Task{ApprovalID: row.ApprovalID, ContractID: row.ContractID, NodeID: row.NodeID, NodeName: row.NodeName, AssigneeUserID: row.AssigneeUserID, Kind: approval.Kind(row.Kind), Status: approval.NodeStatus(row.Status), NodeIndex: row.NodeIndex, CreatedAt: row.CreatedAt})
+		result = append(result, approval.Task{
+			ApprovalID: row.ApprovalID, ContractID: row.ContractID, ContractTitle: row.ContractTitle,
+			NodeID: row.NodeID, NodeName: row.NodeName, AssigneeUserID: row.AssigneeUserID,
+			Kind: approval.Kind(row.Kind), Status: approval.NodeStatus(row.Status),
+			NodeIndex: row.NodeIndex, CreatedAt: row.CreatedAt,
+		})
 	}
 	return result, nil
 }
@@ -1018,6 +1029,9 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 	})
 }
 
+// CreateNotification 将通知按收件人幂等入队，并为审批待办及催办补齐合同名称。
+// 参数：ctx为执行上下文，in为包含可信租户、合同及收件人的工作流通知。
+// 返回值：成功或无收件人时为空；名称查询或入队失败时返回错误。
 func (r *Repository) CreateNotification(ctx context.Context, in workflows.NotifyActivityInput) error {
 	now := time.Now().UTC()
 	records := make([]notificationOutboxRecord, 0, len(in.Recipients)+len(in.RoleRecipients))
@@ -1037,6 +1051,13 @@ func (r *Repository) CreateNotification(ctx context.Context, in workflows.Notify
 	}
 	if len(records) == 0 {
 		return nil
+	}
+	content, err := r.approvalNotificationContent(ctx, in)
+	if err != nil {
+		return err
+	}
+	for index := range records {
+		records[index].Content = content
 	}
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&records).Error
 }
