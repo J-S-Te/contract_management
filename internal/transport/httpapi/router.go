@@ -242,6 +242,7 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 		internal.Use(h.authenticateDashboardIntegration(*dashboardOptions), h.licenseOperation())
 		internal.GET("/dashboard", h.dashboard)
 		internal.GET("/dashboard/metrics", h.dashboardMetrics)
+		internal.GET("/dashboard/metrics/stream", h.dashboardMetricsStream)
 	}
 	if settlementOptions != nil && settlementOptions.Enabled {
 		internal := r.Group("/internal/v1/settlement")

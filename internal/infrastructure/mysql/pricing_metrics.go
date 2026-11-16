@@ -12,6 +12,9 @@ import (
 	"gorm.io/gorm"
 )
 
+const discountMetricColumns = "id, tenant_id, owner_org_id, owner_identity_id, project_id, " +
+	"service_type, start_date, currency, amount_minor, pricing_json, service_items_json, updated_at"
+
 // DiscountMetrics 在同一只读RR事务读取完整NORMAL合同与冻结定价。
 // 参数：ctx为请求，tenant为已认证机器租户。
 // 返回值：完整事实；超行数、字节上限或事务失败时拒绝整个快照。
@@ -19,7 +22,7 @@ func (r *Repository) DiscountMetrics(ctx context.Context, tenant string) (applic
 	out := application.DiscountMetrics{SchemaVersion: 1, TenantID: tenant, SourceCode: "contract_management", Basis: "原生NORMAL合同生效日归属；同币种同税基冻结标准价，历史无基准列未知", Rows: []application.DiscountMetricRow{}}
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var rows []contractRecord
-		if err := ordinaryContractScope(tx.Model(&contractRecord{}), "").Where("tenant_id=?", tenant).Order("id ASC").Limit(10001).Find(&rows).Error; err != nil {
+		if err := ordinaryContractScope(tx.Model(&contractRecord{}), "").Select(discountMetricColumns).Where("tenant_id=?", tenant).Order("id ASC").Limit(10001).Find(&rows).Error; err != nil {
 			return err
 		}
 		if len(rows) > 10000 {
