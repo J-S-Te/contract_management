@@ -112,6 +112,7 @@ func main() {
 			MaxAttempts: 20, MaxBackoff: 5 * time.Minute, Logger: logger,
 		}
 		background.Go("audit-outbox", func() { auditDispatcher.Run(dispatchCtx) })
+		background.Go("audit-outbox-health", func() { reportAuditOutboxHealth(dispatchCtx, auditStore, auditReporter, logger) })
 	} else {
 		// 审计发布器配置不完整时不会启动投递循环：事务内审计仍写入
 		// con_audit_outbox，但没有任何循环把它送到平台，表会只增不减、
