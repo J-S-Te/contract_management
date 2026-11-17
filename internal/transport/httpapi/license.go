@@ -27,6 +27,8 @@ func contractLicenseOperation(method, path string) core.Operation {
 	}
 	if method == http.MethodGet {
 		switch path {
+		case "/api/v1/contracts/:contractID/deletion-preview":
+			return core.READ_HISTORY
 		case "/api/v1/contract-import-batches/:id/items/:itemID/document-descriptor", "/api/v1/contract-import-batches/:id/items/:itemID/source", "/internal/v1/contract-imports/report-source", "/api/v1/contract-import-batches", "/api/v1/contract-import-batches/:id", "/internal/v1/dashboard", "/internal/v1/dashboard/metrics", "/internal/v1/dashboard/metrics/stream", "/internal/v1/settlement/completed-contracts", "/internal/v1/project/approved-contracts", "/internal/v1/project/approved-contract-references", "/internal/v1/project/approved-contracts/:contractID", "/internal/v1/project/approved-contracts/:contractID/service-items", "/internal/contract-summary", "/api/v1/integration-outbox/failed":
 			return core.READ_HISTORY
 		case "/api/v1/auth/me", "/api/v1/audit-outbox/failed":

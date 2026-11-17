@@ -23,6 +23,7 @@ import (
 )
 
 type contractRow struct {
+	DeletedAt                                    gorm.DeletedAt
 	ID, TenantID, Title, SourceFileStatus        string
 	DocumentFormat, SourceFilename, SourceSHA256 string
 	RenderedDocument                             []byte

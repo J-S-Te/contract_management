@@ -1029,7 +1029,7 @@ func (r *Repository) CompleteApproval(ctx context.Context, in workflows.Complete
 	})
 }
 
-// CreateNotification 将通知按收件人幂等入队，并为审批待办及催办补齐合同名称。
+// CreateNotification 用途：将有效来源通知按收件人幂等入队并补齐审批合同名称。
 // 参数：ctx为执行上下文，in为包含可信租户、合同及收件人的工作流通知。
 // 返回值：成功或无收件人时为空；名称查询或入队失败时返回错误。
 func (r *Repository) CreateNotification(ctx context.Context, in workflows.NotifyActivityInput) error {
@@ -1053,8 +1053,20 @@ func (r *Repository) CreateNotification(ctx context.Context, in workflows.Notify
 		return nil
 	}
 	content, err := r.approvalNotificationContent(ctx, in)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
+	}
+	if in.ContractID != "" && in.Type != "pending_approval" && in.Type != "approval_reminder" && in.Type != "approval_assigned" {
+		var active int64
+		if err = r.db.WithContext(ctx).Model(&contractRecord{}).Where("tenant_id=? AND id=?", in.TenantID, in.ContractID).Count(&active).Error; err != nil {
+			return err
+		}
+		if active == 0 {
+			return nil
+		}
 	}
 	for index := range records {
 		records[index].Content = content
@@ -1153,9 +1165,17 @@ func initialTasks(approvalID string, nodes []approval.Node, now time.Time) []app
 // contractFromRecord 将完整持久记录恢复为含来源和文档分型的合同。
 // 参数：record为同租户查询得到的权威合同行。
 // 返回值：业务合同；损坏历史策略保留为不可放行版本。
+// contractFromRecord 用途：恢复合同领域字段并保留内部记录状态。
+// 参数：record 为已按相应读取边界取得的主行。
+// 返回值：领域合同；删除元数据不会进入旧 JSON 或冻结摘要。
 func contractFromRecord(record contractRecord) contract.Contract {
 	result := contract.Contract{ID: record.ID, TenantID: record.TenantID, Number: valueOrEmpty(record.ContractNumber), NumberFormat: record.ContractNumberFormat, Title: record.Title, Type: record.ContractType, ServiceType: record.ServiceType, OpportunityID: valueOrEmpty(record.OpportunityID), OpportunityName: valueOrEmpty(record.OpportunityName), CRMCustomerID: uintValueOrZero(record.CRMCustomerID), CustomerName: valueOrEmpty(record.CustomerName), CustomerAddress: valueOrEmpty(record.CustomerAddress), CustomerContact: valueOrEmpty(record.CustomerContact), CustomerPhone: valueOrEmpty(record.CustomerPhone), OwnerIdentityID: valueOrEmpty(record.OwnerIdentityID), OwnerOrgID: valueOrEmpty(record.OwnerOrgID), ProjectID: valueOrEmpty(record.ProjectID), OwnerUserID: record.OwnerUserID, OwnerDisplayName: record.OwnerDisplayName, AmountMinor: record.AmountMinor, Currency: record.Currency, Content: record.Content, Document: record.RenderedDocument, SourceFileID: record.SourceFileID, SourceFileStatus: record.SourceFileStatus, Status: contract.Status(record.Status), Version: record.Version, StartDate: record.StartDate, EndDate: record.EndDate, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 	result.CreatedBy = record.CreatedBy
+	if record.DeletedAt.Valid {
+		at := record.DeletedAt.Time
+		result.DeletedAt = &at
+		result.DeletedBy, result.DeleteReason = valueOrEmpty(record.DeletedBy), valueOrEmpty(record.DeleteReason)
+	}
 	if len(record.PricingJSON) > 0 {
 		_ = json.Unmarshal(record.PricingJSON, &result.Pricing)
 	}

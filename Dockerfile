@@ -34,7 +34,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./c
 
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 ARG APP_VERSION
-LABEL org.opencontainers.image.version=${APP_VERSION} com.basic-platform.license.protocol="1"
+LABEL org.opencontainers.image.version=${APP_VERSION} com.basic-platform.license.protocol="1" com.basic-platform.runtime.epoch="1"
 
 RUN apk add --no-cache ca-certificates tzdata wget libreoffice-writer font-noto-cjk && mkdir -p /var/lib/commercial-license
 

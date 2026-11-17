@@ -6,6 +6,10 @@ import (
 )
 
 type Contract struct {
+	// 记录状态不参与冻结导入摘要，也不扩展现有跨系统合同 JSON。
+	DeletedAt              *time.Time        `json:"-"`
+	DeletedBy              string            `json:"-"`
+	DeleteReason           string            `json:"-"`
 	Pricing                *Pricing          `json:"pricing,omitempty"`
 	ID                     string            `json:"id"`
 	TenantID               string            `json:"tenant_id"`
@@ -306,6 +310,7 @@ type Dashboard struct {
 }
 
 type LifecycleEvent struct {
+	EventType   string    `json:"event_type"`
 	ID          string    `json:"id"`
 	ContractID  string    `json:"contract_id"`
 	FromStatus  Status    `json:"from_status"`

@@ -78,7 +78,7 @@ func draftE2ETestDSN(t *testing.T) string {
 	return cfg.FormatDSN()
 }
 
-// draftE2ECleanupTenant 按 tenant_id 精确清理本测试造的数据，不做全表删除。
+// draftE2ECleanupTenant 按 tenant_id 精确清理本测试数据及墓碑，不做全表删除。
 //
 // 参数：t 为测试上下文，db 为 GORM 连接，sqlDB 为其底层连接池（仅用于关闭），
 // tenant 为测试租户。
@@ -95,7 +95,7 @@ func draftE2ECleanupTenant(t *testing.T, db *gorm.DB, sqlDB *sql.DB, tenant stri
 		t.Error("dedicated test approval-task cleanup failed")
 	}
 	for _, model := range []any{&contractResponsibilityOutbox{}, &contractResponsibilityStream{}, &signingConfirmationRecord{}, &stampedDocumentRecord{}, &signingRecord{}, &financialEffectiveOutboxRecord{}, &paymentTermRecord{}, &projectDeliveryOutboxRecord{}, &notificationOutboxRecord{}, &approvalActionRecord{}, &lifecycleEventRecord{}, &approvalInstanceRecord{}, &contractNumberRegistryRecord{}, &contractRecord{}, &contractTemplateRecord{}} {
-		if err := db.Where("tenant_id = ?", tenant).Delete(model).Error; err != nil {
+		if err := db.Unscoped().Where("tenant_id = ?", tenant).Delete(model).Error; err != nil {
 			t.Error("dedicated test tenant cleanup failed")
 		}
 	}

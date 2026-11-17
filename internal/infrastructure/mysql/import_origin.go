@@ -11,6 +11,7 @@ func ordinaryContractScope(query *gorm.DB, alias string) *gorm.DB {
 		prefix = alias + "."
 	}
 	return query.Where("COALESCE(NULLIF(" + prefix + "origin_kind,''),'NORMAL')='NORMAL'").
+		Where(prefix + "deleted_at IS NULL").
 		Where("COALESCE(" + prefix + "import_mode,'NORMAL') IN ('','NORMAL')").Where(prefix + "import_policy_json IS NULL")
 }
 

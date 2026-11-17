@@ -22,8 +22,8 @@ type ImportTargetStore interface {
 	ActivateImportResponsibility(context.Context, string, string, uint64) (uint64, error)
 }
 
-// ReleaseImportItem 保存独立目标放行请求和稳定任务，不冒充接收方完成。
-// 参数：ctx及actor为当前身份，item/target/version为精确目标围栏，phase为财务PREPARE或RELEASE。
+// ReleaseImportItem 用途：保存独立目标请求，允许管理员显式核对恢复后的统计终态。
+// 参数：ctx及actor为当前身份，item/target/version为精确围栏，phase为既有准备或放行阶段。
 // 返回值：更新台账或权限、策略、版本错误。
 func (s *Service) ReleaseImportItem(ctx context.Context, actor Principal, item, target string, version uint64, phase string) (contract.ImportBatch, error) {
 	store, ok := s.Repo.(ImportTargetStore)
@@ -80,6 +80,9 @@ func (s *Service) ReleaseImportItem(ctx context.Context, actor Principal, item, 
 			*t = recovery.Task
 			return nil
 		}
+		if handled, err := recheckDeletedImportReport(actor, t); handled || err != nil {
+			return err
+		}
 		if t.State == "NOT_APPLICABLE" || t.State == "BLOCKED" {
 			return ErrImportUnsupported
 		}
@@ -112,6 +115,27 @@ func (s *Service) ReleaseImportItem(ctx context.Context, actor Principal, item, 
 	return importBatchForReader(b, actor), nil
 }
 
+// recheckDeletedImportReport 用途：仅为墓碑造成的统计终态恢复原命令的人工核对。
+// 参数：actor 为已通过导入放行授权的主体，task 为持锁目标；源是否恢复仍由仓储复核。
+// 返回值：是否已处理及权限或冻结基线错误；不新建项目、资金命令或统计发布版本。
+func recheckDeletedImportReport(actor Principal, task *contract.ImportTarget) (bool, error) {
+	if task.Target != "REPORT" || task.State != "BLOCKED" || task.ErrorCode != "CONTRACT_RECORD_DELETED" {
+		return false, nil
+	}
+	if actor.UserID == "" || !containsString(actor.Roles, "admin") {
+		return false, ErrForbidden
+	}
+	if task.ReleaseVersion == 0 || task.CommandID == "" {
+		return false, ErrImportConflict
+	}
+	task.State, task.ErrorCode, task.ReceiptID = "QUEUED", "", ""
+	task.Epoch++
+	task.LeaseUntil = time.Time{}
+	task.NextAttemptAt = time.Now().UTC()
+	task.RecoveryRequestedBy = actor.UserID
+	return true, nil
+}
+
 // stableImportCommand 派生兼容接收方32hex约束的稳定阶段命令。
 // 参数：item/revision/target/phase为不可变放行身份。
 // 返回值：稳定32位小写hex命令ID。
@@ -123,6 +147,9 @@ func stableImportCommand(item string, revision uint64, target, phase string) str
 // DispatchImportTargetOnce 认领有限租约任务并保存精确远端回执或退避原因。
 // 参数：ctx为进程生命周期。
 // 返回值：本地持久化错误，远端等待保留在目标台账。
+// DispatchImportTargetOnce 用途：推进一次已认领导入任务，墓碑来源直接收口而非无限等待。
+// 参数：ctx 为本轮工作器执行上下文。
+// 返回值：任务持久化或依赖错误；确定墓碑写入 BLOCKED 后正常结束本轮。
 func (s *Service) DispatchImportTargetOnce(ctx context.Context) error {
 	store, ok := s.Repo.(ImportTargetStore)
 	if !ok {
@@ -159,7 +186,9 @@ func (s *Service) DispatchImportTargetOnce(ctx context.Context) error {
 		if errors.As(e, &wait) {
 			task.ErrorCode = wait.Code
 		}
-		if errors.Is(e, ErrImportTargetReceipt) {
+		if errors.Is(e, ErrContractRecordDeleted) {
+			task.State, task.ErrorCode = "BLOCKED", "CONTRACT_RECORD_DELETED"
+		} else if errors.Is(e, ErrImportTargetReceipt) {
 			var rejected *ImportTargetHTTPError
 			if errors.As(e, &rejected) {
 				task.RecipientHTTPStatus = rejected.Status

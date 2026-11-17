@@ -25,6 +25,7 @@ func (r *Repository) CountSignedContractsByOpportunityIDs(ctx context.Context, t
 			contract.ImportArchiveOnly, contract.ImportHistoricalClosed, contract.ImportContinueLive,
 		})
 	err := r.db.WithContext(ctx).Model(&contractRecord{}).Where(sourceScope).
+		Where("deleted_at IS NULL").
 		Select("opportunity_id, COUNT(*) AS signed_contract_count").
 		Where("tenant_id = ? AND opportunity_id IN ? AND status IN ?", tenantID, opportunityIDs, contract.ApprovalPassedStatuses()).
 		Group("opportunity_id").Scan(&rows).Error

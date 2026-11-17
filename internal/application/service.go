@@ -1333,41 +1333,37 @@ func handoverCommandID(idempotencyKey string) string {
 	return hex.EncodeToString(digest[:13])
 }
 
+// GetApprovalDetail 用途：读取经当前归属授权的冻结审批历史，不降级展示墓碑正文。
+// 参数：ctx 和 actor 为请求与可信主体，approvalID 为本租户审批身份。
+// 返回值：审批快照、状态与动作；缺少快照的已删除记录不提供当前正文。
 func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approvalID string) (ApprovalDetail, error) {
-	meta, state, err := s.queryApprovalState(ctx, actor, approvalID)
-	if err != nil && !errors.Is(err, ErrApprovalWorkflowUnavailable) {
-		return ApprovalDetail{}, err
-	}
-	stateUnavailable := err != nil
-	if stateUnavailable {
-		// 工作流查询可能过期，但持久化审批快照
-		// 仍是权威历史提交。返回快照前，
-		// 按同一合同边界重新授权。
-		meta, err = s.Repo.GetApprovalMeta(ctx, actor.TenantID, approvalID)
-		if err != nil {
-			return ApprovalDetail{}, err
-		}
-		if _, err = s.getApprovalContract(ctx, actor, meta.ContractID); err != nil {
-			return ApprovalDetail{}, err
-		}
-		if !actor.Has("approval.view") && !actor.Has("approval.process") && meta.ApplicantUserID != actor.UserID {
-			return ApprovalDetail{}, ErrForbidden
-		}
-	}
-	// 先用当前合同完成数据范围校验（权限仍按合同边界执行），再展示审批发起时的
-	// 不可变快照；旧审批没有快照时才降级到当前合同。
-	contractSnapshot, err := s.getApprovalContract(ctx, actor, meta.ContractID)
+	meta, err := s.Repo.GetApprovalMeta(ctx, actor.TenantID, approvalID)
 	if err != nil {
 		return ApprovalDetail{}, err
 	}
-	snapshotAvailable := false
-	if snapshot, found, snapshotErr := s.Repo.GetApprovalSnapshot(ctx, actor.TenantID, approvalID); snapshotErr != nil {
-		return ApprovalDetail{}, snapshotErr
-	} else if found {
-		contractSnapshot, snapshotAvailable = snapshot, true
+	current, err := s.approvalHistoryContract(ctx, actor, meta.ContractID)
+	if err != nil {
+		return ApprovalDetail{}, err
 	}
-	if stateUnavailable && !snapshotAvailable {
-		return ApprovalDetail{}, ErrApprovalWorkflowUnavailable
+	if !actor.Has("approval.view") && !actor.Has("approval.process") && meta.ApplicantUserID != actor.UserID {
+		return ApprovalDetail{}, ErrForbidden
+	}
+	snapshot, found, err := s.Repo.GetApprovalSnapshot(ctx, actor.TenantID, approvalID)
+	if err != nil {
+		return ApprovalDetail{}, err
+	}
+	if !found {
+		if current.DeletedAt != nil {
+			return ApprovalDetail{}, apperrors.ErrNotFound
+		}
+		snapshot, err = s.getApprovalContract(ctx, actor, meta.ContractID)
+		if err != nil {
+			return ApprovalDetail{}, err
+		}
+	}
+	state, stateErr := s.queryApprovalWorkflowState(ctx, meta.WorkflowID, meta.RunID)
+	if stateErr != nil && !found {
+		return ApprovalDetail{}, stateErr
 	}
 	actions, err := s.Repo.ListApprovalActions(ctx, actor.TenantID, approvalID)
 	if err != nil {
@@ -1376,7 +1372,8 @@ func (s *Service) GetApprovalDetail(ctx context.Context, actor Principal, approv
 	if actions == nil {
 		actions = []approval.Action{}
 	}
-	return ApprovalDetail{Meta: meta, State: state, Contract: contractSnapshot, Actions: actions, SnapshotAvailable: snapshotAvailable, StateUnavailable: stateUnavailable}, nil
+	return ApprovalDetail{Meta: meta, State: state, Contract: snapshot, Actions: actions,
+		SnapshotAvailable: found, StateUnavailable: stateErr != nil}, nil
 }
 
 // RecoverApproval 用途：按持久化终决议收口已明确停止且尚未应用的审批。

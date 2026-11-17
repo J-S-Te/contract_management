@@ -13,11 +13,13 @@ import (
 
 const signingLedgerOrder = "CASE WHEN s.status IS NULL OR s.status <> 'completed' THEN 0 ELSE 1 END, c.updated_at DESC, c.id DESC"
 
-// signingLedgerQuery 从合同左连接签署行，按合同数据范围过滤，避免先截取最近
-// 200 份合同而漏掉较早的未完成签署。
+// signingLedgerQuery 用途：按有效合同范围查询签署台账，避免截断早期未签记录。
+// 参数：db 为当前连接，filter 为可信合同数据范围。
+// 返回值：排除墓碑并保留原签署口径的查询。
 func signingLedgerQuery(db *gorm.DB, filter contract.ScopeFilter) *gorm.DB {
 	scope := applyContractScope(db.Model(&contractRecord{}), filter).Select("id")
 	return db.Table("con_contract AS c").
+		Where("c.deleted_at IS NULL").
 		Joins("LEFT JOIN con_contract_signing AS s ON s.contract_id = c.id AND s.tenant_id = c.tenant_id").
 		Where("c.id IN (?)", scope).
 		Where("c.status IN ?", contract.ApprovalPassedStatuses())

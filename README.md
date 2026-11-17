@@ -267,3 +267,25 @@ set +a
 启用网关时机器授权及 `FILE_GATEWAY_SCOPE` 需包含 `platform:file:upload platform:file:bind`。消费者以 `OIDC_TENANT_ID` 在数据库筛选并核对源租户后才外发；模板回填 CLI 同样要求该租户配置并按租户筛选。发布须先按既有备份/迁移门禁应用迁移，并同步上线平台网关 `000104` 精确引用释放和 `000105` 上传请求退休能力；队列未清空时应保持消费者和对应凭据可用。迁移只能登记当前业务行已知来源，历史失败留下且本地已丢失身份的孤立绑定需另行只读盘点和受控处理。
 
 隔离数据库验证：显式配置既有规则允许的 `CONTRACT_TEST_DSN` 后，运行 `go test ./internal/infrastructure/mysql -run TestTemplateFile -count=1 -v`。未配置时这些用例明确跳过，不连接业务库。
+
+### 合同删除与恢复
+
+记录管理复用现有管理员角色 `admin`（超级管理员），必须同时具备精确权限
+`contract.read`、`contract.delete`，且读取和管理数据范围都允许当前合同。`all` 不替代
+精确权限。权限目录版本为 18；未获得新权限的会话不会出现管理入口。
+
+`GET /api/v1/contracts/:contractID/deletion-preview` 返回最新版本及真实阻断原因；
+`DELETE /api/v1/contracts/:contractID` 接收 `expected_version` 和 1–1000 字原因；
+`POST /api/v1/contracts/:contractID/restore` 接收版本和可选原因。
+`GET /api/v1/contracts?record_state=deleted&page=1&page_size=20` 只返回回收站摘要。
+删除保留原身份、编号、业务状态、原件、冻结审批与来源映射。相同目标重放返回
+`changed=false`，不再升版本或派生业务。网络中断后的结果应先只读核对，不自动重发。
+
+无下游、无审批通过历史且已收口的普通草稿，以及来源已确认且明确不派生项目或资金的历史记录可以进入
+资格检查。已有关联、未落账审批和无法排除历史派生的记录会返回具体阻断项；统计、
+通知、审计、纯责任元数据不成为业务关联。现有业务数据由原系统处理，不级联删除。
+
+发布顺序为：平台发布保护 → 数析四个同代镜像 → 合同迁移及后端 → 前端。
+数析 epoch 2 能读取旧结构，合同 epoch 1 新增墓碑结构。跨代发布先备份并排空旧写者，
+新 API 或后台可能写入后不自动回退旧协议镜像；同代和新写者启动前失败仍沿用原回退。
+本功能的本地开发不自动执行发布、业务迁移或远端业务清理。
