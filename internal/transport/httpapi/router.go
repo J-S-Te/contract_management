@@ -146,6 +146,9 @@ func NewRouterWithAuditOutbox(service *application.Service, identity Identity, d
 // newRouter 组装合同现有认证、许可、审计及业务路由。
 // 参数：service/identity为业务与身份依赖，各Options为独立机器集成配置，handoverService为交接服务，auditOutbox/audits为持久审计依赖。
 // 返回值：完成中间件及路由注册的Gin引擎。
+// newRouter 用途：装配现有认证、授权、审计与业务入口。
+// 参数：service/identity 为业务与身份依赖，各 options 为明确启用的机器集成配置，其余为审计和交接能力。
+// 返回值：复用当前安全中间件链的 Gin 路由。
 func newRouter(service *application.Service, identity Identity, dashboardOptions *DashboardIntegrationOptions, settlementOptions *SettlementIntegrationOptions, projectOptions *ProjectIntegrationOptions, crmSignedCountOptions *CRMSignedCountIntegrationOptions, handoverService *application.HandoverService, handoverOptions *HandoverIntegrationOptions, auditOutbox *auditoutbox.GORMStore, audits ...platform.AuditReporter) *gin.Engine {
 	var audit platform.AuditReporter
 	if len(audits) > 0 {
@@ -345,6 +348,9 @@ func newRouter(service *application.Service, identity Identity, dashboardOptions
 	api.POST("/signing-records/:contractID/reminders", h.recordSigningReminder)
 	api.POST("/signing-records/:contractID/confirm", h.confirmSigning)
 	api.GET("/contracts/:contractID", h.getContract)
+	api.GET("/contracts/:contractID/deletion-preview", h.previewContractDeletion)
+	api.DELETE("/contracts/:contractID", h.deleteContract)
+	api.POST("/contracts/:contractID/restore", h.restoreContract)
 	api.GET("/contracts/:contractID/lifecycle", h.listContractLifecycle)
 	api.GET("/contracts/:contractID/document-descriptor", h.describeContractDocument)
 	api.GET("/contract-source-capabilities", h.contractSourceCapabilities)
@@ -1669,17 +1675,30 @@ func contractLedgerPageParams(c *gin.Context) (int, int) {
 	return page, pageSize
 }
 
-// listContracts 返回合同台账列表。
-// 参数：c 支持 keyword/status/type/expired/limit；显式带 page 或 page_size 时按 1 基页码分页。
-// expired 只接受 true/false（大小写不敏感），供页面「已过期」派生徽标在服务端过滤；
-// 其它取值按“不过滤”处理，不返回 422（与本端点既有的宽松口径一致）。
-// 返回值：无分页参数时保持旧协议（裸数组，limit 语义不变）；分页时返回
-// {"items":[...],"total":N,"page":P,"page_size":S}。
+// listContracts 用途：读取正常合同台账或管理员回收站，保持旧默认协议。
+// 参数：c 支持台账筛选、分页与独立 record_state；回收站只返回摘要。
+// 返回值：无；写入数组或分页信封，非法记录状态和授权失败明确拒绝。
 func (h *Handler) listContracts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	query := contract.ContractListQuery{
 		Keyword: c.Query("keyword"), Status: c.Query("status"), Type: c.Query("type"),
 		Expired: c.Query("expired"),
+	}
+	state := strings.TrimSpace(c.Query("record_state"))
+	if state != "" && state != "active" && state != "deleted" {
+		writeError(c, application.ErrValidation)
+		return
+	}
+	if state == "deleted" {
+		pageNumber, pageSize := contractLedgerPageParams(c)
+		query.Offset, query.Limit = (pageNumber-1)*pageSize, pageSize
+		page, err := h.service.ListDeletedContractRecords(c.Request.Context(), principal(c), query)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		writeData(c, http.StatusOK, page)
+		return
 	}
 	if !contractLedgerPaginationRequested(c) {
 		query.Limit = limit
@@ -2200,10 +2219,15 @@ func writeData(c *gin.Context, status int, data any) {
 // 返回值：无；不输出内部配置或敏感数据。
 func writeError(c *gin.Context, err error) {
 	var feedback *application.BusinessFeedbackError
+	var recordBlocked *application.ContractDeleteBlockedError
 	var assigneeUnavailable *application.ApprovalAssigneeUnavailableError
 	var sourceRejected *application.ImportSourceRejectedError
 	var batchItemLimit *application.ImportBatchItemLimitError
 	switch {
+	case errors.As(err, &recordBlocked):
+		writeEnvelopeError(c, http.StatusConflict, "CON_CONTRACT_DELETE_BLOCKED", recordBlocked.Error(), gin.H{"blockers": recordBlocked.Blockers})
+	case errors.Is(err, application.ErrContractRecordUnavailable):
+		writeEnvelopeError(c, http.StatusServiceUnavailable, "CON_RECORD_MANAGEMENT_UNAVAILABLE", "合同记录管理暂不可用，请稍后重新核对。", nil)
 	case errors.As(err, &batchItemLimit):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_BATCH_ITEM_LIMIT", batchItemLimit.Error(),
 			gin.H{"field_path": "items", "max_items": batchItemLimit.Limit, "actual_items": batchItemLimit.Count})
@@ -2273,7 +2297,7 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "无权执行该操作", nil)
 	case errors.Is(err, application.ErrApprovalTargetForbidden):
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "CON_APPROVAL_TARGET_FORBIDDEN", "只能加签具有合同审批权限的用户", nil)
-	case errors.Is(err, apperrors.ErrNotFound):
+	case errors.Is(err, apperrors.ErrNotFound), errors.Is(err, application.ErrContractRecordDeleted):
 		writeEnvelopeError(c, http.StatusNotFound, "CON_NOT_FOUND", "资源不存在", nil)
 	case errors.Is(err, apperrors.ErrVersionConflict):
 		writeEnvelopeError(c, http.StatusConflict, "CON_VERSION_CONFLICT", "数据版本已变化，请刷新后重试", nil)

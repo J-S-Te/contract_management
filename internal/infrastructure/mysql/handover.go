@@ -53,6 +53,7 @@ type handoverReceiptRecord struct {
 func (handoverReceiptRecord) TableName() string { return "con_handover_receipt" }
 
 type handoverContractRecord struct {
+	DeletedAt        gorm.DeletedAt
 	OriginKind       string
 	ImportMode       string
 	ImportPolicyJSON []byte    `gorm:"type:json"`

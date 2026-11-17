@@ -53,6 +53,8 @@ func (r *Repository) QueueImportTarget(ctx context.Context, tenant, batch, item 
 					return application.ErrImportConflict
 				}
 				oldGeneration := t.CommandGeneration
+				recheckReport := target == "REPORT" && t.State == "BLOCKED" && t.ErrorCode == "CONTRACT_RECORD_DELETED"
+				previousReceipt := t.ReceiptID
 				if e = change(&b, it, t); e != nil {
 					return e
 				}
@@ -71,14 +73,40 @@ func (r *Repository) QueueImportTarget(ctx context.Context, tenant, batch, item 
 					}
 					b.State = "TARGETS_PENDING"
 				}
+				if deleted, e := contractRecordIsDeleted(tx, tenant, it.ContractID); e != nil {
+					return e
+				} else if deleted {
+					return application.ErrContractRecordDeleted
+				}
 				if target == "REPORT" && t.State == "QUEUED" {
 					t.State = "RELEASE_REQUESTED"
-					result := tx.Model(&contractRecord{}).Where("tenant_id=? AND id=? AND origin_import_item_id=? AND import_source_revision=? AND import_confirmed_at IS NOT NULL", tenant, it.ContractID, item, it.SourceRevision).Updates(map[string]any{"import_report_release_version": t.ReleaseVersion, "import_report_required_channels": it.Item.HistoryEvidence.ReportRequiredChannels})
+					reportSource := func() *gorm.DB {
+						return tx.Model(&contractRecord{}).Where("tenant_id=? AND id=? AND origin_import_item_id=? AND import_source_revision=? AND import_confirmed_at IS NOT NULL", tenant, it.ContractID, item, it.SourceRevision)
+					}
+					result := reportSource().Updates(map[string]any{"import_report_release_version": t.ReleaseVersion, "import_report_required_channels": it.Item.HistoryEvidence.ReportRequiredChannels})
 					if result.Error != nil {
 						return result.Error
 					}
-					if result.RowsAffected != 1 {
-						return application.ErrImportConflict
+					if result.RowsAffected == 0 {
+						var exists int64
+						if err := reportSource().Count(&exists).Error; err != nil {
+							return err
+						}
+						if exists != 1 {
+							return application.ErrImportConflict
+						}
+					}
+					if recheckReport {
+						payload, err := json.Marshal(map[string]any{"item_id": item, "source_revision": it.SourceRevision,
+							"report_release_version": t.ReleaseVersion, "command_id": t.CommandID, "previous_receipt_id": previousReceipt})
+						if err != nil {
+							return err
+						}
+						if err = insertAuditOutbox(tx, tenant, newID(), AuditOutboxEntry{ActorID: t.RecoveryRequestedBy,
+							Action: "CONTRACT_MANAGEMENT:IMPORT_REPORT_RECHECK_REQUESTED", ResourceType: "contract", ResourceID: it.ContractID, Payload: payload}); err != nil {
+							return err
+						}
+						updateImportTargetBatchState(&b)
 					}
 				}
 				return saveImportBatch(tx, &b)
@@ -162,6 +190,12 @@ func applyImportTargetResult(tx *gorm.DB, b *contract.ImportBatch, item string, 
 			}
 			if current.Epoch != task.Epoch || current.CommandID != task.CommandID || current.CommandGeneration != task.CommandGeneration || !current.LeaseUntil.After(time.Now().UTC()) {
 				return application.ErrImportConflict
+			}
+			if deleted, e := contractRecordIsDeleted(tx, b.TenantID, b.Items[i].ContractID); e != nil {
+				return e
+			} else if deleted {
+				task.State, task.ErrorCode = "BLOCKED", "CONTRACT_RECORD_DELETED"
+				task.LeaseUntil = time.Time{}
 			}
 			if task.State == "BLOCKED" && task.RecipientHTTPStatus != 0 && current.RecipientHTTPStatus == 0 {
 				digest, _ := contract.ImportDigest(task.RequestPayload)
@@ -269,14 +303,20 @@ func (r *Repository) ActivateImportResponsibility(ctx context.Context, tenant, i
 // GetImportTargetContract 读取出站所需权威字段，避免每次水位轮询加载原件BLOB。
 // 参数：ctx为上下文，tenant/id限定已获准任务的合同身份。
 // 返回值：含原分期和服务映射的合同元数据，原件字节始终为空。
+// GetImportTargetContract 用途：读取受控任务元数据，并将墓碑识别为永久业务终态。
+// 参数：ctx 为上下文，tenant/id 为已认领任务的可信源身份。
+// 返回值：不含正文的有效合同；墓碑返回独立错误，不进入依赖重试。
 func (r *Repository) GetImportTargetContract(ctx context.Context, tenant, id string) (contract.Contract, error) {
 	var row contractRecord
-	e := r.db.WithContext(ctx).Omit("rendered_document", "content", "template_values_json").Where("tenant_id=? AND id=?", tenant, id).Take(&row).Error
+	e := r.db.WithContext(ctx).Unscoped().Omit("rendered_document", "content", "template_values_json").Where("tenant_id=? AND id=?", tenant, id).Take(&row).Error
 	if errors.Is(e, gorm.ErrRecordNotFound) {
 		return contract.Contract{}, apperrors.ErrNotFound
 	}
 	if e != nil {
 		return contract.Contract{}, e
+	}
+	if row.DeletedAt.Valid {
+		return contract.Contract{}, application.ErrContractRecordDeleted
 	}
 	rows, e := r.attachPaymentTerms(ctx, tenant, []contract.Contract{contractFromRecord(row)})
 	if e != nil {

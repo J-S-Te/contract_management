@@ -130,6 +130,9 @@ func (r *Repository) CreateContract(ctx context.Context, c contract.Contract, ac
 	})
 }
 
+// ListContractLifecycle 用途：返回包含记录管理动作的合同历史。
+// 参数：ctx 为读取上下文，tenantID/contractID 限定已经业务授权的合同。
+// 返回值：按发生顺序排列的历史事件或存储错误。
 func (r *Repository) ListContractLifecycle(ctx context.Context, tenantID, contractID string) ([]contract.LifecycleEvent, error) {
 	var records []lifecycleEventRecord
 	if err := r.db.WithContext(ctx).
@@ -140,7 +143,8 @@ func (r *Repository) ListContractLifecycle(ctx context.Context, tenantID, contra
 	events := make([]contract.LifecycleEvent, 0, len(records))
 	for _, record := range records {
 		events = append(events, contract.LifecycleEvent{
-			ID: record.ID, ContractID: record.ContractID,
+			EventType: record.EventType,
+			ID:        record.ID, ContractID: record.ContractID,
 			FromStatus: contract.Status(record.FromStatus), ToStatus: contract.Status(record.ToStatus),
 			ActorUserID: valueOrEmpty(record.ActorUserID), Reason: valueOrEmpty(record.Reason), OccurredAt: record.OccurredAt,
 		})

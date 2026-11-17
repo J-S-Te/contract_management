@@ -4,7 +4,7 @@ kind: PermissionManifest
 metadata:
   application_code: contract_management
   name: 合同管理系统
-  version: 17
+  version: 18
   owner: contract_management
   description: 合同管理后端当前实际执行的权限、角色和数据范围清单
 
@@ -22,6 +22,17 @@ semantics:
     - 企业合同仪表盘 GET /api/v1/dashboard 同时要求 admin 角色与 contract.read，并始终限制当前 tenant_id。
 
 permissions:
+  - code: contract.delete
+    name: 删除与恢复合同
+    resource: contract
+    action: delete
+    risk_level: HIGH
+    enforced_by:
+      - GET /api/v1/contracts?record_state=deleted
+      - GET /api/v1/contracts/{contractID}/deletion-preview
+      - DELETE /api/v1/contracts/{contractID}
+      - POST /api/v1/contracts/{contractID}/restore
+    constraints: [可信admin角色, 精确授权, 当前租户, 读取与管理数据范围交集, 版本校验, 无真实下游关联, 逻辑删除保留历史]
   - code: contract.pricing.manage
     name: 维护合同标准价草稿
     resource: standard_price
@@ -274,6 +285,7 @@ roles:
   - code: admin
     name: 超级管理员
     permissions:
+      - contract.delete
       - contract.pricing.manage
       - contract.catalog.manage
       - contract.import.approve

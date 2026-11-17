@@ -36,6 +36,9 @@ func (contractResponsibilityOutbox) TableName() string { return "con_contract_re
 // 参数：row 为权威合同行。
 // 返回值：负责人存在且合同未撤销或归档时为 true。
 func responsibilityActive(row contractRecord) bool {
+	if row.DeletedAt.Valid {
+		return false
+	}
 	eligible := ordinaryContractRecord(row)
 	if !eligible && row.OriginKind == "IMPORTED" && row.ImportMode == "CONTINUE_LIVE" && row.ImportResponsibilityActivatedAt != nil {
 		var policy contract.ImportPolicy
@@ -65,7 +68,8 @@ func newResponsibilityPayload(eventID string, row contractRecord, version uint64
 // 返回值：任一存储失败都会返回错误并由调用方回滚整个业务事务。
 func enqueueContractResponsibility(tx *gorm.DB, tenantID, contractID string) error {
 	var row contractRecord
-	if err := tx.Where("tenant_id=? AND id=?", tenantID, contractID).Take(&row).Error; err != nil {
+	// 删除事务仍必须发出 inactive 责任版本，不能被普通合同默认过滤吞掉。
+	if err := tx.Unscoped().Where("tenant_id=? AND id=?", tenantID, contractID).Take(&row).Error; err != nil {
 		return err
 	}
 	seed := contractResponsibilityStream{TenantID: tenantID, ContractID: contractID, UpdatedAt: time.Now().UTC()}
@@ -108,7 +112,7 @@ func (r *Repository) ReconcileContractResponsibilities(ctx context.Context) (int
 	count := 0
 	for {
 		var rows []projectDeliveryCandidate
-		if err := r.db.WithContext(ctx).Table("con_contract AS c").Select("c.tenant_id,c.id AS contract_id").Where("NOT EXISTS (SELECT 1 FROM con_contract_responsibility_stream s WHERE s.tenant_id=c.tenant_id AND s.contract_id=c.id)").Order("c.id").Limit(200).Scan(&rows).Error; err != nil {
+		if err := r.db.WithContext(ctx).Table("con_contract AS c").Where("c.deleted_at IS NULL").Select("c.tenant_id,c.id AS contract_id").Where("NOT EXISTS (SELECT 1 FROM con_contract_responsibility_stream s WHERE s.tenant_id=c.tenant_id AND s.contract_id=c.id)").Order("c.id").Limit(200).Scan(&rows).Error; err != nil {
 			return count, err
 		}
 		if len(rows) == 0 {

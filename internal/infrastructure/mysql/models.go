@@ -6,6 +6,7 @@ import (
 	"github.com/j-s-te/contract-management/internal/application"
 
 	contracttemplate "github.com/j-s-te/contract-management/internal/domain/template"
+	"gorm.io/gorm"
 )
 
 type opportunityIntakeRecord struct {
@@ -50,6 +51,9 @@ func stringValue(value *string) string {
 }
 
 type contractRecord struct {
+	DeletedAt                       gorm.DeletedAt
+	DeletedBy                       *string
+	DeleteReason                    *string
 	ID                              string `gorm:"primaryKey"`
 	TenantID                        string
 	ContractNumber                  *string
@@ -185,6 +189,7 @@ func templateFromRecord(record contractTemplateRecord) contracttemplate.Template
 }
 
 type lifecycleEventRecord struct {
+	EventType      string `gorm:"default:STATUS_CHANGE"`
 	ID             string `gorm:"primaryKey"`
 	TenantID       string
 	ContractID     string

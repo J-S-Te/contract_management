@@ -28,6 +28,7 @@ func (r *Repository) approvalNotificationContent(
 		Joins("LEFT JOIN con_approval_snapshot AS s ON s.approval_id = ? "+
 			"AND s.tenant_id = c.tenant_id AND s.contract_id = c.id", in.ApprovalID).
 		Where("c.tenant_id = ? AND c.id = ?", in.TenantID, in.ContractID).
+		Where("c.deleted_at IS NULL").
 		Take(&item).Error
 	if err != nil {
 		return "", err
