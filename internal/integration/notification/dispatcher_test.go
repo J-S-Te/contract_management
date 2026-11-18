@@ -35,7 +35,7 @@ func TestTargetAndReferenceMapping(t *testing.T) {
 	approvalID := strPtr("a-1")
 
 	withContract := Delivery{ContractID: contractID, ApprovalID: approvalID}
-	if got := targetURLFor(withContract); got != "/contract_management/contracts/c-1" {
+	if got := targetURLFor(withContract); got != "/contract_management/contracts?contract_id=c-1" {
 		t.Fatalf("targetURLFor=%q", got)
 	}
 	if got := referenceTypeFor(withContract); got != "CONTRACT" {
@@ -46,7 +46,7 @@ func TestTargetAndReferenceMapping(t *testing.T) {
 	}
 
 	approvalOnly := Delivery{ApprovalID: approvalID}
-	if got := targetURLFor(approvalOnly); got != "/contract_management/approvals/a-1" {
+	if got := targetURLFor(approvalOnly); got != "/contract_management/approvals?approval_id=a-1" {
 		t.Fatalf("targetURLFor(approval)=%q", got)
 	}
 	if got := referenceTypeFor(approvalOnly); got != "APPROVAL" {
@@ -139,7 +139,7 @@ func TestDispatchOnePostsIngestionEvent(t *testing.T) {
 	if received.EventType != "approved" || received.NotificationScope != "CROSS_SYSTEM" ||
 		received.EventID != identity || received.IdempotencyKey != identity ||
 		len(received.Recipients) != 1 || received.Recipients[0] != "u-1" ||
-		received.TargetURL != "/contract_management/contracts/c-1" || received.ReferenceType != "CONTRACT" {
+		received.TargetURL != "/contract_management/contracts?contract_id=c-1" || received.ReferenceType != "CONTRACT" {
 		t.Fatalf("unexpected payload: %+v", received)
 	}
 	if !strings.Contains(received.Title, "审批") {
@@ -260,5 +260,20 @@ func TestIngestionContractRetriedRowsAndSeparateRecipients(t *testing.T) {
 	}
 	if requests != 3 || len(accepted) != 2 || store.delivered != "row-two" {
 		t.Fatal("retry dedupe or multi-recipient ingestion contract violated")
+	}
+}
+
+// TestApprovalNotificationTargetPrioritizesApproval 验证审批提醒保留审批坐标。
+// 参数：t 为隔离单元测试上下文。
+// 返回值：无；审批目标或引用选择错误时失败。
+func TestApprovalNotificationTargetPrioritizesApproval(t *testing.T) {
+	for _, kind := range []string{"pending_approval", "approval_reminder", "approval_assigned", "approved", "rejected"} {
+		delivery := Delivery{NotificationType: kind, ContractID: strPtr("contract/1"), ApprovalID: strPtr("approval/1")}
+		if got := targetURLFor(delivery); got != "/contract_management/approvals?approval_id=approval%2F1" {
+			t.Fatalf("kind=%s target=%q", kind, got)
+		}
+		if referenceTypeFor(delivery) != "APPROVAL" || referenceIDFor(delivery) != "approval/1" {
+			t.Fatalf("kind=%s lost approval reference", kind)
+		}
 	}
 }

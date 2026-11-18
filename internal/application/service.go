@@ -96,8 +96,8 @@ type Repository interface {
 	// GetApprovalSnapshot 返回审批发起时的不可变合同快照；旧审批没有快照时 found=false。
 	GetApprovalSnapshot(context.Context, string, string) (contract.Contract, bool, error)
 	ListApprovalActions(context.Context, string, string) ([]approval.Action, error)
-	ListApprovals(context.Context, string, string, int) ([]approval.Summary, error)
-	ListTasks(context.Context, string, string, int) ([]approval.Task, error)
+	ListApprovals(context.Context, string, string, int, ...approval.ListFilter) ([]approval.Summary, error)
+	ListTasks(context.Context, string, string, int, ...approval.ListFilter) ([]approval.Task, error)
 }
 
 type PersonnelDirectory interface {
@@ -1484,18 +1484,33 @@ func (s *Service) getApprovalContract(ctx context.Context, actor Principal, cont
 	return s.getContractScoped(ctx, filter, contractID)
 }
 
-func (s *Service) ListMyTasks(ctx context.Context, actor Principal, limit int) ([]approval.Task, error) {
+// ListMyTasks 读取本人审批任务，通知过滤不能扩大受派人与租户范围。
+// 参数：ctx 为请求上下文，actor 为主体，limit 为上限，filters 为可选业务坐标。
+// 返回值：匹配的本人待办或权限、读取错误。
+func (s *Service) ListMyTasks(ctx context.Context, actor Principal, limit int, filters ...approval.ListFilter) ([]approval.Task, error) {
 	if !actor.Has("approval.process") {
 		return nil, ErrForbidden
 	}
-	return s.Repo.ListTasks(ctx, actor.TenantID, actor.UserID, limit)
+	return s.Repo.ListTasks(ctx, actor.TenantID, actor.UserID, limit, filters...)
 }
 
-func (s *Service) ListMyApprovals(ctx context.Context, actor Principal, limit int) ([]approval.Summary, error) {
+// ListMyApprovals 读取本人发起的审批，或已授权合同上的指定审批。
+// 参数：ctx 为上下文，actor 为主体，limit 为上限，filters 为通知业务坐标。
+// 返回值：范围内的审批摘要；无合同可见权限时返回禁止访问。
+func (s *Service) ListMyApprovals(ctx context.Context, actor Principal, limit int, filters ...approval.ListFilter) ([]approval.Summary, error) {
 	if actor.TenantID == "" || actor.UserID == "" {
 		return nil, ErrForbidden
 	}
-	return s.Repo.ListApprovals(ctx, actor.TenantID, actor.UserID, limit)
+	applicant := actor.UserID
+	if len(filters) > 0 && filters[0].ContractID != "" {
+		if _, err := s.getApprovalContract(ctx, actor, filters[0].ContractID); err != nil {
+			return nil, err
+		}
+		if actor.Has("approval.view") || actor.Has("approval.process") {
+			applicant = ""
+		}
+	}
+	return s.Repo.ListApprovals(ctx, actor.TenantID, applicant, limit, filters...)
 }
 
 func (s *Service) GetContract(ctx context.Context, actor Principal, id string) (contract.Contract, error) {

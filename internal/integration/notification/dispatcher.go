@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -216,32 +217,59 @@ func priorityFor(notificationType string) string {
 	}
 }
 
+// targetURLFor 选择可直接消费的审批或合同页面目标。
+// 参数：delivery 为待投递的真实通知快照。
+// 返回值：带业务坐标的站内路径；无坐标返回空串。
 func targetURLFor(delivery Delivery) string {
+	if approvalNotification(delivery) {
+		return "/contract_management/approvals?approval_id=" + url.QueryEscape(*delivery.ApprovalID)
+	}
 	if delivery.ContractID != nil && *delivery.ContractID != "" {
-		return "/contract_management/contracts/" + *delivery.ContractID
+		return "/contract_management/contracts?contract_id=" + url.QueryEscape(*delivery.ContractID)
 	}
 	if delivery.ApprovalID != nil && *delivery.ApprovalID != "" {
-		return "/contract_management/approvals/" + *delivery.ApprovalID
+		return "/contract_management/approvals?approval_id=" + url.QueryEscape(*delivery.ApprovalID)
 	}
 	return ""
 }
 
+// approvalNotification 判断通知是否具有可直接定位的审批身份。
+// 参数：delivery 为待投递通知。
+// 返回值：审批类事件且具有审批标识时为 true。
+func approvalNotification(delivery Delivery) bool {
+	if delivery.ApprovalID == nil || *delivery.ApprovalID == "" {
+		return false
+	}
+	switch strings.ToLower(delivery.NotificationType) {
+	case "pending_approval", "approval_reminder", "approval_assigned", "approved", "rejected":
+		return true
+	default:
+		return delivery.ContractID == nil || *delivery.ContractID == ""
+	}
+}
+
+// referenceTypeFor 保留通知直接关联的业务类型。
+// 参数：delivery 为待投递通知。
+// 返回值：审批、合同引用类型或空串。
 func referenceTypeFor(delivery Delivery) string {
+	if approvalNotification(delivery) {
+		return "APPROVAL"
+	}
 	if delivery.ContractID != nil && *delivery.ContractID != "" {
 		return "CONTRACT"
 	}
-	if delivery.ApprovalID != nil && *delivery.ApprovalID != "" {
-		return "APPROVAL"
-	}
 	return ""
 }
 
+// referenceIDFor 保留通知直接关联的业务身份。
+// 参数：delivery 为待投递通知。
+// 返回值：审批、合同标识或空串。
 func referenceIDFor(delivery Delivery) string {
+	if approvalNotification(delivery) {
+		return *delivery.ApprovalID
+	}
 	if delivery.ContractID != nil && *delivery.ContractID != "" {
 		return *delivery.ContractID
-	}
-	if delivery.ApprovalID != nil && *delivery.ApprovalID != "" {
-		return *delivery.ApprovalID
 	}
 	return ""
 }

@@ -618,14 +618,28 @@ func (r *Repository) ListApprovalActions(ctx context.Context, tenantID, approval
 	return result, nil
 }
 
-func (r *Repository) ListApprovals(ctx context.Context, tenantID, applicantUserID string, limit int) ([]approval.Summary, error) {
+// ListApprovals 在授权合同或本人范围内读取有限审批记录。
+// 参数：ctx 为上下文，tenantID 为租户，applicantUserID 为可选申请人，limit 为上限，filters 为业务坐标。
+// 返回值：匹配审批摘要或数据库错误。
+func (r *Repository) ListApprovals(ctx context.Context, tenantID, applicantUserID string, limit int, filters ...approval.ListFilter) ([]approval.Summary, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	var records []approvalInstanceRecord
-	if err := r.db.WithContext(ctx).
-		Select("id", "contract_id", "applicant_user_id", "applicant_display_name", "kind", "status", "current_node_index", "created_at", "updated_at").
-		Where("tenant_id = ? AND applicant_user_id = ?", tenantID, applicantUserID).
+	query := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID)
+	if applicantUserID != "" {
+		query = query.Where("applicant_user_id = ?", applicantUserID)
+	}
+	if len(filters) > 0 {
+		if filters[0].ContractID != "" {
+			query = query.Where("contract_id = ?", filters[0].ContractID)
+		}
+		if filters[0].ApprovalID != "" {
+			query = query.Where("id = ?", filters[0].ApprovalID)
+		}
+	}
+	if err := query.Select("id", "contract_id", "applicant_user_id", "applicant_display_name",
+		"kind", "status", "current_node_index", "created_at", "updated_at").
 		Order("created_at DESC").Limit(limit).Find(&records).Error; err != nil {
 		return nil, err
 	}
@@ -661,9 +675,9 @@ func assignedApprovalTaskStatuses() []approval.NodeStatus {
 }
 
 // ListTasks 仅返回租户内运行中审批的有效及待流转任务。
-// 参数：ctx为查询上下文，tenantID为租户，userID为受派人，limit为数量上限。
+// 参数：ctx为上下文，tenantID为租户，userID为受派人，limit为上限，filters为业务坐标。
 // 返回值：按活跃优先排序的任务及数据库错误。
-func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, limit int) ([]approval.Task, error) {
+func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, limit int, filters ...approval.ListFilter) ([]approval.Task, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -675,7 +689,7 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 		CreatedAt                                                time.Time
 	}
 	var rows []taskRow
-	err := r.db.WithContext(ctx).Table("con_approval_task AS t").
+	query := r.db.WithContext(ctx).Table("con_approval_task AS t").
 		Select("t.approval_id, i.contract_id, "+approvalContractTitleSQL+
 			" AS contract_title, t.node_id, t.node_name, t.assignee_user_id, "+
 			"i.kind, t.status, t.node_index, i.created_at").
@@ -683,8 +697,16 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 		Joins("LEFT JOIN con_contract AS c ON c.id = i.contract_id AND c.tenant_id = i.tenant_id").
 		Joins("LEFT JOIN con_approval_snapshot AS s ON s.approval_id = i.id "+
 			"AND s.tenant_id = i.tenant_id AND s.contract_id = i.contract_id").
-		Where("i.tenant_id = ? AND i.status = ? AND t.assignee_user_id = ? AND t.status IN ?", tenantID, approval.StatusRunning, userID, assignedApprovalTaskStatuses()).
-		Order("CASE WHEN t.status = 'active' THEN 0 ELSE 1 END").
+		Where("i.tenant_id = ? AND i.status = ? AND t.assignee_user_id = ? AND t.status IN ?", tenantID, approval.StatusRunning, userID, assignedApprovalTaskStatuses())
+	if len(filters) > 0 {
+		if filters[0].ContractID != "" {
+			query = query.Where("i.contract_id = ?", filters[0].ContractID)
+		}
+		if filters[0].ApprovalID != "" {
+			query = query.Where("t.approval_id = ?", filters[0].ApprovalID)
+		}
+	}
+	err := query.Order("CASE WHEN t.status = 'active' THEN 0 ELSE 1 END").
 		Order("i.created_at, t.node_index").Limit(limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err

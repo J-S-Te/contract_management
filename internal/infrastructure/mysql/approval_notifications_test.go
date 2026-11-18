@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/j-s-te/contract-management/internal/domain/approval"
 	"github.com/j-s-te/contract-management/internal/testutil/scriptdb"
 	"github.com/j-s-te/contract-management/internal/workflows"
 )
@@ -145,5 +146,32 @@ func TestPendingApprovalNotificationWithoutRecipients(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestApprovalTaskNotificationFilters 验证通知定位在数量截断前限定合同和审批身份。
+// 参数：t 为脚本SQL上下文，不连接业务数据库。
+// 返回值：无；过滤丢失或租户及受派人范围被放宽时失败。
+func TestApprovalTaskNotificationFilters(t *testing.T) {
+	var query string
+	var args []driver.NamedValue
+	repo := grantSQLRepository(t, scriptdb.Step{Kind: "query", SQL: "con_approval_task AS t",
+		SQLOut: &query, Args: &args, Names: []string{"approval_id"}})
+	_, err := repo.ListTasks(context.Background(), "tenant-a", "user-a", 50,
+		approval.ListFilter{ContractID: "contract-a", ApprovalID: "approval-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{"i.tenant_id = ?", "t.assignee_user_id = ?", "i.contract_id = ?", "t.approval_id = ?"} {
+		if !strings.Contains(query, part) {
+			t.Fatalf("missing %s: %s", part, query)
+		}
+	}
+	values := map[any]bool{}
+	for _, arg := range args {
+		values[arg.Value] = true
+	}
+	if !values["contract-a"] || !values["approval-a"] {
+		t.Fatalf("args=%+v", args)
 	}
 }
