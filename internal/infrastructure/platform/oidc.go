@@ -15,6 +15,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/j-s-te/contract-management/internal/application"
+	"github.com/j-s-te/contract-management/internal/authorizationrefresh"
 	central "github.com/j-s-te/contract-management/internal/sessiongovernance"
 	"golang.org/x/oauth2"
 )
@@ -192,13 +193,11 @@ func NewOIDCAuthenticator(ctx context.Context, options OIDCOptions) (*OIDCAuthen
 	}, nil
 }
 
-// Authenticate 校验当前浏览器会话、中央期限与业务授权。
-// 参数：ctx为调用上下文与取消边界。
-//
-//	request为经过调用方校验的请求内容。
-//
-// 返回值：经过核验的主体或会话；明确失效与暂时依赖错误分别返回。
+// Authenticate 校验当前会话并按页面刷新意图重新读取授权。
+// 参数：ctx 为请求上下文，request 携带本应用 Cookie 和可选刷新标记。
+// 返回值：当前主体；认证、授权拒绝和依赖故障保持各自错误语义。
 func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Request) (application.Principal, error) {
+	ctx = authorizationrefresh.FromRequest(ctx, request)
 	cookie, err := request.Cookie(a.options.SessionCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return application.Principal{}, ErrUnauthenticated
@@ -234,28 +233,13 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, request *http.Requ
 		}
 		return application.Principal{}, ErrAuthorizationServiceUnavailable
 	}
-	refreshDue := now.Sub(record.AuthorizationCheckedAt) >= a.options.AuthorizationRefreshInterval || !record.TokenExpiresAt.After(now)
+	refreshDue := authorizationrefresh.Forced(ctx) ||
+		now.Sub(record.AuthorizationCheckedAt) >= a.options.AuthorizationRefreshInterval ||
+		!record.TokenExpiresAt.After(now)
 	if !refreshDue {
 		return principal, nil
 	}
-	updated, refreshed, err := a.refreshAuthorization(ctx, record, principal, now)
-	if err == nil {
-		if refreshed {
-			if err := a.store.UpdateSession(ctx, updated); err != nil {
-				return application.Principal{}, ErrAuthorizationServiceUnavailable
-			}
-			return principalFromJSON(updated.PrincipalJSON)
-		}
-		return principal, nil
-	}
-	if errors.Is(err, ErrAuthorizationForbidden) || errors.Is(err, ErrAuthorizationUnauthorized) || errors.Is(err, ErrAuthorizationInvalid) || refreshTokenWasRejected(err) {
-		_ = a.store.RevokeSessionsForIdentity(ctx, record.TenantID, record.IdentityID, now)
-		return application.Principal{}, ErrUnauthenticated
-	}
-	if errors.Is(err, ErrAuthorizationUnavailable) && safeStaleMethod(request.Method) && now.Sub(record.AuthorizationCheckedAt) <= a.options.AuthorizationMaxStale && record.TokenExpiresAt.After(now) {
-		return principal, nil
-	}
-	return application.Principal{}, ErrAuthorizationServiceUnavailable
+	return a.authenticateLegacyRefresh(ctx, record, now, request.Method)
 }
 
 // SessionIdle 返回当前会话的空闲期限与剩余窗口，不推进任何时间基准。

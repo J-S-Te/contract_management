@@ -3,9 +3,10 @@ package platform
 import (
 	"context"
 	"errors"
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"time"
 )
 
 // AttachSessionLink 将票据绑定原始state，重复桥接不覆盖已经保存的票据。
@@ -52,7 +53,7 @@ func (s *GORMOIDCStore) WithSessionLock(ctx context.Context, hash []byte, now ti
 		result = sessionFromGORM(row)
 		updated, changed, err := update(result)
 		if errors.Is(err, ErrUnauthenticated) || errors.Is(err, ErrAuthorizationForbidden) || errors.Is(err, ErrAuthorizationUnauthorized) || errors.Is(err, ErrAuthorizationInvalid) || refreshTokenWasRejected(err) {
-			rejected = ErrUnauthenticated
+			rejected = centralAuthenticationError(err)
 			return tx.Model(&gormSession{}).Where("session_id_hash = ?", hash).Updates(map[string]any{"revoked_at": now, "updated_at": now}).Error
 		}
 		if err != nil {

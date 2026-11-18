@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/j-s-te/contract-management/internal/authorizationrefresh"
 )
 
 var (
@@ -65,6 +67,9 @@ func NewHTTPAuthorizationContextClient(endpoint string, timeout time.Duration, t
 	return &HTTPAuthorizationContextClient{endpoint: endpoint, client: client}, nil
 }
 
+// Resolve 在线读取平台授权并传播页面新鲜读取要求。
+// 参数：ctx 为请求上下文，accessToken 为服务端持有的访问令牌。
+// 返回值：当前授权快照或认证、授权、依赖分类错误。
 func (c *HTTPAuthorizationContextClient) Resolve(ctx context.Context, accessToken string) (AuthorizationContext, error) {
 	if strings.TrimSpace(accessToken) == "" {
 		return AuthorizationContext{}, ErrAuthorizationUnauthorized
@@ -75,6 +80,9 @@ func (c *HTTPAuthorizationContextClient) Resolve(ctx context.Context, accessToke
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("Accept", "application/json")
+	if authorizationrefresh.Forced(ctx) {
+		request.Header.Set(authorizationrefresh.Header, "1")
+	}
 	response, err := c.client.Do(request)
 	if err != nil {
 		return AuthorizationContext{}, fmt.Errorf("%w: %v", ErrAuthorizationUnavailable, err)
