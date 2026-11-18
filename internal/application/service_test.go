@@ -217,11 +217,17 @@ func (r *recordingRepository) ListApprovalActions(context.Context, string, strin
 	return r.actions, nil
 }
 
-func (r *recordingRepository) ListApprovals(context.Context, string, string, int) ([]approval.Summary, error) {
+// ListApprovals 为业务测试返回空的审批摘要集合。
+// 参数：上下文、租户、申请人、上限及过滤条件不用于该替身。
+// 返回值：空列表且无错误。
+func (r *recordingRepository) ListApprovals(context.Context, string, string, int, ...approval.ListFilter) ([]approval.Summary, error) {
 	return nil, nil
 }
 
-func (r *recordingRepository) ListTasks(context.Context, string, string, int) ([]approval.Task, error) {
+// ListTasks 为业务测试返回空的本人待办。
+// 参数：上下文、租户、受派人、上限及过滤条件不用于该替身。
+// 返回值：空列表且无错误。
+func (r *recordingRepository) ListTasks(context.Context, string, string, int, ...approval.ListFilter) ([]approval.Task, error) {
 	return nil, nil
 }
 

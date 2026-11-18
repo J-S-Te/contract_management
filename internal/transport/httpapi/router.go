@@ -1915,9 +1915,12 @@ func (h *Handler) changeStatus(c *gin.Context) {
 	writeData(c, http.StatusAccepted, result)
 }
 
+// listTasks 读取带通知业务坐标的本人待办。
+// 参数：c 为认证后的 HTTP 上下文。
+// 返回值：无；写入待办列表或公开错误。
 func (h *Handler) listTasks(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	tasks, err := h.service.ListMyTasks(c.Request.Context(), principal(c), limit)
+	tasks, err := h.service.ListMyTasks(c.Request.Context(), principal(c), limit, approval.ListFilter{ContractID: strings.TrimSpace(c.Query("contract_id")), ApprovalID: strings.TrimSpace(c.Query("approval_id"))})
 	if err != nil {
 		writeError(c, err)
 		return
@@ -1925,9 +1928,12 @@ func (h *Handler) listTasks(c *gin.Context) {
 	writeData(c, http.StatusOK, tasks)
 }
 
+// listApprovals 读取本人或授权合同的审批记录。
+// 参数：c 为认证后的 HTTP 上下文。
+// 返回值：无；写入范围内列表或公开错误。
 func (h *Handler) listApprovals(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	approvals, err := h.service.ListMyApprovals(c.Request.Context(), principal(c), limit)
+	approvals, err := h.service.ListMyApprovals(c.Request.Context(), principal(c), limit, approval.ListFilter{ContractID: strings.TrimSpace(c.Query("contract_id")), ApprovalID: strings.TrimSpace(c.Query("approval_id"))})
 	if err != nil {
 		writeError(c, err)
 		return

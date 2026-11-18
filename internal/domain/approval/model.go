@@ -2,6 +2,12 @@ package approval
 
 import "time"
 
+// ListFilter 限定通知引用对应的合同或审批，不改变租户和本人范围。
+type ListFilter struct {
+	ContractID string
+	ApprovalID string
+}
+
 type Kind string
 type Status string
 type NodeStatus string
