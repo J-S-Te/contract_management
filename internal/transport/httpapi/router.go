@@ -2214,9 +2214,9 @@ func writeData(c *gin.Context, status int, data any) {
 	writeJSON(c, status, envelope{Code: "OK", Message: "操作成功", RequestID: requestIDFrom(c.Request.Context()), Data: data})
 }
 
-// writeError 用途：将来源、授权和存储错误映射为稳定安全响应。
-// 参数：c为请求上下文，err为业务或依赖错误。
-// 返回值：无；不输出内部配置或敏感数据。
+// writeError 将业务、认证及授权错误映射为稳定 HTTP 响应。
+// 参数：c 为请求上下文，err 为当前调用返回的错误。
+// 返回值：无；向响应写入对应状态码和错误信封。
 func writeError(c *gin.Context, err error) {
 	var feedback *application.BusinessFeedbackError
 	var recordBlocked *application.ContractDeleteBlockedError
@@ -2257,6 +2257,8 @@ func writeError(c *gin.Context, err error) {
 		writeEnvelopeError(c, http.StatusUnprocessableEntity, "IMPORT_AUTO_APPROVE_DISABLED", "历史导入自动审批能力未在部署层开启，无法修改租户运行开关", nil)
 	case errors.Is(err, application.ErrCommercialLicense):
 		writeEnvelopeError(c, http.StatusForbidden, "COMMERCIAL_LICENSE_RESTRICTED", "商业授权不允许此操作；历史查询与导出仍可使用", nil)
+	case errors.Is(err, platform.ErrAuthorizationForbidden), errors.Is(err, platform.ErrAuthorizationInvalid):
+		writeEnvelopeError(c, http.StatusForbidden, "AUTH_FORBIDDEN", "当前身份没有合同系统授权", nil)
 	case errors.Is(err, platform.ErrUnauthenticated):
 		writeEnvelopeError(c, http.StatusUnauthorized, "AUTH_UNAUTHENTICATED", "登录状态无效", nil)
 	case errors.Is(err, platform.ErrAuthorizationServiceUnavailable), errors.Is(err, application.ErrPersonnelDirectoryUnavailable):
