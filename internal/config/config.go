@@ -375,7 +375,7 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("CENTRAL_SESSION_ENABLED: %w", err)
 	}
 	c.CentralSessionPublicBaseURL = strings.TrimSpace(os.Getenv("CENTRAL_SESSION_PUBLIC_BASE_URL"))
-	if c.OIDCAuthorizationRefresh, err = duration("OIDC_AUTHORIZATION_REFRESH_INTERVAL", time.Minute); err != nil {
+	if c.OIDCAuthorizationRefresh, err = duration("OIDC_AUTHORIZATION_REFRESH_INTERVAL", 10*time.Second); err != nil {
 		return c, err
 	}
 	if c.OIDCAuthorizationTimeout, err = duration("OIDC_AUTHORIZATION_CONTEXT_TIMEOUT", 10*time.Second); err != nil {
