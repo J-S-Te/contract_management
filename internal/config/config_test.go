@@ -53,6 +53,18 @@ func validEnvironment(t *testing.T) {
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_CLIENT_SECRET", "")
 }
 
+func TestLoadDefaultsAuthorizationRefreshToTenSeconds(t *testing.T) {
+	validEnvironment(t)
+	t.Setenv("OIDC_AUTHORIZATION_REFRESH_INTERVAL", "")
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.OIDCAuthorizationRefresh != 10*time.Second {
+		t.Fatalf("OIDCAuthorizationRefresh = %v, want 10s", config.OIDCAuthorizationRefresh)
+	}
+}
+
 func TestLoadRejectsIncompleteCatalogSynchronizationConfiguration(t *testing.T) {
 	validEnvironment(t)
 	t.Setenv("PLATFORM_AUTHORIZATION_CATALOG_SYNC_ENABLED", "true")
