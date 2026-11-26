@@ -84,16 +84,18 @@ type Meta struct {
 }
 
 type Task struct {
-	ApprovalID     string     `json:"approval_id"`
-	ContractID     string     `json:"contract_id"`
-	ContractTitle  string     `json:"contract_title"`
-	NodeID         string     `json:"node_id"`
-	NodeName       string     `json:"node_name"`
-	AssigneeUserID string     `json:"assignee_user_id"`
-	Kind           Kind       `json:"kind"`
-	Status         NodeStatus `json:"status"`
-	NodeIndex      int        `json:"node_index"`
-	CreatedAt      time.Time  `json:"created_at"`
+	ApprovalID           string     `json:"approval_id"`
+	ContractID           string     `json:"contract_id"`
+	ContractTitle        string     `json:"contract_title"`
+	NodeID               string     `json:"node_id"`
+	NodeName             string     `json:"node_name"`
+	AssigneeUserID       string     `json:"assignee_user_id"`
+	ApplicantUserID      string     `json:"applicant_user_id"`
+	ApplicantDisplayName string     `json:"applicant_display_name"`
+	Kind                 Kind       `json:"kind"`
+	Status               NodeStatus `json:"status"`
+	NodeIndex            int        `json:"node_index"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 type Summary struct {
