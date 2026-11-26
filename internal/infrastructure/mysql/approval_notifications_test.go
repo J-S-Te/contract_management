@@ -14,18 +14,20 @@ import (
 	"github.com/j-s-te/contract-management/internal/workflows"
 )
 
-// TestApprovalTasksReturnContractTitle 验证待办返回合同名称并保留查询的数据范围。
+// TestApprovalTasksReturnContractTitleAndApplicant 验证待办返回合同名称和申请人快照。
 // 参数：t为脚本SQL测试上下文，不连接业务数据库。
-// 返回值：无；名称映射、快照优先或租户限定缺失时失败。
-func TestApprovalTasksReturnContractTitle(t *testing.T) {
+// 返回值：无；字段映射、快照优先或租户限定缺失时失败。
+func TestApprovalTasksReturnContractTitleAndApplicant(t *testing.T) {
 	var query string
 	var args []driver.NamedValue
 	repo := grantSQLRepository(t, scriptdb.Step{
 		Kind: "query", SQL: "con_approval_task AS t", SQLOut: &query, Args: &args,
 		Names: []string{"approval_id", "contract_id", "contract_title", "node_id",
-			"node_name", "assignee_user_id", "kind", "status", "node_index", "created_at"},
+			"node_name", "assignee_user_id", "applicant_user_id", "applicant_display_name",
+			"kind", "status", "node_index", "created_at"},
 		Rows: [][]driver.Value{{"approval-a", "contract-a", "审批时的合同名称", "node-a",
-			"部门审批", "user-a", "contract_approval", "active", int64(0), time.Now()}},
+			"部门审批", "user-a", "applicant-a", "审批提交人", "contract_approval", "active",
+			int64(0), time.Now()}},
 	})
 	tasks, err := repo.ListTasks(context.Background(), "tenant-a", "user-a", 50)
 	if err != nil || len(tasks) != 1 {
@@ -35,7 +37,12 @@ func TestApprovalTasksReturnContractTitle(t *testing.T) {
 	if err != nil || !strings.Contains(string(body), `"contract_title":"审批时的合同名称"`) {
 		t.Fatalf("合同名称未返回: %s err=%v", body, err)
 	}
+	if !strings.Contains(string(body), `"applicant_user_id":"applicant-a"`) ||
+		!strings.Contains(string(body), `"applicant_display_name":"审批提交人"`) {
+		t.Fatalf("申请人快照未返回: %s", body)
+	}
 	for _, part := range []string{
+		"i.applicant_user_id", "i.applicant_display_name",
 		"c.tenant_id = i.tenant_id", "s.tenant_id = i.tenant_id", "s.contract_id = i.contract_id",
 		"JSON_EXTRACT(s.contract_json, '$.title')", "c.title", "i.tenant_id = ?",
 		"i.status = ?", "t.assignee_user_id = ?", "t.status IN",

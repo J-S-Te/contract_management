@@ -676,13 +676,14 @@ func assignedApprovalTaskStatuses() []approval.NodeStatus {
 
 // ListTasks 仅返回租户内运行中审批的有效及待流转任务。
 // 参数：ctx为上下文，tenantID为租户，userID为受派人，limit为上限，filters为业务坐标。
-// 返回值：按活跃优先排序的任务及数据库错误。
+// 返回值：按活跃优先排序的任务，含申请人快照，或数据库错误。
 func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, limit int, filters ...approval.ListFilter) ([]approval.Task, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	type taskRow struct {
 		ApprovalID, ContractID, NodeID, NodeName, AssigneeUserID string
+		ApplicantUserID, ApplicantDisplayName                    string
 		ContractTitle                                            string
 		Kind, Status                                             string
 		NodeIndex                                                int
@@ -692,7 +693,7 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 	query := r.db.WithContext(ctx).Table("con_approval_task AS t").
 		Select("t.approval_id, i.contract_id, "+approvalContractTitleSQL+
 			" AS contract_title, t.node_id, t.node_name, t.assignee_user_id, "+
-			"i.kind, t.status, t.node_index, i.created_at").
+			"i.applicant_user_id, i.applicant_display_name, i.kind, t.status, t.node_index, i.created_at").
 		Joins("JOIN con_approval_instance AS i ON i.id = t.approval_id").
 		Joins("LEFT JOIN con_contract AS c ON c.id = i.contract_id AND c.tenant_id = i.tenant_id").
 		Joins("LEFT JOIN con_approval_snapshot AS s ON s.approval_id = i.id "+
@@ -716,6 +717,7 @@ func (r *Repository) ListTasks(ctx context.Context, tenantID, userID string, lim
 		result = append(result, approval.Task{
 			ApprovalID: row.ApprovalID, ContractID: row.ContractID, ContractTitle: row.ContractTitle,
 			NodeID: row.NodeID, NodeName: row.NodeName, AssigneeUserID: row.AssigneeUserID,
+			ApplicantUserID: row.ApplicantUserID, ApplicantDisplayName: row.ApplicantDisplayName,
 			Kind: approval.Kind(row.Kind), Status: approval.NodeStatus(row.Status),
 			NodeIndex: row.NodeIndex, CreatedAt: row.CreatedAt,
 		})
